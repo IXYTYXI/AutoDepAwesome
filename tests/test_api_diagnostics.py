@@ -148,3 +148,22 @@ def test_slow_ai_returns_pending_then_same_single_generation(client, monkeypatch
     assert response.status_code == 200
     assert response.json()['text'] == '检查仓库根目录的配置。'
     assert len(calls) == 1
+
+
+def test_analysis_poll_is_strict_boolean_and_only_joins_existing_work(client):
+    job_id, _ = failed_job(client)
+    seen = []
+
+    class FakeAdvice:
+        async def analyze(self, context, *, poll_only=False):
+            seen.append(poll_only)
+            raise DeployError('AI_ANALYSIS_EXPIRED', 'AI 分析结果已过期，请重新发起分析。')
+
+    client.app.state.advice = FakeAdvice()
+    url = '/api/v1/deployments/' + job_id + '/analyze'
+    assert client.post(url, json={'poll': 'true'}, headers=HEADERS, auth=AUTH).status_code == 422
+    result = client.post(url, json={'poll': True}, headers=HEADERS, auth=AUTH)
+    assert result.status_code == 503
+    assert seen == [True]
+    assert result.json()['error']['code'] == 'AI_ANALYSIS_EXPIRED'
+    assert '过期' in result.json()['error']['message']

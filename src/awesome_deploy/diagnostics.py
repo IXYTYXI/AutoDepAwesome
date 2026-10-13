@@ -170,6 +170,8 @@ _register("AI_KEY_UNAVAILABLE", "AI 密钥不可用", "无法安全读取 AI 接
           "请运维通过安全入口配置密钥，并检查其读取权限；不要将密钥放入仓库或网页表单。")
 _register("AI_BUSY AI_RATE_LIMITED", "AI 分析暂时繁忙", "AI 分析正在执行，或调用频率已达到限制。",
           "稍后再试，并先参考本地修改建议。")
+_register("AI_ANALYSIS_EXPIRED", "AI 分析结果已过期", "本次 AI 分析结果已过期，或服务已重启。",
+          "点击“重试 AI 分析”重新发起；也可以先按上方内置建议检查配置。")
 _register("AI_TIMEOUT", "AI 分析超时", "AI 接口未在规定时间内完成响应。",
           "稍后再试；若持续超时，请运维检查接口连通性和响应速度。")
 _register("AI_UNAVAILABLE", "AI 接口暂时不可用", "无法完成本次 AI 接口调用。",

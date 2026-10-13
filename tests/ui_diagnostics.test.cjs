@@ -62,10 +62,21 @@ test('AI error keeps built-in advice and enables retry',async()=>{
 
 test('pending AI response is polled until advice arrives',async()=>{
   const h=harness();await new Promise(setImmediate);h.context.job=job;
-  let calls=0;
+  let calls=0;const bodies=[];
   h.context.setTimeout=callback=>{setImmediate(callback);return 1;};
-  h.context.fetch=async()=>({ok:true,json:async()=>++calls===1 ? {status:'pending'} : {text:'核对配置文件。'}});
+  h.context.fetch=async(url,options)=>{bodies.push(JSON.parse(options.body));return {ok:true,json:async()=>++calls===1 ? {status:'pending'} : {text:'核对配置文件。'}};};
   h.run("aiConfigured=true;selectedJob='one';showJob(job)");await h.run("analyzeJob('one')");
-  assert.equal(calls,2);
+  assert.equal(calls,2);assert.deepEqual(bodies,[{},{poll:true}]);
   assert.ok(all(h.get('current')).some(n=>n.tagName==='pre' && n.textContent==='核对配置文件。'));
+});
+
+test('background wake after deadline cannot send another AI request',async()=>{
+  const h=harness();await new Promise(setImmediate);h.context.job=job;
+  let calls=0,now=0;
+  h.context.Date={now:()=>now};
+  h.context.setTimeout=callback=>{now=300000;setImmediate(callback);return 1;};
+  h.context.fetch=async()=>({ok:true,json:async()=>{calls++;return calls===1 ? {status:'pending'} : {text:'unexpected'};}});
+  h.run("aiConfigured=true;selectedJob='one';showJob(job)");await h.run("analyzeJob('one')");
+  assert.equal(calls,1);
+  assert.ok(all(h.get('current')).some(n=>n.role==='alert' && n.textContent.includes('等待超时')));
 });

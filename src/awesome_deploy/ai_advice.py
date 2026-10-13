@@ -77,7 +77,7 @@ class AdviceService:
     def configured(self) -> bool:
         return self._settings.ai_base_url is not None
 
-    async def analyze(self, context: dict) -> dict:
+    async def analyze(self, context: dict, *, poll_only: bool = False) -> dict:
         if not self.configured:
             raise DeployError("AI_NOT_CONFIGURED", "AI 建议尚未启用，请管理员配置 AI 服务。")
         # The API constructs this context from an explicit allowlist, never raw input or logs.
@@ -101,6 +101,8 @@ class AdviceService:
                     raise DeployError("AI_BUSY", "另一个 AI 诊断正在进行，请稍后再试。")
                 task, cached = self._pending[1], True
             else:
+                if poll_only:
+                    raise DeployError("AI_ANALYSIS_EXPIRED", "本次 AI 分析结果已过期，请手动重试。")
                 if self._last_request is not None and now - self._last_request < COOLDOWN:
                     raise DeployError("AI_RATE_LIMITED", "AI 调用过于频繁，请等待 20 秒后重试。")
                 self._last_request = now

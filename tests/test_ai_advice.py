@@ -34,9 +34,9 @@ def success(request):
     return httpx.Response(200, json={"choices": [{"message": {"content": "请检查构建入口；具体原因尚未确认。"}}]})
 
 
-def run_error(instance, code, context=CONTEXT):
+def run_error(instance, code, context=CONTEXT, **kwargs):
     with pytest.raises(DeployError) as caught:
-        asyncio.run(instance.analyze(context))
+        asyncio.run(instance.analyze(context, **kwargs))
     assert caught.value.code == code
     assert SECRET not in json.dumps(caught.value.as_dict())
     assert "api.example" not in json.dumps(caught.value.as_dict())
@@ -266,6 +266,58 @@ def test_cache_expires_after_five_minutes(configured):
     assert asyncio.run(instance.analyze(CONTEXT))["cached"] is False
 
 
+def test_poll_only_never_starts_an_analysis_or_sets_cooldown(configured):
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return success(request)
+
+    instance = service(configured, handle)
+    run_error(instance, "AI_ANALYSIS_EXPIRED", poll_only=True)
+    assert calls == []
+    assert asyncio.run(instance.analyze(CONTEXT))["cached"] is False
+    assert len(calls) == 1
+
+
+def test_poll_only_reads_cached_success_but_cannot_restart_after_expiry(configured):
+    now = [100.0]
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return success(request)
+
+    instance = service(configured, handle, clock=lambda: now[0])
+    asyncio.run(instance.analyze(CONTEXT))
+    assert asyncio.run(instance.analyze(CONTEXT, poll_only=True))["cached"] is True
+    now[0] += 301
+    run_error(instance, "AI_ANALYSIS_EXPIRED", poll_only=True)
+    assert len(calls) == 1
+    assert asyncio.run(instance.analyze(CONTEXT))["cached"] is False
+    assert len(calls) == 2
+
+
+def test_poll_only_reads_cached_failure_but_cannot_restart_after_expiry(configured):
+    now = [100.0]
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(503, text=SECRET)
+        return success(request)
+
+    instance = service(configured, handle, clock=lambda: now[0])
+    run_error(instance, "AI_UNAVAILABLE")
+    run_error(instance, "AI_UNAVAILABLE", poll_only=True)
+    now[0] += 21
+    run_error(instance, "AI_ANALYSIS_EXPIRED", poll_only=True)
+    assert len(calls) == 1
+    assert asyncio.run(instance.analyze(CONTEXT))["cached"] is False
+    assert len(calls) == 2
+
+
 def test_cache_evicts_old_entries_above_32(configured, monkeypatch):
     from awesome_deploy import ai_advice
 
@@ -367,7 +419,7 @@ def test_cancelled_poll_keeps_one_request_and_failed_result_is_cached(configured
         poll.cancel()
         with pytest.raises(asyncio.CancelledError):
             await poll
-        next_poll = asyncio.create_task(instance.analyze(CONTEXT))
+        next_poll = asyncio.create_task(instance.analyze(CONTEXT, poll_only=True))
         await asyncio.sleep(0)
         release.set()
         with pytest.raises(DeployError) as caught:

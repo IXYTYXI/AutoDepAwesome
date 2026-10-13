@@ -9,7 +9,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel, ConfigDict, StrictStr
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .auth import verify_credentials
@@ -40,6 +40,7 @@ class Preflight(BaseModel):
 
 class AnalysisRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    poll: StrictBool = False
 
 
 def advice_context(job):
@@ -253,7 +254,8 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
             raise DeployError("DIAGNOSIS_NOT_AVAILABLE", "只有失败或需要恢复的任务可以分析。")
         try:
             return await asyncio.wait_for(
-                app.state.advice.analyze(advice_context(job)), timeout=ANALYSIS_POLL_WAIT,
+                app.state.advice.analyze(advice_context(job), **({"poll_only": True} if body.poll else {})),
+                timeout=ANALYSIS_POLL_WAIT,
             )
         except TimeoutError:
             # AdviceService shields and coalesces the provider task across short polls.

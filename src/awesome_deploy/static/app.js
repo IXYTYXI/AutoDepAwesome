@@ -55,7 +55,9 @@ async function analyzeJob(id) {
     const deadline=Date.now()+270000;
     let result;
     do {
-      result=await api(`/api/v1/deployments/${encodeURIComponent(id)}/analyze`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+      if(Date.now()>=deadline)throw new Error('AI 分析等待超时，请稍后重试。');
+      const body=JSON.stringify(result ? {poll:true} : {});
+      result=await api(`/api/v1/deployments/${encodeURIComponent(id)}/analyze`,{method:'POST',headers:{'Content-Type':'application/json'},body});
       if(result.status==='pending'){
         if(Date.now()>=deadline)throw new Error('AI 分析等待超时，请稍后重试。');
         await new Promise(resolve=>setTimeout(resolve,1000));
