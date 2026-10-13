@@ -1,13 +1,53 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Awesome · 自动部署</title><link rel="stylesheet" href="/assets/app.css"><script src="/assets/app.js" defer></script></head>
-<body><main><header><span class="brand">AWESOME / DEPLOY</span><span class="badge">第一阶段 · 运维入口</span></header>
-<section class="intro"><h1>从代码仓库，到可访问的应用。</h1><p>提交已包含 <code>awesome.yaml</code> 和 Dockerfile 的版本，查看构建、HTTPS 配置与发布结果。</p></section>
-<div class="columns"><section class="panel"><h2>部署项目</h2><form id="deploy-form">
-<label for="repository">GitHub / GitLab 仓库地址</label><input id="repository" name="repository" type="url" required placeholder="https://github.com/team/project.git" autocomplete="off">
-<label for="ref">分支或提交版本</label><input id="ref" name="ref" required value="main" autocomplete="off">
-<label for="subdomain">域名前缀</label><div class="domain"><input id="subdomain" name="subdomain" required pattern="[a-z0-9]([a-z0-9-]{0,5}[a-z0-9])?" maxlength="7" placeholder="demo"><span id="domain-suffix">.awesome.guanghexinzhi.cn</span></div><small>1–7 个字符，与仓库清单一致。</small>
-<label for="appId">更新已有应用</label><select id="appId" name="appId"><option value="">创建新应用</option></select><small>更新时选择原应用，保留域名归属。</small>
-<button type="submit" id="submit">开始部署</button><p class="hint">当前直接执行部署，尚未接入审核和审批。</p><p id="form-error" role="alert"></p></form>
-<details><summary>配置准备与支持范围</summary><p>支持 Web 服务、前端/API 路径分流及每服务独立的 /data 持久卷；使用持久卷的更新会短暂停机。数据库服务类型和后台任务尚未开放。构建命令默认不访问网络，基础镜像由平台获取。</p><p>让开发 AI 根据<a href="/api/v1/schema" target="_blank" rel="noopener">字段规范</a>生成配置，并确认端口和健康检查路径。秘密值通过运维安全入口配置，不填写在仓库或此表单。</p></details></section>
-<section class="panel"><div class="section-head"><h2>部署进度</h2><button type="button" class="secondary" id="refresh">刷新列表</button></div><div id="current" aria-live="polite"><p class="empty">提交项目后，执行进度会显示在这里。</p></div><pre id="events" aria-label="执行日志"></pre><h3>最近部署</h3><div id="history"></div></section></div>
-<footer>只有健康检查、HTTPS 和实际发布版本验证通过，部署才会标记成功。</footer></main></body></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Awesome · 自动部署</title>
+  <link rel="stylesheet" href="/assets/app.css?v=0.2.1"><script src="/assets/app.js?v=0.2.1" defer></script>
+</head>
+<body><main>
+  <header><span class="brand"><span class="brand-mark" aria-hidden="true">A</span> AWESOME / DEPLOY</span><span class="badge"><span aria-hidden="true">●</span> 运维控制台</span></header>
+  <section class="intro"><h1>把代码，变成可访问的应用。</h1><p>选择项目与版本，交给平台完成构建、健康检查和 HTTPS 发布。</p></section>
+  <div class="columns">
+    <section class="panel deploy-panel" aria-labelledby="deploy-title">
+      <div class="panel-heading"><span class="section-number">01</span><div><h2 id="deploy-title">部署项目</h2><p class="section-description">创建新应用，或更新已有版本。</p></div></div>
+      <form id="deploy-form">
+        <label id="app-picker-label" for="app-search">应用</label>
+        <div class="app-picker" id="app-picker">
+          <input id="appId" name="appId" type="hidden" value="">
+          <div class="app-combobox">
+            <input id="app-search" type="text" role="combobox" aria-labelledby="app-picker-label" aria-controls="app-options" aria-expanded="false" aria-autocomplete="list" aria-describedby="app-picker-help" autocomplete="off" spellcheck="false" value="创建新应用">
+            <button id="app-picker-toggle" type="button" class="picker-toggle" aria-label="展开应用列表" aria-controls="app-options" aria-expanded="false" tabindex="-1"><span class="chevron" aria-hidden="true"></span></button>
+          </div>
+          <div id="app-menu" class="app-menu" hidden>
+            <p class="picker-caption">输入域名前缀、仓库地址或应用编号搜索</p>
+            <ul id="app-options" role="listbox" aria-label="可选择的应用"></ul>
+            <p id="app-options-empty" class="picker-empty" hidden>没有匹配的应用，可更换关键词或创建新应用。</p>
+          </div>
+          <span id="app-picker-status" class="sr-only" role="status" aria-live="polite"></span>
+        </div>
+        <small id="app-picker-help">更新时选择原应用，自动填入仓库和域名前缀。</small>
+        <label for="repository">GitHub / GitLab 仓库地址</label>
+        <input id="repository" name="repository" type="url" required placeholder="https://github.com/team/project.git" autocomplete="off">
+        <div class="form-row"><div><label for="ref">分支或提交版本</label><input id="ref" name="ref" required value="main" autocomplete="off"></div><div><label for="subdomain">域名前缀</label><input id="subdomain" name="subdomain" required pattern="[a-z0-9]([a-z0-9-]{0,5}[a-z0-9])?" maxlength="7" placeholder="demo"></div></div>
+        <small class="domain-preview">访问地址：<span id="domain-prefix">你的前缀</span><span id="domain-suffix">.awesome.guanghexinzhi.cn</span></small>
+        <small>域名前缀为 1–7 个字符，须与 awesome.yaml 中的配置一致。</small>
+        <button type="submit" id="submit">开始部署 <span aria-hidden="true">↗</span></button>
+        <p class="hint submit-hint">当前直接执行部署，尚未接入审核和审批。</p><p id="form-error" role="alert"></p>
+      </form>
+      <details class="scope-details"><summary>配置准备与支持范围</summary><p>仓库应包含 awesome.yaml，以及构建所需的 Dockerfile；也可按字段规范使用已有镜像。支持 Web 服务和前端/API 路径分流。</p><p id="storage-capability">正在读取持久存储支持情况…</p><p>数据库迁移和后台任务（worker）仍未支持。构建命令默认不访问网络，基础镜像由平台获取。</p><p>参考<a href="/api/v1/schema" target="_blank" rel="noopener">字段规范</a>确认端口、健康检查和存储配置。秘密值通过运维安全入口配置，不填写在仓库或此表单。</p></details>
+    </section>
+    <section class="panel progress-panel" id="progress-panel" aria-labelledby="progress-title" tabindex="-1">
+      <div class="panel-heading"><span class="section-number">02</span><div><h2 id="progress-title">当前进度</h2><p class="section-description">查看执行状态，按建议处理部署问题。</p></div></div>
+      <div id="current" aria-live="polite"><div class="empty-state"><span class="empty-icon" aria-hidden="true">↗</span><h3>下一次部署，从这里开始</h3><p>提交项目，或从下方选择最近记录，<br>查看进度与修改建议。</p></div></div>
+      <details id="event-details" class="execution-log"><summary>执行日志 <span class="summary-hint">按阶段查看记录</span></summary><pre id="events" aria-label="执行日志">选择部署后显示执行记录。</pre></details>
+    </section>
+  </div>
+  <section class="panel history-panel" aria-labelledby="history-title">
+    <div class="section-head"><div><h2 id="history-title">最近部署</h2><p id="history-count" class="section-description" aria-live="polite">正在加载最近记录…</p></div><button type="button" class="secondary" id="refresh">刷新记录 <span aria-hidden="true">↻</span></button></div>
+    <div id="history-filters" class="history-filters" role="group" aria-label="按部署状态筛选"></div>
+    <div id="history" class="history-list" tabindex="0" role="region" aria-label="最近部署记录，可上下滚动" aria-describedby="history-count"></div>
+  </section>
+  <footer><span class="footer-dot" aria-hidden="true"></span>健康检查、HTTPS 与实际发布版本验证通过后，部署才会标记成功。</footer>
+</main></body>
+</html>
