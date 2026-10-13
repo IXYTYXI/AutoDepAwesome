@@ -10,7 +10,8 @@ Group=awesome
 WorkingDirectory=/opt/awesome-deploy
 Environment=XDG_RUNTIME_DIR=/run/user/1001
 Environment=PYTHONUNBUFFERED=1
-ExecStartPre=/opt/awesome-deploy/.venv/bin/awesome-deploy --config /etc/awesome-deploy/config.json check
+# Start recovery independently of the builder, registry, and ACME readiness.
+# Run the full `check` during installation; new deployments retain their checks.
 ExecStart=/opt/awesome-deploy/.venv/bin/awesome-deploy --config /etc/awesome-deploy/config.json worker
 Restart=on-failure
 RestartSec=15

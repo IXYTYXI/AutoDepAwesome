@@ -19,6 +19,19 @@ class HostBoundary:
         self.active = None
         self.fail_verify = False
         self.cleaned = []
+        self.running = set()
+        self.boot_id = "initial-boot"
+        self.recovered = []
+
+    def recovery_boot_id(self):
+        return self.boot_id
+
+    def recover_active(self, job):
+        self.recovered.append(job["id"])
+        if job["id"] in self.running:
+            return {"restarted": []}
+        self.running.add(job["id"])
+        return {"restarted": list(job["snapshot"]["manifest"]["services"])}
 
     def freeze(self, snapshot, job, checkpoint):
         assert job["app_id"] is None or isinstance(job["app_id"], str)
@@ -30,6 +43,7 @@ class HostBoundary:
 
     def start(self, job, checkpoint):
         assert job["app_id"] and job["execution"]["ports"]
+        self.running.add(job["id"])
 
     def health(self, job):
         pass
@@ -49,6 +63,7 @@ class HostBoundary:
 
     def cleanup(self, job):
         self.cleaned.append(job["id"])
+        self.running.discard(job["id"])
 
 
 def test_examples_match_schema():
@@ -62,7 +77,8 @@ def test_api_git_worker_first_deploy_update_and_failed_verify(tmp_path):
     local = tmp_path / "repo"
     local.mkdir()
     for file in Path("examples/simple-web").iterdir():
-        (local / file.name).write_bytes(file.read_bytes())
+        if file.is_file():
+            (local / file.name).write_bytes(file.read_bytes())
 
     def git(*args):
         return subprocess.check_output(["git", "-C", str(local), *args], stderr=subprocess.PIPE)
@@ -128,3 +144,31 @@ def test_api_git_worker_first_deploy_update_and_failed_verify(tmp_path):
         assert app.state.store.apps()[0]["active_release_id"] == second
         result = client.get("/api/v1/deployments/" + second, auth=("operator", "integration-password")).json()
         assert result["url"] == "https://demo.awesome.guanghexinzhi.cn"
+
+        # A host reboot stops every container. Even if the submitted branch has
+        # moved, a fresh worker must restore only the persisted active version.
+        before = app.state.store.get(second)
+        (local / "server.py").write_text("raise RuntimeError('new unsubmitted revision')\n")
+        git("add", ".")
+        git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "moved ref")
+        assert git("rev-parse", "HEAD").decode().strip() != sha
+        host.running.clear()
+        host.recovered.clear()
+        host.boot_id = "after-host-reboot"
+
+        class NoNewSource:
+            def prepare(self, job, checkpoint):
+                raise AssertionError("Reboot recovery must not fetch repository contents")
+
+        rebooted = Worker(settings, app.state.store, NoNewSource(), host)
+        assert rebooted.run_once()
+        assert host.running == {second}
+        assert host.recovered == [second]
+        assert host.active == second
+        after = app.state.store.get(second)
+        assert after["snapshot"] == before["snapshot"]
+        assert after["execution"]["images"] == before["execution"]["images"]
+        assert after["execution"]["ports"] == before["execution"]["ports"]
+        assert after["status"] == "succeeded"
+        assert not rebooted.run_once()
+        assert host.recovered == [second]

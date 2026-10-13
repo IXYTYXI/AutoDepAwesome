@@ -74,11 +74,11 @@ class DeploymentBackend:
                 "HOST_UNSAFE", "Docker socket must be owned by the nonroot worker and not world-writable"
             )
 
-    def preflight(self):
+    def _runtime_preflight(self, timeout=120):
         if not re.fullmatch(r"[1-9][0-9]*(?::[1-9][0-9]*)?", self.settings.runtime_user):
             raise DeployError("HOST_UNSAFE", "Runtime user must be a numeric nonroot UID and GID")
         self._check_socket()
-        info = json.loads(self._docker(["info", "--format", "{{json .}}"]))
+        info = json.loads(self._docker(["info", "--format", "{{json .}}"], timeout=timeout))
         options = info.get("SecurityOptions", [])
         if not any("rootless" in str(option) for option in options):
             raise DeployError("HOST_UNSAFE", "Dedicated rootless Docker is required")
@@ -96,6 +96,10 @@ class DeploymentBackend:
             )
         if not any("seccomp" in str(option) for option in options):
             raise DeployError("HOST_UNSAFE", "Docker default seccomp enforcement is required")
+        return info
+
+    def preflight(self):
+        info = self._runtime_preflight()
         self.settings.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         if shutil.disk_usage(self.settings.state_dir).free < self.settings.required_free_mib * 1024 * 1024:
             raise DeployError("DISK_CAPACITY", "Insufficient free disk space for deployment")
@@ -507,6 +511,113 @@ class DeploymentBackend:
                 progress = True
             if not progress:
                 raise DeployError("DEPENDENCY_CYCLE", "Service dependency graph cannot be started")
+
+    @staticmethod
+    def recovery_boot_id():
+        try:
+            return Path("/proc/sys/kernel/random/boot_id").read_text().strip() or "unknown-boot"
+        except OSError:
+            return "unknown-boot"  # Periodic checks still work if the boot identifier is unavailable.
+
+    def recover_active(self, job):
+        """Start only existing frozen active containers; never rebuild, recreate or touch routes."""
+        self._ids(job)
+        if (
+            job.get("status") != "succeeded"
+            or job["execution"].get("resources_released")
+            or job["execution"].get("failure_intent")
+        ):
+            raise DeployError(
+                "ACTIVE_RECOVERY_STATE", "Only a successful unreleased active version may be recovered"
+            )
+        deadline = time.monotonic() + self.settings.health_timeout
+
+        def bounded():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DeployError("ACTIVE_RECOVERY_TIMEOUT", "Active recovery exceeded its time limit")
+            return min(10, remaining)
+
+        # Existing containers need the runtime identity/resource guards, not a builder or build disk budget.
+        self._runtime_preflight(timeout=bounded())
+        services = job["snapshot"]["manifest"]["services"]
+        names = [self._container(job, name) for name in services]
+        rows = json.loads(self._docker(["container", "inspect", *names], timeout=bounded()))
+        containers = {row.get("Name", "").removeprefix("/"): row for row in rows}
+        networks = set()
+        for name, service in services.items():
+            row = containers.get(self._container(job, name))
+            if row is None:
+                raise DeployError(
+                    "ACTIVE_CONTAINER_MISSING", "An active container is missing; operator repair is required"
+                )
+            config, host = row.get("Config", {}), row.get("HostConfig", {})
+            image = job["execution"].get("images", {}).get(name, "")
+            expected_binding = {
+                str(service["port"]) + "/tcp": [
+                    {"HostIp": "127.0.0.1", "HostPort": str(job["execution"]["ports"][name])}
+                ]
+            }
+            attached = set(row.get("NetworkSettings", {}).get("Networks") or {})
+            state = row.get("State", {})
+            if (
+                not self._owned(config.get("Labels"), job)
+                or not IMMUTABLE.fullmatch(image)
+                or not (row.get("Image") == image or "@sha256:" in image and config.get("Image") == image)
+                or host.get("PortBindings") != expected_binding
+                or not re.fullmatch(r"[1-9][0-9]*(?::[1-9][0-9]*)?", config.get("User", ""))
+                or host.get("ReadonlyRootfs") is not True
+                or host.get("RestartPolicy", {}).get("Name", "no") not in {"no", ""}
+                or any(mount.get("Type") in {"bind", "volume"} for mount in row.get("Mounts", []))
+                or not attached
+                or not attached.issubset(set(job["execution"].get("networks", attached)))
+                or state.get("Paused")
+                or state.get("Restarting")
+                or state.get("Dead")
+            ):
+                raise DeployError(
+                    "ACTIVE_CONTAINER_CHANGED",
+                    "An active container no longer matches its frozen identity or isolation",
+                )
+            networks.update(attached)
+        inspected = json.loads(self._docker(["network", "inspect", *sorted(networks)], timeout=bounded()))
+        if (
+            len(inspected) != len(networks)
+            or {row.get("Name") for row in inspected} != networks
+            or any(
+                row.get("Internal") is not True or not self._owned(row.get("Labels"), job)
+                for row in inspected
+            )
+        ):
+            raise DeployError(
+                "ACTIVE_NETWORK_CHANGED", "Active containers require their owned internal networks"
+            )
+        completed, checked, restarted = set(), set(), []
+        retry_health = job["execution"].get("active_recovery", {}).get("retry_health", False)
+        while len(completed) < len(services):
+            progress = False
+            for name, service in services.items():
+                dependencies = service.get("dependsOn") or {}
+                if name in completed or not set(dependencies).issubset(completed):
+                    continue
+                row = containers[self._container(job, name)]
+                if not row.get("State", {}).get("Running"):
+                    for dependency, condition in dependencies.items():
+                        if condition == "healthy" and dependency not in checked:
+                            self._health_service(job, dependency, deadline)
+                            checked.add(dependency)
+                    self._docker(["container", "start", self._container(job, name)], timeout=bounded())
+                    restarted.append(name)
+                    self._health_service(job, name, deadline)
+                    checked.add(name)
+                elif retry_health and name not in checked:
+                    self._health_service(job, name, deadline)
+                    checked.add(name)
+                completed.add(name)
+                progress = True
+            if not progress:
+                raise DeployError("DEPENDENCY_CYCLE", "Active dependencies cannot be recovered")
+        return {"restarted": restarted}
 
     def _create_container(self, job, name, service, image, networks):
         environment = dict(service.get("env") or {})

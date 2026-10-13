@@ -279,6 +279,8 @@ def rollback(req):
     current_release = state["current"]["release"] if state["current"] else None
     if not pending or pending["release"] != req["release"]:
         if current_release == req["previous_release"]:
+            if state["current"]:
+                probe_routes(state["current"]["request"])
             return {"rolled_back": True}
         raise ValueError("Refusing stale release rollback or missing rollback journal")
     previous_release = pending["previous"]["release"] if pending["previous"] else None
@@ -288,6 +290,10 @@ def rollback(req):
     }:
         raise ValueError("Rollback journal differs from expected prior release")
     apply_config(req["subdomain"], pending["previous_config"])
+    # Reload only signals Nginx. Keep the write-ahead journal until fresh TLS
+    # requests have actually reached the restored release's upstreams.
+    if pending["previous"]:
+        probe_routes(pending["previous"]["request"])
     state["current"], state["pending"] = pending["previous"], None
     save_state(req["subdomain"], state)
     return {"rolled_back": True}
@@ -366,41 +372,96 @@ def probe_paths(req):
     return paths
 
 
-def probe_routes(req):
-    expected = {}
-    for route, path in zip(req["routes"], probe_paths(req)):
-        token = secrets.token_hex(32)
-        # A random header must appear in the root-owned Nginx access log with the actual upstream.
-        expected[token] = f"127.0.0.1:{req['ports'][route['service']]}"
-        connection = LocalHTTPS(host(req), timeout=10, context=ssl.create_default_context())
+def probe_log_matches(expected):
+    """Correlate outstanding requests from this invocation; reject observed mismatches."""
+    matched, rejected = set(), set()
+    try:
+        with PROBE_LOG.open("rb") as stream:
+            stream.seek(max(0, os.fstat(stream.fileno()).st_size - 1024 * 1024))
+            # Bound reads even while public traffic is still appending to the log.
+            lines = stream.read(1024 * 1024).splitlines()
+    except FileNotFoundError:
+        return matched, rejected
+    for line in lines:
         try:
-            connection.request(
-                "GET",
-                path + "?__awesome_probe=" + token,
-                headers={"X-Awesome-Probe": token, "Connection": "close", "Cache-Control": "no-cache"},
-            )
-            response = connection.getresponse()
-            if not 200 <= response.status < 500:
-                raise RuntimeError(f"TLS route returned {response.status}")
-        finally:
-            connection.close()
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        found = {}
-        if PROBE_LOG.exists():
-            with PROBE_LOG.open("rb") as stream:
-                stream.seek(max(0, PROBE_LOG.stat().st_size - 1024 * 1024))
-                for line in stream:
-                    try:
-                        row = json.loads(line)
-                    except (ValueError, UnicodeDecodeError):
-                        continue
-                    if row.get("probe") in expected and row.get("host") == host(req):
-                        found[row["probe"]] = row.get("upstream")
-        if all(found.get(token) == upstream for token, upstream in expected.items()):
-            return
-        time.sleep(0.1)
-    raise RuntimeError("TLS probe did not correlate to every expected candidate upstream")
+            row = json.loads(line)
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if not isinstance(row, dict):
+            continue
+        token = row.get("probe")
+        if isinstance(token, str) and token in expected:
+            wanted = expected[token]
+            if all(row.get(key) == value for key, value in wanted.items()):
+                matched.add(token)
+            else:
+                rejected.add(token)
+    return matched - rejected, rejected
+
+
+def probe_routes(req):
+    """Confirm all routes within one 30-second budget, including TLS and log waits.
+
+    A reload can briefly accept connections in old workers. Each retry uses a new
+    TLS connection and token, so a stale connection or log row cannot prove the
+    candidate is serving. Per-request deadlines are capped at five seconds.
+    """
+    deadline = time.monotonic() + 30
+    domain = host(req)
+    context = ssl.create_default_context()
+    routes = list(zip(req["routes"], probe_paths(req)))
+    pending = set(range(len(routes)))
+    expected, route_tokens = {}, {}
+    while pending and time.monotonic() < deadline:
+        for index in sorted(pending):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            route, path = routes[index]
+            token = secrets.token_hex(32)
+            connection = LocalHTTPS(domain, timeout=min(5, remaining), context=context)
+            try:
+                connection.request(
+                    "GET",
+                    path + "?__awesome_probe=" + token,
+                    headers={"X-Awesome-Probe": token, "Connection": "close", "Cache-Control": "no-cache"},
+                )
+                response = connection.getresponse()
+                if 200 <= response.status < 500:
+                    expected[token] = {
+                        "probe": token,
+                        "host": domain,
+                        "uri": path,
+                        "upstream": f"127.0.0.1:{req['ports'][route['service']]}",
+                        "status": response.status,
+                    }
+                    route_tokens[token] = index
+            except (OSError, http.client.HTTPException):
+                # Certificate/connection errors during the reload window are retried
+                # with normal certificate verification and a fresh connection.
+                pass
+            finally:
+                connection.close()
+        log_deadline = min(deadline, time.monotonic() + 0.25)
+        while expected and time.monotonic() < log_deadline:
+            matched, rejected = probe_log_matches(expected)
+            for token in matched:
+                pending.discard(route_tokens[token])
+            # Delayed log rows for requests issued by this invocation remain
+            # eligible across retries. A token already observed at a wrong
+            # upstream/path/status is permanently retired and cannot be repaired
+            # by a later row carrying that old token.
+            for token in list(expected):
+                if token in rejected or route_tokens[token] not in pending:
+                    del expected[token]
+                    del route_tokens[token]
+            if not pending:
+                return
+            if expected:
+                time.sleep(min(0.05, max(0, log_deadline - time.monotonic())))
+        if pending:
+            time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+    raise RuntimeError("TLS probe deadline expired before every expected upstream was confirmed")
 
 
 def verify(req):

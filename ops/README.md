@@ -168,7 +168,9 @@ sudo systemctl enable --now awesome-api.service awesome-worker.service
 sudo systemctl status awesome-api.service awesome-worker.service
 ```
 
-rootless Docker 仍由同 UID 的用户服务管理；系统级 worker unit 不会代替它启动 rootful Docker。worker 的 `ExecStartPre` 会再次运行 `check`，daemon 尚未就绪会失败并按间隔重试。
+rootless Docker 仍由同 UID 的用户服务管理；系统级 worker unit 不会代替它启动 rootful Docker。worker 启动不再使用全量 `check` 作为 `ExecStartPre`，避免 builder 或证书暂不可用时连既有容器都无法恢复。安装和新部署仍需相应检查。升级时重新安装本仓库的 worker unit 并运行 `daemon-reload`；仅更新 Python 包、保留旧 unit 会留下原启动门槛。
+
+worker 检测到新的 Linux boot ID 后，优先逐一尝试恢复当前成功版本，再继续耗时构建；恢复失败也会记录本次尝试，避免阻塞其他应用。常态检查间隔为 60 秒，失败按 60、120、240、480、900 秒退避，上限 900 秒且跨 worker 重启保留；单次容器恢复受 `health_timeout` 限制。正在执行的部署也可能延迟周期检查，因此这些是调度间隔，不是对外可用时间保证。`recovery_required` 应用只会尝试恢复数据库记录的旧当前版本，候选资源和人工恢复标记继续保留。
 
 API unit 启用 `NoNewPrivileges` 和只读系统保护；worker 必须调用精确授权的 sudo helper，不能直接照搬 API 的 `NoNewPrivileges=true` 或把 helper 要写的 `/etc/nginx` 设为只读。停 worker 时需让进程组结束，再恢复；文件锁由子进程继承，避免父进程崩溃后出现两个并发执行者。
 
@@ -188,8 +190,22 @@ API/worker 输出进入 journald。Docker 应用容器使用 local 日志驱动�
 2. 将两个 example 分别复制到独立 Git 仓库根，完成单服务和前端/API 部署，核对 `/`、`/abc`、HTTPS 证书与实际上游端口。
 3. 修改 ref 后确认旧任务始终使用原 commit；更新部署提供原 `appId`，验证域名不会被新应用抢占。
 4. 构造候选健康检查失败和发布后验证失败，确认旧版本仍响应、候选清理顺序正确、资源只有确认清理后才释放。
-5. 在受控窗口中测试 worker 中断恢复，包括发布意图之后、成功切换但回收之前；确认全程互斥锁和持久化退役重试。
+5. 在受控窗口中测试 worker 中断恢复，包括发布意图之后、成功切换但回收之前；确认全程互斥锁和持久化退役重试。还须按下面步骤执行主机重启验收。
 6. 验证 CPU、内存、PID、只读根目录、临时空间、构建网络和有限磁盘实际生效；不要仅看命令参数。
 7. 分别验证根域名 `/var/www/certbot` 与应用子域 `/var/www/awesome-acme` 的 HTTP challenge、既有 Certbot 续期调度及目录 hook，确认续期与发布竞争时不会死锁或覆盖路由。
 
 `recovery_required` 表示平台不能确认网关或资源状态。先停止新的运维操作，读取任务阶段和安全事件，核对 root 网关日志中的 current/pending 及具体应用/版本 Docker labels，再决定恢复方案。系统尚无通用恢复 CLI 或数据库修复命令；不要清空 worker 锁、直接删除数据库 reservation 或把任务改为成功来绕过确认。保留旧版本与候选版本，直到网关回滚和资源归属都明确。
+
+### 重启与重载验收（由部署人员在目标机执行）
+
+本地回归使用真实 SQLite/Git 和受控 Docker、TLS 边界替身，尚未执行以下实机操作。验收期间使用测试应用及维护窗口，保存每项实际结果。
+
+1. 升级 Python 包、root 所有的 `awesome-gateway` 和 worker unit。确认 rootless Docker 的用户服务与 `awesome-worker.service` 都已启用开机启动；运行完整 `check`。应用恢复不需要重建镜像，不依赖 BuildKit 正常工作。
+2. 成功部署一个双服务测试应用，记录当前部署 ID、完整 commit、各容器 ID/镜像 ID、本机端口与 HTTPS 返回内容；另保留一个失败部署记录用于对照。确认 `/` 与 `/abc` 正常。
+3. 在维护窗口重启目标主机，等待 rootless Docker、Nginx、worker 启动；无需提交新部署。核对当前成功版本恢复、两个路径重新可用，容器 ID、commit、镜像 ID、端口保持不变，失败/退役版本没有被重新启动。
+4. 单独重启 rootless Docker daemon，验证运行中的 worker 也会发现停止的当前版本并恢复。若 Docker 暂不可用，确认恢复事件说明失败、重试有退避，成功部署记录和端口预留未被删除。
+5. 在另一测试应用更新发布期间模拟 worker 中断并重启。核对先恢复数据库记录的旧当前版本，随后确认旧 HTTPS 路由，再清理候选；恢复或回退无法确认时，应保留候选资源并标记需人工恢复。
+6. 在多次连续更新中核对发布探针确实建立新连接，最终指向新端口；短暂旧进程响应不应立即导致回滚。故意维持错误上游时，探测在总截止时间后失败，回退确认之前不得删除候选。日志关联必须同时匹配 token、域名、路径、端口和状态。
+7. 确认现有容器丢失或身份不一致时只报告恢复问题，不会拉取最新分支、重新构建或改写网关。需要停机维护某个应用时，应先停止 worker；只执行 `docker stop` 会被平台按“当前版本应运行”恢复。
+
+Docker 的自动重启策略与主机进程管理器不宜同时管理同一容器；本平台使用 worker 这一处恢复入口，保留 `--restart=no`，详见 [Docker 重启策略说明](https://docs.docker.com/engine/containers/start-containers-automatically/)。Nginx 的配置重载会启动新 worker 并让旧 worker 完成旧连接，因此验证必须允许切换窗口，详见 [Nginx 控制说明](https://nginx.org/en/docs/control.html)。

@@ -536,3 +536,123 @@ def test_source_failure_cleanup_never_requires_docker(tmp_path):
     )
     engine.cleanup(record)
     assert not source.exists()
+
+
+def recovery_backend(tmp_path, states):
+    engine = backend(tmp_path)
+    record = job(tmp_path)
+    record["status"] = "succeeded"
+    service = record["snapshot"]["manifest"]["services"]["web"]
+    for name in states:
+        if name != "web":
+            record["snapshot"]["manifest"]["services"][name] = copy.deepcopy(service)
+            record["execution"]["images"][name] = DIGEST
+            record["execution"]["ports"][name] = 20000 + len(record["execution"]["ports"])
+    baseline = engine._docker
+    engine.health_calls = []
+    engine._health_service = lambda job, name, deadline: engine.health_calls.append(name)
+
+    def docker(args, **kwargs):
+        if args[:2] == ["container", "inspect"]:
+            engine.calls.append(args)
+            values = []
+            for identifier in args[2:]:
+                name = identifier.removeprefix("awesome-abc123-")
+                if name not in states:
+                    raise DeployError("MISSING_CONTAINER", "missing")
+                svc = record["snapshot"]["manifest"]["services"][name]
+                values.append(
+                    {
+                        "Name": "/" + identifier,
+                        "Image": DIGEST,
+                        "Config": {"Labels": engine._labels(record), "User": "65532:65532", "Image": DIGEST},
+                        "HostConfig": {
+                            "RestartPolicy": {"Name": "no"},
+                            "ReadonlyRootfs": True,
+                            "PortBindings": {
+                                str(svc["port"]) + "/tcp": [
+                                    {
+                                        "HostIp": "127.0.0.1",
+                                        "HostPort": str(record["execution"]["ports"][name]),
+                                    }
+                                ]
+                            },
+                        },
+                        "NetworkSettings": {"Networks": {"owned-internal": {}}},
+                        "State": {"Running": states[name], "Paused": False, "Restarting": False},
+                        "Mounts": [],
+                    }
+                )
+            return json.dumps(values)
+        if args[:2] == ["network", "inspect"]:
+            engine.calls.append(args)
+            return json.dumps(
+                [{"Name": name, "Internal": True, "Labels": engine._labels(record)} for name in args[2:]]
+            )
+        if args[:2] == ["container", "start"]:
+            engine.calls.append(args)
+            states[args[-1].removeprefix("awesome-abc123-")] = True
+            return ""
+        return baseline(args, **kwargs)
+
+    engine._docker = docker
+    record["execution"]["networks"] = ["owned-internal"]
+    return engine, record
+
+
+def test_recovery_restarts_legacy_no_policy_in_dependency_order_without_deployment(tmp_path):
+    engine, record = recovery_backend(tmp_path, {"web": False, "api": False})
+    record["snapshot"]["manifest"]["services"]["web"]["dependsOn"] = {"api": "healthy"}
+    engine.preflight = lambda: (_ for _ in ()).throw(AssertionError("full build admission is not recovery"))
+    result = engine.recover_active(record)
+    starts = [args[-1] for args in engine.calls if args[:2] == ["container", "start"]]
+    assert starts == ["awesome-abc123-api", "awesome-abc123-web"]
+    assert result["restarted"] == ["api", "web"]
+    assert engine.health_calls == ["api", "web"]
+    assert not any(
+        args[0] in {"pull", "buildx"} or args[1:2] in [["create"], ["rm"]] for args in engine.calls
+    )
+
+
+def test_recovery_running_containers_skip_start_and_health(tmp_path):
+    engine, record = recovery_backend(tmp_path, {"web": True})
+    assert engine.recover_active(record) == {"restarted": []}
+    assert engine.health_calls == []
+    assert not any(args[:2] == ["container", "start"] for args in engine.calls)
+
+
+@pytest.mark.parametrize("change", ["missing", "image", "port", "owner", "released", "failed"])
+def test_recovery_refuses_missing_or_changed_release_without_recreating(tmp_path, change):
+    engine, record = recovery_backend(tmp_path, {"web": False})
+    before = engine._docker
+
+    def docker(args, **kwargs):
+        if args[:2] == ["container", "inspect"]:
+            if change == "missing":
+                raise DeployError("MISSING", "container absent")
+            rows = json.loads(before(args, **kwargs))
+            if change == "image":
+                rows[0]["Image"] = "sha256:" + "f" * 64
+            if change == "port":
+                rows[0]["HostConfig"]["PortBindings"]["8080/tcp"][0]["HostPort"] = "29999"
+            if change == "owner":
+                rows[0]["Config"]["Labels"]["awesome.job"] = "foreign"
+            return json.dumps(rows)
+        return before(args, **kwargs)
+
+    engine._docker = docker
+    if change == "released":
+        record["execution"]["resources_released"] = True
+    if change == "failed":
+        record["status"] = "failed"
+    with pytest.raises(DeployError):
+        engine.recover_active(record)
+    assert not any(args[:2] in [["container", "start"], ["container", "create"]] for args in engine.calls)
+
+
+def test_recovery_rechecks_running_health_after_previous_attempt_failed(tmp_path):
+    engine, record = recovery_backend(tmp_path, {"web": True})
+    record["execution"]["active_recovery"] = {"retry_health": True}
+    assert engine.recover_active(record) == {"restarted": []}
+    assert engine.health_calls == ["web"]
+    assert not any(args[:2] == ["container", "start"] for args in engine.calls)

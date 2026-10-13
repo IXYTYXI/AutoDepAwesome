@@ -1,6 +1,9 @@
 import importlib.machinery
 import importlib.util
+import json
 from pathlib import Path
+import ssl
+from types import SimpleNamespace
 
 import pytest
 
@@ -89,6 +92,8 @@ def setup_state(tmp_path):
     module.STATE.mkdir()
     module.NGINX_DIR.mkdir()
     module.run = lambda args, **kwargs: ""
+    # These journal/config tests stub host TLS; probe behavior has separate tests below.
+    module.probe_routes = lambda req: None
     old = request(release="old")
     module.publish(old)
     return module
@@ -117,7 +122,12 @@ def test_probe_failure_rolls_back_durable_previous_route(tmp_path):
     module = setup_state(tmp_path)
     old = module.config_path("demo").read_text()
     module.publish(request())
-    module.probe_routes = lambda req: (_ for _ in ()).throw(RuntimeError("wrong upstream"))
+
+    def probe(req):
+        if req["release"] == "new":
+            raise RuntimeError("wrong upstream")
+
+    module.probe_routes = probe
     with pytest.raises(RuntimeError, match="wrong upstream"):
         module.verify(request("verify"))
     assert module.config_path("demo").read_text() == old
@@ -238,3 +248,209 @@ def test_acme_directory_remains_traversable_under_worker_umask(tmp_path, monkeyp
         os.umask(previous)
     assert stat.S_IMODE(module.WEBROOT.stat().st_mode) == 0o755
     assert stat.S_IMODE(module.STATE.stat().st_mode) == 0o700
+
+
+def probing_gateway(tmp_path, outcomes):
+    """Replace only host TLS and clock; exercise actual log correlation/retry code."""
+    module = helper()
+    module.CONFIG = {"base_domain": "example.com"}
+    module.PROBE_LOG = tmp_path / "probes.log"
+    clock = SimpleNamespace(now=0.0)
+    delayed_rows = []
+
+    def write_row(row):
+        with module.PROBE_LOG.open("a") as log:
+            log.write(json.dumps(row) + "\n")
+
+    def advance(seconds):
+        clock.now += seconds
+        for delivery, row in list(delayed_rows):
+            if delivery <= clock.now:
+                write_row(row)
+                delayed_rows.remove((delivery, row))
+
+    module.time = SimpleNamespace(
+        monotonic=lambda: clock.now,
+        sleep=advance,
+    )
+    attempts = []
+
+    class Connection:
+        def __init__(self, host, timeout, context):
+            self.host, self.timeout = host, timeout
+            self.closed = False
+            attempts.append(self)
+
+        def request(self, method, path, headers):
+            assert method == "GET"
+            assert headers["Connection"] == "close"
+            self.path = path.split("?", 1)[0]
+            self.token = headers["X-Awesome-Probe"]
+            assert path.endswith("?__awesome_probe=" + self.token)
+
+        def getresponse(self):
+            advance(0.01)
+            outcome = outcomes[min(len(attempts) - 1, len(outcomes) - 1)]
+            if isinstance(outcome, Exception):
+                raise outcome
+            row = {
+                "probe": self.token,
+                "host": self.host,
+                "uri": self.path,
+                "upstream": "127.0.0.1:20001",
+                "status": 200,
+            }
+            if callable(outcome):
+                row.update(outcome(self, attempts))
+            else:
+                row.update(outcome)
+            delay = row.pop("log_delay", 0)
+            if delay:
+                delayed_rows.append((clock.now + delay, row))
+            else:
+                write_row(row)
+            return SimpleNamespace(status=200)
+
+        def close(self):
+            self.closed = True
+
+    module.LocalHTTPS = Connection
+    return module, clock, attempts
+
+
+def test_tls_probe_reconnects_after_old_worker_upstream(tmp_path):
+    module, clock, attempts = probing_gateway(tmp_path, [{"upstream": "127.0.0.1:20000"}, {}])
+    module.probe_routes(request())
+    assert len(attempts) == 2
+    assert len({attempt.token for attempt in attempts}) == 2
+    assert all(attempt.closed for attempt in attempts)
+    assert clock.now < 30
+
+
+def test_tls_probe_accepts_delayed_current_invocation_log_after_reconnecting(tmp_path):
+    module, clock, attempts = probing_gateway(tmp_path, [{"log_delay": 0.5}])
+    module.probe_routes(request())
+    assert len(attempts) >= 2
+    assert 0.5 <= clock.now < 1
+    assert len({attempt.token for attempt in attempts}) == len(attempts)
+    assert all(attempt.closed for attempt in attempts)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ConnectionRefusedError("reloading"), TimeoutError("TLS handshake"), ssl.SSLError("reload handshake")],
+)
+def test_tls_probe_retries_transient_connection_failure(tmp_path, error):
+    module, clock, attempts = probing_gateway(tmp_path, [error, {}])
+    module.probe_routes(request())
+    assert len(attempts) == 2
+    assert attempts[0].token != attempts[1].token
+    assert all(attempt.closed for attempt in attempts)
+    assert clock.now < 30
+
+
+def test_tls_probe_stops_retrying_old_workers_at_total_deadline(tmp_path):
+    module, clock, attempts = probing_gateway(tmp_path, [{"upstream": "127.0.0.1:20000"}])
+    with pytest.raises(RuntimeError, match="TLS probe"):
+        module.probe_routes(request())
+    assert len(attempts) > 1
+    assert 29 <= clock.now <= 30.1
+    assert all(0 < attempt.timeout <= 10 for attempt in attempts)
+    assert all(attempt.closed for attempt in attempts)
+
+
+@pytest.mark.parametrize(
+    "bad_row",
+    [
+        {"uri": "/another-route"},
+        {"status": 503},
+        {"status": 201},
+        {"host": "other.example.com"},
+    ],
+)
+def test_tls_probe_does_not_accept_wrong_request_log_fields(tmp_path, bad_row):
+    module, clock, attempts = probing_gateway(tmp_path, [bad_row])
+    with pytest.raises(RuntimeError, match="TLS probe"):
+        module.probe_routes(request())
+    assert len(attempts) > 1
+    assert clock.now <= 30.1
+
+
+def test_tls_probe_does_not_accept_prior_attempt_token(tmp_path):
+    def stale_token(connection, attempts):
+        return {"probe": attempts[0].token, "uri": attempts[0].path}
+
+    module, clock, attempts = probing_gateway(tmp_path, [{"upstream": "127.0.0.1:20000"}, stale_token])
+    with pytest.raises(RuntimeError, match="TLS probe"):
+        module.probe_routes(request())
+    assert len(attempts) > 1
+    assert clock.now <= 30.1
+
+
+def test_tls_probe_total_deadline_is_shared_across_routes(tmp_path):
+    module, clock, attempts = probing_gateway(tmp_path, [{"upstream": "127.0.0.1:20000"}])
+    req = request()
+    req["routes"].append({"path": "/other", "match": "exact", "service": "web", "stripPrefix": False})
+    with pytest.raises(RuntimeError, match="TLS probe"):
+        module.probe_routes(req)
+    assert len({attempt.path for attempt in attempts}) == 2
+    assert 29 <= clock.now <= 30.1
+
+
+def test_tls_probe_confirms_each_routes_own_upstream(tmp_path):
+    def outcome(connection, attempts):
+        if connection.path == "/api":
+            return {"upstream": "127.0.0.1:20002"}
+        return {"upstream": "127.0.0.1:20000" if len(attempts) == 1 else "127.0.0.1:20001"}
+
+    module, clock, attempts = probing_gateway(tmp_path, [outcome])
+    req = request()
+    req["ports"]["api"] = 20002
+    req["routes"].append({"path": "/api", "match": "exact", "service": "api", "stripPrefix": False})
+    module.probe_routes(req)
+    assert len(attempts) == 3
+    assert sum(attempt.path == "/api" for attempt in attempts) == 1
+    assert all(attempt.closed for attempt in attempts)
+
+
+def test_rollback_confirms_previous_upstream_before_clearing_journal(tmp_path):
+    module = setup_state(tmp_path)
+    previous_config = module.config_path("demo").read_text()
+    module.publish(request())
+    seen = []
+
+    def probe(previous):
+        assert module.config_path("demo").read_text() == previous_config
+        state = module.read_state("demo")
+        assert state["current"]["release"] == "new"
+        assert state["pending"]["release"] == "new"
+        seen.append(previous["release"])
+
+    module.probe_routes = probe
+    module.rollback(request("rollback"))
+    assert seen == ["old"]
+    assert module.read_state("demo")["pending"] is None
+
+
+def test_failed_rollback_probe_retains_journal_for_retry(tmp_path):
+    module = setup_state(tmp_path)
+    previous_config = module.config_path("demo").read_text()
+    module.publish(request())
+    module.probe_routes = lambda req: (_ for _ in ()).throw(RuntimeError("old upstream not ready"))
+    with pytest.raises(RuntimeError, match="old upstream not ready"):
+        module.rollback(request("rollback"))
+    state = module.read_state("demo")
+    assert state["current"]["release"] == "new"
+    assert state["pending"]["release"] == "new"
+    assert module.config_path("demo").read_text() == previous_config
+    module.probe_routes = lambda req: None
+    assert module.rollback(request("rollback"))["rolled_back"] is True
+    assert module.read_state("demo")["current"]["release"] == "old"
+
+
+def test_idempotent_rollback_rechecks_existing_previous_upstream(tmp_path):
+    module = setup_state(tmp_path)
+    module.probe_routes = lambda req: (_ for _ in ()).throw(RuntimeError("previous upstream absent"))
+    with pytest.raises(RuntimeError, match="previous upstream absent"):
+        module.rollback(request("rollback"))
+    assert module.read_state("demo")["current"]["release"] == "old"
