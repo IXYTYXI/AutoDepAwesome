@@ -1,23 +1,28 @@
 """HTTP submission is durable and quick; only the worker executes deployments."""
 
+import asyncio
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, StrictStr
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .auth import verify_credentials
+from .ai_advice import AdviceService
 from .config import Settings
+from .diagnostics import ERROR_CODES, PHASE_LABELS, localize_error, localize_event
 from .errors import DeployError
 from .manifest import load_manifest, schema_document
 from .source import validate_ref, validate_repository
 from .store import Store
 
 STATIC = Path(__file__).parent / "static"
+ANALYSIS_POLL_WAIT = 8.0
 
 
 class Submission(BaseModel):
@@ -33,10 +38,41 @@ class Preflight(BaseModel):
     manifest: StrictStr
 
 
+class AnalysisRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+def advice_context(job):
+    """Only fixed diagnostic text and public platform rules may leave this server."""
+    raw = job.get("error") or {}
+    code = raw.get("code")
+    safe_error = localize_error({**raw, "code": code if code in ERROR_CODES else "UNKNOWN_ERROR"})
+    return {
+        "failure": {
+            "code": safe_error["code"],
+            "phase": PHASE_LABELS.get(job.get("phase"), "未知阶段"),
+            "summary": safe_error["message"],
+            "field": safe_error.get("path", ""),
+            "suggested_steps": safe_error["steps"],
+        },
+        "platform_rules": [
+            "仓库根目录必须包含 UTF-8 的 awesome.yaml，大小不超过 256 KiB，schemaVersion 为 1。",
+            "当前仅支持无状态 Web 服务，服务必须为 HTTP 服务；桌面应用不能直接作为 Web 服务部署。",
+            "构建命令默认不能访问网络；基础镜像由平台获取并固定摘要。",
+            "不支持数据库、持久卷、后台任务或任意宿主机访问。",
+            "应用以非 root 用户运行，根文件系统只读，必须监听 0.0.0.0 和清单指定的端口。",
+            "healthcheck.path 应返回成功状态；路由可通过 stripPrefix 去除指定前缀。",
+            "更新时旧版本与候选版本同时占用配额；不得绕过身份检查或直接删除保留资源。",
+        ],
+        "evidence_scope": "仅提供标准化错误摘要，未发送仓库内容、原始日志或环境变量；具体项目事实尚待核实。",
+    }
+
+
 def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
     store = store or Store(settings)
     app = FastAPI(title="Awesome Deploy", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store = store
+    app.state.advice = AdviceService(settings)
     public = urlsplit(settings.public_url)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[public.hostname or "127.0.0.1"])
     basic = HTTPBasic(auto_error=False)
@@ -94,13 +130,26 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
     async def deployment_error(request, error):
         code = error.code
         status = (
-            404
+            429
+            if code in {"AI_BUSY", "AI_RATE_LIMITED"}
+            else 504
+            if code == "AI_TIMEOUT"
+            else 503
+            if code.startswith("AI_")
+            else 409
+            if code == "DIAGNOSIS_NOT_AVAILABLE"
+            else 404
             if code == "NOT_FOUND"
             else 409
             if any(x in code for x in ("CONFLICT", "EXISTS", "BUSY", "CAPACITY", "EXHAUSTED", "RECOVERY"))
             else 422
         )
-        return JSONResponse({"error": error.as_dict()}, status_code=status)
+        return JSONResponse({"error": localize_error(error.as_dict())}, status_code=status)
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_error(request, error):
+        # Pydantic errors can include the supplied values. Never echo them.
+        return JSONResponse({"error": localize_error({"code": "INVALID_REQUEST"})}, status_code=422)
 
     def public_job(job):
         data = job["input"]
@@ -116,7 +165,7 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
             "url": f"https://{data['subdomain']}.{settings.base_domain}"
             if job["status"] == "succeeded"
             else None,
-            "error": job.get("error"),
+            "error": localize_error(job.get("error"), job["phase"]),
             "createdAt": job.get("created_at"),
         }
 
@@ -146,6 +195,7 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
             "customEgress": False,
             "buildNetwork": settings.build_network,
             "baseDomain": settings.base_domain,
+            "aiAdvice": {"configured": app.state.advice.configured},
         }
 
     @app.get("/api/v1/openapi.json", dependencies=[Depends(authenticated)])
@@ -194,7 +244,20 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
     @app.get("/api/v1/deployments/{job_id}/events", dependencies=[Depends(authenticated)])
     def events(job_id: str):
         store.get(job_id)
-        return {"items": store.events(job_id)}
+        return {"items": [localize_event(event) for event in store.events(job_id)]}
+
+    @app.post("/api/v1/deployments/{job_id}/analyze", dependencies=[Depends(write_access)])
+    async def analyze(job_id: str, body: AnalysisRequest):
+        job = store.get(job_id)
+        if job["status"] not in {"failed", "recovery_required"} or not job.get("error"):
+            raise DeployError("DIAGNOSIS_NOT_AVAILABLE", "只有失败或需要恢复的任务可以分析。")
+        try:
+            return await asyncio.wait_for(
+                app.state.advice.analyze(advice_context(job)), timeout=ANALYSIS_POLL_WAIT,
+            )
+        except TimeoutError:
+            # AdviceService shields and coalesces the provider task across short polls.
+            return JSONResponse({"status": "pending"}, status_code=202, headers={"Retry-After": "1"})
 
     @app.get("/api/v1/apps", dependencies=[Depends(authenticated)])
     def apps():

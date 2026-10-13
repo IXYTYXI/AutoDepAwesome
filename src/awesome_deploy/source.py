@@ -222,13 +222,18 @@ class GitSource:
             staging.mkdir(mode=0o700)
             self._extract(archive_path, staging)
             manifest_path = staging / "awesome.yaml"
-            if not manifest_path.is_file() or manifest_path.stat().st_size > MAX_MANIFEST_BYTES:
-                raise DeployError("INVALID_MANIFEST", "Repository must contain an awesome.yaml within its size limit.", "awesome.yaml")
+            if not manifest_path.is_file():
+                raise DeployError("INVALID_MANIFEST", "Repository root must contain an awesome.yaml file.",
+                                  "awesome.yaml", reason="MANIFEST_MISSING")
+            if manifest_path.stat().st_size > MAX_MANIFEST_BYTES:
+                raise DeployError("INVALID_MANIFEST", "Manifest exceeds the 256 KiB size limit.",
+                                  "awesome.yaml", reason="MANIFEST_TOO_LARGE")
             try:
                 manifest = load_manifest(manifest_path.read_text(encoding="utf-8"), self.settings,
                                          previous=execution.get("previous_manifest"))
             except UnicodeError as exc:
-                raise DeployError("INVALID_MANIFEST", "awesome.yaml must contain UTF-8 text.", "awesome.yaml") from exc
+                raise DeployError("INVALID_MANIFEST", "awesome.yaml must contain UTF-8 text.",
+                                  "awesome.yaml", reason="MANIFEST_ENCODING") from exc
             if manifest["app"]["subdomain"] != inputs["subdomain"]:
                 raise DeployError("SUBDOMAIN_MISMATCH", "Requested subdomain does not match awesome.yaml.", "app.subdomain")
             self._check_build_paths(staging, manifest)

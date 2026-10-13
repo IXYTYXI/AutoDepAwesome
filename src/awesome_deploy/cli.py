@@ -13,7 +13,7 @@ import time
 from urllib.parse import urlsplit
 
 from .auth import initialize_credentials
-from .config import Settings
+from .config import Settings, validate_ai_settings
 from .errors import DeployError
 
 
@@ -29,13 +29,17 @@ def load_settings(path: Path | None) -> Settings:
             raise DeployError("INVALID_CONFIG", "无法读取运维配置 JSON。") from exc
     if not isinstance(values, dict) or set(values) - {f.name for f in dataclasses.fields(Settings)}:
         raise DeployError("INVALID_CONFIG", "运维配置包含未知字段或不是对象。")
-    for key in ("state_dir", "auth_file", "rootlesskit_socket"):
+    for key in ("state_dir", "auth_file", "rootlesskit_socket", "ai_api_key_file"):
         if key in values and values[key] is not None:
             try:
                 candidate = Path(values[key]).expanduser()
             except TypeError as exc:
                 raise DeployError("INVALID_CONFIG", f"{key} 必须是路径。") from exc
-            values[key] = (base / candidate).resolve() if not candidate.is_absolute() else candidate
+            if key == "ai_api_key_file":
+                # Preserve the final path component so O_NOFOLLOW can reject symlinks.
+                values[key] = Path(os.path.abspath(base / candidate))
+            else:
+                values[key] = (base / candidate).resolve() if not candidate.is_absolute() else candidate
     if "state_dir" not in values:
         values["state_dir"] = base / ".state"
     for key in ("git_hosts", "gateway_command", "reserved_names", "banned_words"):
@@ -51,6 +55,7 @@ def load_settings(path: Path | None) -> Settings:
         values["auth_file"] = values["state_dir"] / "admin.json"
     try:
         settings = Settings(**values)
+        validate_ai_settings(settings)
         integers = (
             "listen_port",
             "port_start",
@@ -96,7 +101,7 @@ def load_settings(path: Path | None) -> Settings:
         if not isinstance(settings.docker_host, str) or not settings.docker_host.startswith("unix:///"):
             raise ValueError("local rootless Docker socket required")
     except (TypeError, ValueError) as exc:
-        raise DeployError("INVALID_CONFIG", "运维配置中的域名、URL、端口、资源限制或构建网络无效。") from exc
+        raise DeployError("INVALID_CONFIG", "运维配置中的域名、URL、端口、资源限制、构建网络或 AI 配置无效。") from exc
     return settings
 
 

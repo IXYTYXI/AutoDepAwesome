@@ -23,5 +23,9 @@
   "runtime_user": "65532:65532",
   "gateway_command": ["sudo", "-n", "/usr/local/libexec/awesome-gateway"],
   "auth_file": "/var/lib/awesome-deploy/admin.json",
-  "admin_user": "operator"
+  "admin_user": "operator",
+  "ai_base_url": null,
+  "ai_model": "",
+  "ai_api_key_file": null,
+  "ai_reasoning_effort": null
 }
