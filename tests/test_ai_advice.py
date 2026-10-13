@@ -66,6 +66,7 @@ def test_chat_request_is_explicit_bounded_and_data_only(configured):
         assert request.headers["Authorization"] == "Bearer " + SECRET
         body = json.loads(request.content)
         assert body["model"] == configured.ai_model
+        assert body["stream"] is True
         assert body["max_tokens"] <= 1200
         assert "reasoning_effort" not in body
         assert "max_completion_tokens" not in body
@@ -223,6 +224,140 @@ class ChunkStream(httpx.AsyncByteStream):
     async def __aiter__(self):
         for _ in range(4):
             yield b" " * 9000
+
+
+class SSEStream(httpx.AsyncByteStream):
+    def __init__(self, chunks):
+        self.chunks = chunks
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            yield chunk
+
+
+def sse_event(content=None, *, finish=None, index=0, **delta):
+    if content is not None:
+        delta["content"] = content
+    payload = {"choices": [{"index": index, "delta": delta, "finish_reason": finish}]}
+    return b"data: " + json.dumps(payload, ensure_ascii=False).encode() + b"\n\n"
+
+
+def sse_response(*chunks):
+    return httpx.Response(200, headers={"Content-Type": "text/event-stream; charset=utf-8"},
+                          stream=SSEStream(chunks))
+
+
+@pytest.mark.parametrize("separator", [b"\n", b"\r\n", b"\r"])
+def test_sse_text_survives_utf8_and_line_splits_and_ignores_non_content(configured, separator):
+    payload = (
+        b"\xef\xbb\xbf: keepalive\n\nevent: message\nid: 1\n"
+        + sse_event(role="assistant", reasoning_content=SECRET,
+                    tool_calls=[{"function": {"name": "do_not_execute", "arguments": SECRET}}])
+        + sse_event("ignored alternate answer", index=1)
+        + sse_event("请检查") + sse_event("配置文件。")
+        + b'data: {"choices": [], "usage": {"completion_tokens": 3}}\n\n'
+        + b"data: [DONE]\n\n"
+    ).replace(b"\n", separator)
+    def response(request):
+        return sse_response(*(payload[index:index + 1] for index in range(len(payload))))
+
+    result = asyncio.run(service(configured, response).analyze(CONTEXT))
+    assert result == {"text": "请检查配置文件。", "model": "example-model", "cached": False}
+
+
+def test_sse_supports_multiline_data_events(configured):
+    event = (b'data: {"choices": [\n'
+             b'data: {"index": 0, "delta": {"content": "check configuration"}}\n'
+             b'data: ]}\n\ndata: [DONE]\n\n')
+    result = asyncio.run(service(configured, lambda request: sse_response(event)).analyze(CONTEXT))
+    assert result["text"] == "check configuration"
+
+
+def test_sse_stop_reason_completes_without_waiting_for_disconnect(configured):
+    class RemainsOpen(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield sse_event("检查配置。") + sse_event(finish="stop")
+            pytest.fail("finish_reason=stop must complete without waiting for another packet")
+
+    def response(request):
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, stream=RemainsOpen())
+
+    assert asyncio.run(service(configured, response).analyze(CONTEXT))["text"] == "检查配置。"
+
+
+@pytest.mark.parametrize("payload", [
+    sse_event("unfinished advice"),
+    b"data: [DONE]\n\n",
+    sse_event("partial answer") + b'data: {"choices": [',
+    b'data: {"choices": [{"index": 0, "delta": {"content": []}}]}\n\ndata: [DONE]\n\n',
+    b'data: {"choices": false}\n\ndata: [DONE]\n\n',
+    b'data: {"choices": [{"index": 0, "delta": []}]}\n\ndata: [DONE]\n\n',
+    b'data: {"error": {"message": "private provider body"}}\n\n',
+    b'data: {"choices": [{"delta": {"content": "\xff"}}]}\n\ndata: [DONE]\n\n',
+    sse_event("truncated", finish="length") + b"data: [DONE]\n\n",
+    sse_event("blocked", finish="content_filter") + b"data: [DONE]\n\n",
+    sse_event(finish="tool_calls", tool_calls=[{"function": {"name": "unsafe"}}]),
+], ids=["missing-termination", "empty", "truncated-event", "non-text", "invalid-choices", "invalid-delta",
+        "provider-error", "invalid-utf8", "length-truncation", "content-filter", "tool-result"])
+def test_sse_invalid_or_incomplete_outputs_are_rejected(configured, payload):
+    run_error(service(configured, lambda request: sse_response(payload)), "AI_RESPONSE_INVALID")
+
+
+def test_sse_has_separate_total_budget_from_json_response_limit(configured):
+    keepalive = b":" + b"x" * 1000 + b"\n\n"
+    result = asyncio.run(service(configured, lambda request: sse_response(
+        *(keepalive for _ in range(40)), sse_event("检查配置。"), b"data: [DONE]\n\n"
+    )).analyze(CONTEXT))
+    assert result["text"] == "检查配置。"
+
+
+@pytest.mark.parametrize("chunks", [
+    [b":" + b"x" * (32 * 1024 + 1), b"\n\n", sse_event("valid"), b"data: [DONE]\n\n"],
+    [b'data: {"choices": [' + b" " * 17000 + b"\ndata: " + b" " * 17000 + b"]}\n\n",
+     sse_event("valid"), b"data: [DONE]\n\n"],
+    [b":" + b"x" * 8000 + b"\n\n"] * 263 + [sse_event("valid"), b"data: [DONE]\n\n"],
+], ids=["single-line", "single-event", "total-wire"])
+def test_sse_enforces_line_event_and_total_limits(configured, chunks):
+    run_error(service(configured, lambda request: sse_response(*chunks)), "AI_RESPONSE_INVALID")
+
+
+def test_sse_enforces_cumulative_utf8_text_limit(configured):
+    run_error(service(configured, lambda request: sse_response(
+        sse_event("中" * 2000), sse_event("中" * 2001), b"data: [DONE]\n\n"
+    )), "AI_RESPONSE_INVALID")
+    result = asyncio.run(service(configured, lambda request: sse_response(
+        sse_event("中" * 2000), sse_event("中" * 2000), b"data: [DONE]\n\n"
+    )).analyze(CONTEXT))
+    assert len(result["text"].encode()) == 12000
+
+
+def test_sse_key_echo_split_between_events_is_rejected_and_failure_cached(configured):
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return sse_response(sse_event("检查 " + SECRET[:6]), sse_event(SECRET[6:]), b"data: [DONE]\n\n")
+
+    instance = service(configured, handle)
+    run_error(instance, "AI_RESPONSE_INVALID")
+    run_error(instance, "AI_RESPONSE_INVALID", poll_only=True)
+    assert len(calls) == 1
+
+
+def test_sse_keepalive_cannot_extend_total_deadline(configured, monkeypatch):
+    from awesome_deploy import ai_advice
+
+    class Keepalive(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            while True:
+                yield b": keepalive\n\n"
+                await asyncio.sleep(0.005)
+
+    monkeypatch.setattr(ai_advice, "REQUEST_TIMEOUT", 0.02)
+    def response(request):
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, stream=Keepalive())
+
+    run_error(service(configured, response), "AI_TIMEOUT")
 
 
 def test_stream_limit_uses_actual_body_size_without_content_length(configured):
