@@ -1,0 +1,27 @@
+[Unit]
+Description=Awesome Deploy management API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=awesome
+Group=awesome
+WorkingDirectory=/opt/awesome-deploy
+ExecStart=/opt/awesome-deploy/.venv/bin/awesome-deploy --config /etc/awesome-deploy/config.json serve
+Restart=on-failure
+RestartSec=5
+UMask=0077
+StateDirectory=awesome-deploy
+StateDirectoryMode=0700
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/awesome-deploy
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

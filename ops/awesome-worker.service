@@ -1,0 +1,29 @@
+[Unit]
+Description=Awesome Deploy durable deployment worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=awesome
+Group=awesome
+WorkingDirectory=/opt/awesome-deploy
+Environment=XDG_RUNTIME_DIR=/run/user/1001
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/opt/awesome-deploy/.venv/bin/awesome-deploy --config /etc/awesome-deploy/config.json check
+ExecStart=/opt/awesome-deploy/.venv/bin/awesome-deploy --config /etc/awesome-deploy/config.json worker
+Restart=on-failure
+RestartSec=15
+UMask=0077
+StateDirectory=awesome-deploy
+StateDirectoryMode=0700
+# The narrow sudo gateway helper needs privilege elevation and writes root-owned Nginx state.
+# Do not add NoNewPrivileges=true, ProtectSystem=full/strict or PrivateUsers=true here.
+# Rootless Docker is a separate user service belonging to the SAME numeric UID.
+KillMode=control-group
+TimeoutStopSec=420
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

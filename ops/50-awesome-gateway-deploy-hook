@@ -1,0 +1,4 @@
+#!/bin/sh
+# Install root:root 0755 in /etc/letsencrypt/renewal-hooks/deploy/.
+# Called by the existing root-owned Certbot renewal job, never through worker sudo.
+exec /usr/local/libexec/awesome-gateway --reload

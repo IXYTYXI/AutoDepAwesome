@@ -1,0 +1,14 @@
+/var/log/nginx/awesome-gateway-probes.log {
+    daily
+    rotate 7
+    size 10M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 root root
+    sharedscripts
+    postrotate
+        /usr/sbin/nginx -s reopen
+    endscript
+}

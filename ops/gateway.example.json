@@ -1,0 +1,7 @@
+{
+  "base_domain": "awesome.guanghexinzhi.cn",
+  "email": "replace-with-your-acme-email@example.com",
+  "allowed_uid": 1001,
+  "port_start": 20000,
+  "port_end": 29999
+}

@@ -1,0 +1,579 @@
+#!/usr/bin/python3 -I
+"""Install root:root 0755 at /usr/local/libexec/awesome-gateway; never sudo a checkout.
+
+No shell or package imports. Request protocol contains no paths or command arguments.
+All gateway mutations, verification and certificate renewal share one global flock.
+"""
+
+import fcntl
+import http.client
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import socket
+import ssl
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+CONFIG_FILE = Path("/etc/awesome-deploy/gateway.json")
+STATE = Path("/var/lib/awesome-gateway")
+NGINX_DIR = Path("/etc/nginx/conf.d")
+WEBROOT = Path("/var/www/awesome-acme")
+PROBE_LOG = Path("/var/log/nginx/awesome-gateway-probes.log")
+NGINX = "/usr/sbin/nginx"
+CERTBOT = "/usr/bin/certbot"
+CONFIG = {}
+LOCK_FD = None
+NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,5}[a-z0-9])?")
+RELEASE = re.compile(r"[a-zA-Z0-9_-]{1,64}")
+SERVICE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+PATH = re.compile(r"/(?:[a-zA-Z0-9_.~-]+(?:/[a-zA-Z0-9_.~-]+)*/?)?")
+
+
+def run(args, timeout=180):
+    # Output files avoid pipe deadlock; commands and input are always fixed by this helper.
+    with tempfile.TemporaryFile() as out:
+        process = subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=out,
+            stderr=out,
+            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"},
+            start_new_session=True,
+            pass_fds=(LOCK_FD,) if LOCK_FD is not None else (),
+        )
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            import signal
+
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            raise RuntimeError("Gateway command timed out")
+        out.seek(0)
+        output = out.read(32768).decode(errors="replace")
+        if process.returncode:
+            raise RuntimeError(f"{Path(args[0]).name} failed: {output}")
+        return output
+
+
+def atomic(path, content):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".awesome-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def validate(req):
+    if req == {"op": "check"}:
+        return req
+    if not isinstance(req, dict) or set(req) != {
+        "op",
+        "base_domain",
+        "subdomain",
+        "release",
+        "previous_release",
+        "ports",
+        "routes",
+    }:
+        raise ValueError("Invalid gateway request fields")
+    if req["base_domain"] != CONFIG["base_domain"]:
+        raise ValueError("Platform base domain differs from root-owned gateway configuration")
+    if req["op"] not in {"ensure_https", "publish", "verify", "rollback", "verify_status"}:
+        raise ValueError("Unknown gateway operation")
+    if not isinstance(req["subdomain"], str) or not NAME.fullmatch(req["subdomain"]):
+        raise ValueError("Invalid subdomain")
+    if not isinstance(req["release"], str) or not RELEASE.fullmatch(req["release"]):
+        raise ValueError("Invalid release")
+    if req["previous_release"] is not None and (
+        not isinstance(req["previous_release"], str) or not RELEASE.fullmatch(req["previous_release"])
+    ):
+        raise ValueError("Invalid previous release")
+    ports = req["ports"]
+    if not isinstance(ports, dict) or not 1 <= len(ports) <= 16:
+        raise ValueError("Invalid ports")
+    for name, port in ports.items():
+        if (
+            not SERVICE.fullmatch(name)
+            or type(port) is not int
+            or not CONFIG["port_start"] <= port <= CONFIG["port_end"]
+        ):
+            raise ValueError("Invalid candidate port")
+    if len(set(ports.values())) != len(ports):
+        raise ValueError("Candidate ports must be distinct")
+    if not isinstance(req["routes"], list) or not 1 <= len(req["routes"]) <= 32:
+        raise ValueError("Invalid routes")
+    seen = set()
+    for route in req["routes"]:
+        if not isinstance(route, dict) or set(route) != {"path", "match", "service", "stripPrefix"}:
+            raise ValueError("Invalid route fields")
+        path = route["path"]
+        if (
+            not isinstance(path, str)
+            or not PATH.fullmatch(path)
+            or any(part in {".", ".."} for part in path.split("/"))
+            or path.rstrip("/") == "/.well-known/acme-challenge"
+            or path.startswith("/.well-known/acme-challenge/")
+        ):
+            raise ValueError("Invalid or reserved route path")
+        if (
+            route["match"] not in {"exact", "prefix"}
+            or type(route["stripPrefix"]) is not bool
+            or route["service"] not in ports
+        ):
+            raise ValueError("Invalid route target")
+        key = (path.rstrip("/") or "/", route["match"])
+        if key in seen:
+            raise ValueError("Duplicate routes")
+        seen.add(key)
+    return req
+
+
+def config_path(subdomain):
+    return NGINX_DIR / f"awesome-app-{subdomain}.conf"
+
+
+def read_state(subdomain):
+    path = STATE / f"{subdomain}.json"
+    return json.loads(path.read_text()) if path.exists() else {"current": None, "pending": None}
+
+
+def save_state(subdomain, state):
+    atomic(STATE / f"{subdomain}.json", json.dumps(state, sort_keys=True))
+
+
+def host(req):
+    return f"{req['subdomain']}.{CONFIG['base_domain']}"
+
+
+def render(req, tls):
+    validate(req)
+    domain = host(req)
+    acme = f"location ^~ /.well-known/acme-challenge/ {{ root {WEBROOT}; default_type text/plain; }}"
+    http = f"server {{ listen 80; server_name {domain}; {acme} location / {{ return 404; }} }}\n"
+    if not tls:
+        return http
+    http = f"server {{ listen 80; server_name {domain}; {acme} location / {{ return 308 https://{domain}$request_uri; }} }}\n"
+    lines = [
+        http,
+        "server {",
+        f"listen 443 ssl; server_name {domain};",
+        f"ssl_certificate /etc/letsencrypt/live/{domain}/fullchain.pem;",
+        f"ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;",
+        "ssl_protocols TLSv1.2 TLSv1.3;",
+        f"access_log {PROBE_LOG} awesome_probe if=$awesome_is_probe;",
+        acme,
+    ]
+    # Explicit exact locations beat overlapping prefix rules; normalize trailing slash.
+    exact_paths = {r["path"] for r in req["routes"] if r["match"] == "exact"}
+    for route in req["routes"]:
+        path = route["path"]
+        port = req["ports"][route["service"]]
+        if route["match"] == "exact":
+            locations = [("=", path)]
+        elif path == "/":
+            locations = [("^~", "/")]
+        else:
+            base = path.rstrip("/")
+            locations = ([] if base in exact_paths or path.endswith("/") else [("=", base)]) + [
+                ("^~", base + "/")
+            ]
+        for modifier, location in locations:
+            suffix = "/" if route["stripPrefix"] else ""
+            lines.extend(
+                [
+                    f"location {modifier} {location} {{",
+                    f"proxy_pass http://127.0.0.1:{port}{suffix};",
+                    "proxy_set_header Host $host;",
+                    "proxy_set_header X-Forwarded-Proto https;",
+                    "proxy_set_header X-Forwarded-For $remote_addr;",
+                    "proxy_connect_timeout 5s;",
+                    "proxy_read_timeout 60s;",
+                    "proxy_redirect off;",
+                    "}",
+                ]
+            )
+    if not any(r["path"] == "/" and r["match"] == "prefix" for r in req["routes"]):
+        lines.append("location / { return 404; }")
+    lines.append("}\n")
+    return "\n".join(lines)
+
+
+def apply_config(subdomain, content):
+    path = config_path(subdomain)
+    old = path.read_text() if path.exists() else None
+    if content is None:
+        path.unlink(missing_ok=True)
+    else:
+        atomic(path, content)
+    try:
+        run([NGINX, "-t"])
+        run([NGINX, "-s", "reload"])
+    except Exception as error:
+        if old is None:
+            path.unlink(missing_ok=True)
+        else:
+            atomic(path, old)
+        try:
+            run([NGINX, "-t"])
+            run([NGINX, "-s", "reload"])
+        except Exception as restore_error:
+            raise RuntimeError(
+                f"Gateway update failed AND restoring prior config failed: {restore_error}"
+            ) from error
+        raise
+
+
+def publish(req):
+    validate(req)
+    state = read_state(req["subdomain"])
+    if state["current"] and state["current"]["release"] == req["release"]:
+        if (
+            state["current"]["request"]["ports"] != req["ports"]
+            or state["current"]["request"]["routes"] != req["routes"]
+        ):
+            raise ValueError("Release already exists with different route content")
+        return {"release": req["release"]}
+    current_release = state["current"]["release"] if state["current"] else None
+    if current_release != req["previous_release"]:
+        raise ValueError("Gateway active release differs from the reserved previous release")
+    prior_content = (
+        config_path(req["subdomain"]).read_text() if config_path(req["subdomain"]).exists() else None
+    )
+    # Write-ahead state preserves old config even if process dies during replacement/reload.
+    pending = state.get("pending")
+    if pending and pending["release"] == req["release"]:
+        previous, prior_content = pending["previous"], pending["previous_config"]
+    else:
+        previous = state["current"]
+    state["pending"] = {"release": req["release"], "previous": previous, "previous_config": prior_content}
+    save_state(req["subdomain"], state)
+    content = render(req, tls=True)
+    apply_config(req["subdomain"], content)
+    state["current"] = {"release": req["release"], "request": req, "verified": False}
+    save_state(req["subdomain"], state)
+    return {"release": req["release"]}
+
+
+def rollback(req):
+    validate(req)
+    state = read_state(req["subdomain"])
+    pending = state.get("pending")
+    current_release = state["current"]["release"] if state["current"] else None
+    if not pending or pending["release"] != req["release"]:
+        if current_release == req["previous_release"]:
+            return {"rolled_back": True}
+        raise ValueError("Refusing stale release rollback or missing rollback journal")
+    previous_release = pending["previous"]["release"] if pending["previous"] else None
+    if previous_release != req["previous_release"] or current_release not in {
+        req["release"],
+        previous_release,
+    }:
+        raise ValueError("Rollback journal differs from expected prior release")
+    apply_config(req["subdomain"], pending["previous_config"])
+    state["current"], state["pending"] = pending["previous"], None
+    save_state(req["subdomain"], state)
+    return {"rolled_back": True}
+
+
+class DeadlineSocket:
+    """A socket facade whose file reads share one absolute deadline (including slow headers)."""
+
+    def __init__(self, sock, deadline):
+        self.sock, self.deadline = sock, deadline
+
+    def _remaining(self):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("HTTP probe total deadline exceeded")
+        self.sock.settimeout(remaining)
+
+    def sendall(self, data):
+        self._remaining()
+        return self.sock.sendall(data)
+
+    def makefile(self, mode):
+        import io
+
+        owner = self
+
+        class Reader(io.RawIOBase):
+            def readable(self):
+                return True
+
+            def readinto(self, buffer):
+                owner._remaining()
+                return owner.sock.recv_into(buffer)
+
+        return io.BufferedReader(Reader())
+
+    def close(self):
+        self.sock.close()
+
+
+class LocalHTTPS(http.client.HTTPSConnection):
+    def connect(self):
+        deadline = time.monotonic() + self.timeout
+        sock = socket.create_connection(("127.0.0.1", 443), self.timeout)
+        sock.settimeout(max(0.01, deadline - time.monotonic()))
+        self.sock = DeadlineSocket(self._context.wrap_socket(sock, server_hostname=self.host), deadline)
+
+
+def probe_paths(req):
+    paths = []
+    for route in req["routes"]:
+        if route["match"] == "exact":
+            paths.append(route["path"])
+            continue
+        for _ in range(10):
+            path = route["path"].rstrip("/") + "/" + secrets.token_hex(16)
+            overlaps = [
+                other
+                for other in req["routes"]
+                if other is not route
+                and (
+                    other["match"] == "exact"
+                    and path == other["path"]
+                    or other["match"] == "prefix"
+                    and len(other["path"]) > len(route["path"])
+                    and (
+                        path == other["path"].rstrip("/") or path.startswith(other["path"].rstrip("/") + "/")
+                    )
+                )
+            ]
+            if not overlaps:
+                paths.append(path)
+                break
+        else:
+            raise RuntimeError("Cannot choose an unambiguous route probe path")
+    return paths
+
+
+def probe_routes(req):
+    expected = {}
+    for route, path in zip(req["routes"], probe_paths(req)):
+        token = secrets.token_hex(32)
+        # A random header must appear in the root-owned Nginx access log with the actual upstream.
+        expected[token] = f"127.0.0.1:{req['ports'][route['service']]}"
+        connection = LocalHTTPS(host(req), timeout=10, context=ssl.create_default_context())
+        try:
+            connection.request(
+                "GET",
+                path + "?__awesome_probe=" + token,
+                headers={"X-Awesome-Probe": token, "Connection": "close", "Cache-Control": "no-cache"},
+            )
+            response = connection.getresponse()
+            if not 200 <= response.status < 500:
+                raise RuntimeError(f"TLS route returned {response.status}")
+        finally:
+            connection.close()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        found = {}
+        if PROBE_LOG.exists():
+            with PROBE_LOG.open("rb") as stream:
+                stream.seek(max(0, PROBE_LOG.stat().st_size - 1024 * 1024))
+                for line in stream:
+                    try:
+                        row = json.loads(line)
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if row.get("probe") in expected and row.get("host") == host(req):
+                        found[row["probe"]] = row.get("upstream")
+        if all(found.get(token) == upstream for token, upstream in expected.items()):
+            return
+        time.sleep(0.1)
+    raise RuntimeError("TLS probe did not correlate to every expected candidate upstream")
+
+
+def verify(req):
+    validate(req)
+    state = read_state(req["subdomain"])
+    current = state["current"]
+    if (
+        not current
+        or current["release"] != req["release"]
+        or current["request"]["routes"] != req["routes"]
+        or current["request"]["ports"] != req["ports"]
+    ):
+        raise ValueError("Requested release is not the current route")
+    try:
+        probe_routes(req)
+    except Exception:
+        rollback(req)
+        raise
+    state["current"]["verified"] = True
+    save_state(req["subdomain"], state)
+    return {"verified": True, "release": req["release"]}
+
+
+def ensure_https(req):
+    validate(req)
+    path = config_path(req["subdomain"])
+    if not path.exists():
+        apply_config(req["subdomain"], render(req, tls=False))
+    renewal_config = Path("/etc/letsencrypt/renewal") / (host(req) + ".conf")
+    if renewal_config.exists() and re.search(
+        r"^\s*(deploy_hook|renew_hook|pre_hook|post_hook)\s*=\s*\S", renewal_config.read_text(), re.M
+    ):
+        raise ValueError("Managed certificate has a custom renewal hook; operator reconciliation is required")
+    run(
+        [
+            CERTBOT,
+            "certonly",
+            "--no-directory-hooks",
+            "--webroot",
+            "--webroot-path",
+            str(WEBROOT),
+            "--domain",
+            host(req),
+            "--non-interactive",
+            "--agree-tos",
+            "--email",
+            CONFIG["email"],
+            "--keep-until-expiring",
+        ],
+        timeout=300,
+    )
+    if not (Path("/etc/letsencrypt/live") / host(req) / "fullchain.pem").exists():
+        raise RuntimeError("Certbot did not produce the required certificate")
+    # Certonly suppresses directory hooks to avoid reacquiring this lock. Reload here
+    # so an interrupted later publish cannot leave an old in-memory certificate.
+    reload_gateway()
+    return {"certificate": host(req)}
+
+
+def reload_gateway():
+    # Existing certbot.timer invokes a root-owned directory deploy hook using --reload.
+    run([NGINX, "-t"])
+    run([NGINX, "-s", "reload"])
+    return {"reloaded": True}
+
+
+def trusted(path, directory=False):
+    info = path.lstat()
+    if info.st_uid != 0 or info.st_mode & 0o022 or stat.S_ISLNK(info.st_mode):
+        raise ValueError(f"Root-owned non-writable path required: {path}")
+    if directory and not stat.S_ISDIR(info.st_mode):
+        raise ValueError("Expected root-owned directory")
+
+
+def prepare_directories():
+    # mkdir mode is filtered by the worker's inherited 0077 umask. Explicitly set
+    # modes only after checking ownership and refusing symlinks.
+    trusted(WEBROOT.parent, directory=True)
+    if not WEBROOT.parent.stat().st_mode & 0o001:
+        raise ValueError("ACME webroot parent must be traversable by the Nginx worker")
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    trusted(STATE, directory=True)
+    STATE.chmod(0o700)
+    WEBROOT.mkdir(mode=0o755, exist_ok=True)
+    trusted(WEBROOT, directory=True)
+    WEBROOT.chmod(0o755)
+
+
+def main():
+    global CONFIG, LOCK_FD
+    if os.geteuid() != 0:
+        raise ValueError("Gateway helper must run as root")
+    trusted(Path(__file__))
+    for parent in (Path("/usr/local/libexec"), CONFIG_FILE.parent, NGINX_DIR):
+        trusted(parent, directory=True)
+    trusted(CONFIG_FILE)
+    CONFIG = json.loads(CONFIG_FILE.read_text())
+    if set(CONFIG) != {"base_domain", "email", "allowed_uid", "port_start", "port_end"}:
+        raise ValueError("Invalid root-owned gateway configuration")
+    if (
+        not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{1,251}[a-z0-9])?", CONFIG["base_domain"])
+        or ".." in CONFIG["base_domain"]
+    ):
+        raise ValueError("Invalid configured domain")
+    if not isinstance(CONFIG["email"], str) or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", CONFIG["email"]):
+        raise ValueError("Invalid ACME email")
+    if type(CONFIG["allowed_uid"]) is not int or CONFIG["allowed_uid"] <= 0:
+        raise ValueError("A nonroot worker UID is required")
+    if (
+        any(type(CONFIG[key]) is not int for key in ("port_start", "port_end"))
+        or not 1024 <= CONFIG["port_start"] <= CONFIG["port_end"] <= 65535
+    ):
+        raise ValueError("Invalid configured port range")
+    renewal = sys.argv[1:] == ["--reload"] and os.getuid() == 0 and not os.environ.get("SUDO_UID")
+    if sys.argv[1:] and not renewal:
+        raise ValueError("No command-line arguments are accepted from the worker")
+    if not renewal and os.environ.get("SUDO_UID") != str(CONFIG["allowed_uid"]):
+        raise ValueError("Caller is not the configured worker UID")
+    prepare_directories()
+    lock_fd = os.open("/run/lock/awesome-gateway.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    lock_info = os.fstat(lock_fd)
+    if lock_info.st_uid != 0 or lock_info.st_mode & 0o022:
+        os.close(lock_fd)
+        raise ValueError("Gateway lock must be owned by root and not writable by other users")
+    with os.fdopen(lock_fd, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        LOCK_FD = lock.fileno()
+        if renewal:
+            print(json.dumps({"ok": True, **reload_gateway()}))
+            return
+        payload = sys.stdin.buffer.read(65537)
+        if len(payload) > 65536:
+            raise ValueError("Gateway request too large")
+        req = json.loads(payload)
+        validate(req)
+        if req["op"] == "check":
+            for binary in (NGINX, CERTBOT):
+                trusted(Path(binary))
+                if not os.access(binary, os.X_OK):
+                    raise ValueError("Nginx and Certbot must be installed")
+            run([NGINX, "-t"])
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "ready": True,
+                        "base_domain": CONFIG["base_domain"],
+                        "port_start": CONFIG["port_start"],
+                        "port_end": CONFIG["port_end"],
+                    }
+                )
+            )
+            return
+        logging = (
+            'log_format awesome_probe escape=json \'{"probe":"$http_x_awesome_probe",'
+            '"upstream":"$upstream_addr","host":"$host","uri":"$uri","status":$status}\';\n'
+            'map $http_x_awesome_probe $awesome_is_probe { default 0; "~^[0-9a-f]{64}$" 1; }\n'
+        )
+        log_config = NGINX_DIR / "00-awesome-probes.conf"
+        if log_config.exists() and log_config.read_text() != logging:
+            raise ValueError("Managed logging configuration has been modified")
+        if not log_config.exists():
+            atomic(log_config, logging)
+        if req["op"] == "verify_status":
+            result = {"current": read_state(req["subdomain"])["current"]}
+        else:
+            result = globals()[req["op"]](req)
+        print(json.dumps({"ok": True, **result}))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": str(exc)[:8192]}))
+        sys.exit(1)

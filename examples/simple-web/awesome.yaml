@@ -1,0 +1,25 @@
+schemaVersion: 1
+app:
+  name: 演示网页
+  description: 单服务网页和同域名 API
+  subdomain: demo
+services:
+  web:
+    kind: web
+    build:
+      context: .
+      dockerfile: Dockerfile
+    port: 8080
+    env:
+      PORT: "8080"
+    resources:
+      cpu: 0.5
+      memoryMiB: 128
+    healthcheck:
+      type: http
+      path: /healthz
+routes:
+  - path: /
+    match: prefix
+    service: web
+    stripPrefix: false
