@@ -46,7 +46,7 @@ class FakeRunner:
                         item.linkname = content[1]
                         archive.addfile(item)
                     else:
-                        blob = content.encode()
+                        blob = content if isinstance(content, bytes) else content.encode()
                         item.size = len(blob)
                         archive.addfile(item, io.BytesIO(blob))
         return subprocess.CompletedProcess(args, 0, b"", b"")
@@ -176,6 +176,24 @@ def test_missing_or_symlink_build_files_rejected(tmp_path):
     with pytest.raises(DeployError) as raised:
         GitSource(Settings(state_dir=tmp_path), runner=FakeRunner({"awesome.yaml": manifest()})).prepare(job(), lambda p: None)
     assert raised.value.code == "INVALID_BUILD_PATH"
+
+
+@pytest.mark.parametrize("files,reason", [
+    ({"backend/Dockerfile": "FROM scratch\n"}, "MANIFEST_MISSING"),
+    ({"awesome.yaml/nested": "a directory instead of a file"}, "MANIFEST_MISSING"),
+    ({"awesome.yaml": "#" * (256 * 1024 + 1)}, "MANIFEST_TOO_LARGE"),
+    ({"awesome.yaml": b"\xff\xfeinvalid"}, "MANIFEST_ENCODING"),
+])
+def test_manifest_source_failure_identifies_missing_size_or_encoding(tmp_path, files, reason):
+    from awesome_deploy.source import GitSource
+    persisted = {}
+    with pytest.raises(DeployError) as raised:
+        GitSource(Settings(state_dir=tmp_path), runner=FakeRunner(files)).prepare(job(), persisted.update)
+    assert raised.value.code == "INVALID_MANIFEST"
+    assert raised.value.as_dict().get("reason") == reason
+    assert raised.value.path == "awesome.yaml"
+    assert persisted == {"commit": SHA}
+    assert not (tmp_path / "sources/job-1.partial").exists()
 
 
 def test_job_id_cannot_escape_state(tmp_path):

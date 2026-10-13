@@ -167,6 +167,7 @@ secretRefs:
 | `GET /api/v1/deployments` | 最近部署任务 |
 | `GET /api/v1/deployments/{id}` | 状态、阶段、commit、结果 URL 和安全错误 |
 | `GET /api/v1/deployments/{id}/events` | 有界事件信息，不返回原始命令输出 |
+| `POST /api/v1/deployments/{id}/analyze` | 请求体 `{}`，按需生成 AI 修改建议；仅失败或需恢复的任务 |
 | `GET /api/v1/apps` | 应用和当前版本，应用主键字段为 `id` |
 | `POST /api/v1/preflight` | 请求体 `{"manifest":"YAML 字符串"}` |
 | `GET /api/v1/schema` | 当前 JSON Schema |
@@ -199,11 +200,35 @@ curl --user operator --fail-with-body \
 
 状态为 `queued`、`running`、`succeeded`、`failed` 或 `recovery_required`，`phase` 单独表示执行阶段。仅 `succeeded` 表示发布并验证完成。该服务没有多租户权限系统、审批流、删除应用 API 或恢复操作 API；`recovery_required` 需要运维诊断，不能直接修改数据库标志来跳过回滚和资源确认。
 
+## 中文诊断与可选 AI 建议
+
+失败页面展示中文原因、问题位置和逐步修改建议；历史英文错误和事件也在读取时转换，数据库中的原始记录保持不变。`error.code` 保持机器可读，新增 `title`、`steps`；字段位置中的动态服务名和变量名会归一为 `*`。新任务的 `INVALID_MANIFEST` 使用可选 `reason` 区分 `MANIFEST_MISSING`、`MANIFEST_TOO_LARGE` 和 `MANIFEST_ENCODING`。无法细分的旧记录仍明确显示“缺失或超限”。
+
+AI 默认关闭。运维可在配置 JSON 中同时设置以下三项（不要将实际密钥写入 JSON、仓库或命令参数）：
+
+```json
+{
+  "ai_base_url": "https://provider.example/v1",
+  "ai_model": "provider-model-id",
+  "ai_api_key_file": "/etc/awesome-deploy/ai-api-key"
+}
+```
+
+`ai_base_url` 是 Chat Completions API 的父路径，平台向其末尾追加 `/chat/completions`；若服务提供 `/v1/chat/completions`，应配置含 `/v1` 的 Base URL。`ai_model` 必须使用服务实际接受的模型 ID，不要把界面展示名称或推理强度直接拼进去。可选 `ai_reasoning_effort` 默认 `null`；仅当供应商支持时设置为其支持的强度（如 `ultra`）。启用强度时发送 `reasoning_effort` 和 `max_completion_tokens: 8192`，否则发送 `max_tokens: 1200`。
+
+密钥文件须为与服务进程同 UID 的普通文件，权限为 `0400` 或 `0600`，存放在可信且他人不可写的目录中；文件自身不能为符号链接。它只包含一行密钥，最大 8192 字节。通过运维安全输入流程创建，应用配置不会读取环境中的 API Key；重启 API 服务后生效。文件权限不等于加密，root 和同账号进程仍可读取。
+
+用户点击“AI 分析修改建议”才调用。发送内容仅为标准化中文诊断、失败阶段、归一字段位置和静态平台规则；不会发送仓库地址、源码、完整 manifest、环境变量、秘密或原始日志。AI 无执行工具、不会修改仓库或触发部署，建议必须结合实际项目核对。页面以纯文本显示输出。
+
+接口使用 HTTPS，不跟随重定向，不继承代理环境变量；连接时限 10 秒、总调用时限 240 秒，响应最多 32 KiB，建议文本最多 12000 UTF-8 字节。相同摘要的结果在单进程内缓存 5 分钟（最多 32 项），并发相同请求合并，其他调用至少间隔 20 秒。供应商失败结果缓存 20 秒，避免轮询触发重复调用。单次 HTTP 等待最多 8 秒，未完成返回 `202 {"status":"pending"}` 和 `Retry-After: 1`；页面自动用 `{"poll":true}` 轮询（只查询已有任务与缓存，结果过期后必须手动重试，不会自动触发新的供应商请求），期间保持内置建议可见。接口未配置、密钥不可读、超时、限流或返回异常时，内置建议仍可使用；不会改变部署状态。
+
 ## 验证
 
 ```sh
 .venv/bin/pytest -q
 .venv/bin/ruff check src tests
+# 可选的前端交互回归，使用 Node 内置测试器，无需安装 npm 依赖。
+node --test tests/ui_diagnostics.test.cjs
 ```
 
 测试使用临时目录、模拟 Docker/网关和本机进程验证协议、错误处理、资源归属与崩溃恢复；端口冲突测试需要允许本机 loopback bind。测试不会通过 SSH 部署，也不代表真实 Docker/Nginx/Certbot 链路已验收。目标机的单服务、多服务、故障回滚、续期与资源上限验证步骤见 [运维指南](ops/README.md)。

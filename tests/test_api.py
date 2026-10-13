@@ -85,3 +85,13 @@ def test_schema_and_readiness_do_not_fake_live_deployment(client):
     assert capabilities["approval"] is False
     assert capabilities["serviceKinds"] == ["web"]
     assert client.get("/", auth=AUTH).status_code == 200
+
+
+def test_ai_platform_rules_describe_persistent_storage_without_unsafe_recovery_advice():
+    from awesome_deploy.api import advice_context
+    job = {"status": "failed", "phase": "storage_handoff", "error": {"code": "STORAGE_MISSING"}}
+    context = advice_context(job)
+    rules = " ".join(context["platform_rules"])
+    assert "services" in rules and "/data" in rules and "Recreate" in rules
+    assert "仅支持无状态" not in rules and "不支持数据库、持久卷" not in rules
+    assert "不会" in rules and "数据" in rules

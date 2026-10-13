@@ -8,6 +8,6 @@
 <label for="subdomain">域名前缀</label><div class="domain"><input id="subdomain" name="subdomain" required pattern="[a-z0-9]([a-z0-9-]{0,5}[a-z0-9])?" maxlength="7" placeholder="demo"><span id="domain-suffix">.awesome.guanghexinzhi.cn</span></div><small>1–7 个字符，与仓库清单一致。</small>
 <label for="appId">更新已有应用</label><select id="appId" name="appId"><option value="">创建新应用</option></select><small>更新时选择原应用，保留域名归属。</small>
 <button type="submit" id="submit">开始部署</button><p class="hint">当前直接执行部署，尚未接入审核和审批。</p><p id="form-error" role="alert"></p></form>
-<details><summary>配置准备与支持范围</summary><p>首版支持无状态 Web 服务及前端/API 路径分流；数据库、持久卷和后台任务尚未开放。构建命令默认不访问网络，基础镜像由平台获取。</p><p>让开发 AI 根据<a href="/api/v1/schema" target="_blank" rel="noopener">字段规范</a>生成配置，并确认端口和健康检查路径。秘密值通过运维安全入口配置，不填写在仓库或此表单。</p></details></section>
+<details><summary>配置准备与支持范围</summary><p>支持 Web 服务、前端/API 路径分流及每服务独立的 /data 持久卷；使用持久卷的更新会短暂停机。数据库服务类型和后台任务尚未开放。构建命令默认不访问网络，基础镜像由平台获取。</p><p>让开发 AI 根据<a href="/api/v1/schema" target="_blank" rel="noopener">字段规范</a>生成配置，并确认端口和健康检查路径。秘密值通过运维安全入口配置，不填写在仓库或此表单。</p></details></section>
 <section class="panel"><div class="section-head"><h2>部署进度</h2><button type="button" class="secondary" id="refresh">刷新列表</button></div><div id="current" aria-live="polite"><p class="empty">提交项目后，执行进度会显示在这里。</p></div><pre id="events" aria-label="执行日志"></pre><h3>最近部署</h3><div id="history"></div></section></div>
 <footer>只有健康检查、HTTPS 和实际发布版本验证通过，部署才会标记成功。</footer></main></body></html>
