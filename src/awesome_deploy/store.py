@@ -311,6 +311,9 @@ class Store:
 
     @staticmethod
     def _available(port):
+        # Advisory probe only: closing this socket does not reserve the OS port.
+        # Database reservations and the worker lock coordinate platform jobs, not
+        # external processes; a later Docker bind failure follows failure cleanup.
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             sock.bind(("127.0.0.1", port))

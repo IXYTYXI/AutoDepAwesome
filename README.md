@@ -37,7 +37,7 @@ python3 -m venv .venv
 
 默认管理入口为 `http://127.0.0.1:8088`，用户 `operator`，密码在 `init` 时交互设置。用户名须为 1–128 位 ASCII 字符且不能含空格或冒号，密码须为 12–1024 位可打印 ASCII 字符。`init` 不覆盖已有凭证。远程管理必须按运维指南配置 HTTPS 反向代理；服务始终只监听 `127.0.0.1`。
 
-本地网页和配置校验不要求 Docker。运行实际部署 worker 前必须在目标 Linux 主机执行：
+本地网页/API 和配置校验不要求 Docker，相关测试已在 macOS 运行通过；实际部署后端及运维模板要求 Linux，原生 Windows 尚未验证。运行实际部署 worker 前必须在目标 Linux 主机执行：
 
 ```sh
 /opt/awesome-deploy/.venv/bin/awesome-deploy --config /etc/awesome-deploy/config.json check
@@ -102,10 +102,12 @@ routes:
 | 依赖 | `dependsOn: {api: healthy}` 或 `started`；拒绝缺失依赖和循环依赖 |
 | 健康检查 | HTTP 路径或容器内 exec 数组；支持 intervalSeconds、timeoutSeconds、retries、startPeriodSeconds |
 | 路由 | `exact`、`prefix` 与 `stripPrefix`；网关实际最多 32 条；支持规范字面路径，含点号（如 `/.well-known/security.txt`）；仅保留 `/.well-known/acme-challenge` 及其子路径；Schema 校验通过后仍须通过网关校验 |
-| 域名 | 前缀 1–7 位小写字母、数字、中划线，首尾不能为中划线；不能使用保留名称或禁词 |
+| 域名 | 前缀 1–7 位小写字母、数字、中划线，首尾不能为中划线；不能使用保留名称或包含禁词子串 |
 | 配额 | 默认总计 6 CPU、6144 MiB；更新时省略的资源字段继承同名服务旧配置，否则默认 0.5 CPU、512 MiB |
 | 网络与文件系统 | 服务运行在 internal bridge 网络；所有映射端口仅绑定 `127.0.0.1`；非 root、只读根目录，只有受限临时空间 |
 | 暂不支持 | 持久卷、主机挂载、数据库迁移、生命周期 hook、非 web worker、定制出站规则、构建秘密或 SSH agent |
+
+禁词采用保守的子串匹配，API 提交和 manifest 校验使用相同规则。例如 `mishit` 包含 `shit`，即使长度及字符合法也会被拒绝；目前没有正常词例外名单。
 
 `--network=none` 意味着 Dockerfile 的 RUN 中不能访问 npm/pip/apt 等外网；请使用已经包含依赖的基础镜像或仓库内已有构建产物。镜像声明持久卷或 ONBUILD 也会被拒绝。internal 依赖网络是双向网络，不是单向应用防火墙；容器共享主机内核，不能当作运行任意敌对代码的虚拟机隔离边界。
 

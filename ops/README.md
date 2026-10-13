@@ -34,6 +34,8 @@ sudo install -o root -g root -m 0755 ops/awesome-gateway /usr/local/libexec/awes
 
 `gateway.json` 的 `email` 必须替换为真实 ACME 联系邮箱。两个 JSON 的 `base_domain` 和端口范围须一致。网关固定使用 `/usr/sbin/nginx`、`/usr/bin/certbot`、`/etc/letsencrypt`、`/etc/nginx/conf.d`；helper 检查文件归属和可写权限，二进制路径也不能是符号链接。这些固定路径不由平台 `config.json` 覆盖，ACME 邮箱仅配置在 root 所有的 `gateway.json`。
 
+建议将配置的端口段专供平台使用。数据库预留及 worker 全局锁只协调平台任务；bind 探测后会关闭 socket，不能阻止外部进程在 Docker 实际绑定前抢占端口。绑定失败会进入候选版本清理，只有确认清理后才释放资源预留。
+
 ## 2. 专用 rootless Docker 和磁盘边界
 
 Docker daemon 与 worker 必须由**同一个非 root UID**运行，使用专属 Unix socket，例如 `unix:///run/user/1001/docker.sock`。socket 必须属于 worker，不能是 root 所有或任意用户可写。必须有 cgroup v2、CPU/内存/PID 配额支持和默认 seccomp；`docker info` 中相关 limit 标记必须实际启用，而不是只存在配置项。
@@ -102,6 +104,8 @@ printf '%s\n' '{"op":"check"}' | sudo -n /usr/local/libexec/awesome-gateway
 ```
 
 helper 将应用配置写为 `/etc/nginx/conf.d/awesome-app-<subdomain>.conf`，探针日志定义写为 `00-awesome-probes.conf`。这些名称由平台管理，不能与既有配置争用。每次路由替换先保存回滚日志，再进行 `nginx -t` 和 reload；失败会尝试恢复先前配置。
+
+`verify` 成功后会保留 `pending` 回滚日志，因为网关验证与 worker 的 SQLite 成功提交不是同一事务；如果在两者之间中断，恢复流程仍需该日志回退。数据库提交成功后，日志可以一直保留到下次 `publish` 覆盖。不要仅凭 `pending` 存在判断发布未完成，也不要手动清除；应结合数据库任务状态、当前版本指针及网关 `current.verified` 判断。
 
 ## 5. DNS、管理 HTTPS 与证书续期
 

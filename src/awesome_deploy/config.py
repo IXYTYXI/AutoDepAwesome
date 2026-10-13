@@ -39,6 +39,7 @@ class Settings:
         "ftp",
         "status",
     )
+    # API and manifest validation intentionally reject any matching substring.
     banned_words: tuple[str, ...] = ("fuck", "shit")
 
     @property

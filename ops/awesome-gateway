@@ -480,6 +480,10 @@ def verify(req):
     except Exception:
         rollback(req)
         raise
+    # Keep pending: helper verification and the worker's Store.finish() are not
+    # one atomic commit. A crash between them still needs this rollback journal.
+    # After a committed success it may remain until the next publish replaces it;
+    # its presence alone does not mean publication is unfinished.
     state["current"]["verified"] = True
     save_state(req["subdomain"], state)
     return {"verified": True, "release": req["release"]}
