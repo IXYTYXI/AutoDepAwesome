@@ -83,7 +83,9 @@ class Worker:
     def _recover_active(self, job, required=False):
         job = self.store.begin_active_recovery(job["id"], self.backend.recovery_boot_id())
         try:
-            result = self.backend.recover_active(job)
+            result = self.backend.recover_active(
+                job, lambda delta: self.store.checkpoint(job["id"], execution=delta)
+            )
         except Exception:
             self.store.finish_active_recovery(job["id"], success=False)
             self.store.event(

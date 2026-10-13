@@ -1,6 +1,6 @@
 # Linux 运维部署指南
 
-这些文件是部署模板和检查清单，尚未经过真实服务器联调。当前开发环境没有运行中的目标 Linux rootless Docker daemon、Nginx、Certbot；不要把单元测试或 `check` 成功当作 HTTPS 发布及续期已经验收。本阶段不包含审批、飞书多维表格建表和同步以及数据库迁移。
+这些文件是部署模板和检查清单，每次安装都须保留目标环境的实测记录。不要把单元测试或 `check` 成功当作 HTTPS 发布及续期已经验收。本阶段不包含审批、飞书多维表格建表和同步以及数据库迁移。
 
 ## 1. 固定账号、路径和配置
 
@@ -34,11 +34,19 @@ sudo install -o root -g root -m 0755 ops/awesome-gateway /usr/local/libexec/awes
 
 `gateway.json` 的 `email` 必须替换为真实 ACME 联系邮箱。两个 JSON 的 `base_domain` 和端口范围须一致。网关固定使用 `/usr/sbin/nginx`、`/usr/bin/certbot`、`/etc/letsencrypt`、`/etc/nginx/conf.d`；helper 检查文件归属和可写权限，二进制路径也不能是符号链接。这些固定路径不由平台 `config.json` 覆盖，ACME 邮箱仅配置在 root 所有的 `gateway.json`。
 
-建议将配置的端口段专供平台使用。数据库预留及 worker 全局锁只协调平台任务；bind 探测后会关闭 socket，不能阻止外部进程在 Docker 实际绑定前抢占端口。绑定失败会进入候选版本清理，只有确认清理后才释放资源预留。
+建议将配置的端口段专供平台使用。数据库预留及 worker 全局锁只协调平台任务；bind 探测后会关闭 socket，不能阻止外部进程在 RootlessKit 实际绑定前抢占端口。绑定失败会进入候选版本清理，只有确认清理后才释放资源预留。
 
 ## 2. 专用 rootless Docker 和磁盘边界
 
 Docker daemon 与 worker 必须由**同一个非 root UID**运行，使用专属 Unix socket，例如 `unix:///run/user/1001/docker.sock`。socket 必须属于 worker，不能是 root 所有或任意用户可写。必须有 cgroup v2、CPU/内存/PID 配额支持和默认 seccomp；`docker info` 中相关 limit 标记必须实际启用，而不是只存在配置项。
+
+从 0.1.2 起，隔离容器的本机入口由同一 UID 的 RootlessKit builtin 端口驱动提供。普通 Docker `--publish` 在仅连接 `--internal` 网络时不会建立实际主机端口，不能作为健康探测或 Nginx 上游。平台保留 internal 网络，直接将 `127.0.0.1:<预留端口>` 转发到受管容器 IPv4 和冻结服务端口；业务容器不新增外联网。
+
+默认 RootlessKit API 位于 Docker socket 同级目录的 `dockerd-rootless/api.sock`；非标准安装可设置配置项 `rootlesskit_socket`，相对路径按配置文件目录解析。API socket 须属于 worker，不能为 root 所有或 world-writable，端口驱动必须是 builtin。检查会失败关闭，不能通过更改业务网络来绕过。协议参见 [RootlessKit v3.2.0 API](https://raw.githubusercontent.com/rootless-containers/rootlesskit/v3.2.0/pkg/api/openapi.yaml)。
+
+端口创建意图与容器、网络身份先以 `confirmed=false` 写入任务 execution，确认转发存在后再保存 `confirmed=true`；重建已确认但缺失的转发也遵循这个顺序。未确认意图只能认领当前精确匹配的映射，不能重新发送创建请求；若映射暂未出现，清理须保留容器和预留资源，以免尚未完成的旧请求随后建立孤儿转发。进程恰在意图写入后、请求发送前退出，或在删除未确认映射后退出，也可能需要人工核验。
+
+RootlessKit 数字 ID 会重用，清理必须按当前完整目标匹配，先删除转发再删除容器/网络，最后释放预留资源。转发删除失败时保留资源等待恢复。诊断入口要检查 RootlessKit 映射、主机 localhost listener 和实际 HTTP 响应，不能只检查 Docker PortBindings。
 
 按照 [Docker 官方 rootless 安装指南](https://docs.docker.com/engine/security/rootless/) 准备用户命名空间、subuid/subgid 和用户级 daemon。需要开机维持用户服务时由管理员为该账号启用 linger；随后通过该账号的用户 systemd 管理 Docker。不要复用业务主机上承载特权工作负载的 daemon。
 

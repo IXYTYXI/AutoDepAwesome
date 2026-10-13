@@ -18,6 +18,7 @@ class Settings:
     build_timeout: int = 900
     health_timeout: int = 180
     docker_host: str = "unix:///run/user/1001/docker.sock"
+    rootlesskit_socket: Path | None = None
     docker_binary: str = "docker"
     build_network: str = "none"
     builder_name: str = "awesome-builder"

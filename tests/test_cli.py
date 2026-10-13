@@ -46,3 +46,20 @@ def test_invalid_host_configuration_rejected(tmp_path, config):
     f.write_text(json.dumps(config))
     with pytest.raises(DeployError):
         load_settings(f)
+
+
+def test_rootlesskit_socket_path_is_resolved_relative_to_config(tmp_path):
+    from awesome_deploy.cli import load_settings
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"rootlesskit_socket": "runtime/api.sock"}))
+    assert load_settings(path).rootlesskit_socket == tmp_path / "runtime" / "api.sock"
+
+
+def test_rootlesskit_socket_rejects_non_path_values(tmp_path):
+    from awesome_deploy.cli import load_settings
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"rootlesskit_socket": 123}))
+    with pytest.raises(DeployError):
+        load_settings(path)

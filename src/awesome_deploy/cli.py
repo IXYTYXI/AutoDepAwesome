@@ -29,7 +29,7 @@ def load_settings(path: Path | None) -> Settings:
             raise DeployError("INVALID_CONFIG", "无法读取运维配置 JSON。") from exc
     if not isinstance(values, dict) or set(values) - {f.name for f in dataclasses.fields(Settings)}:
         raise DeployError("INVALID_CONFIG", "运维配置包含未知字段或不是对象。")
-    for key in ("state_dir", "auth_file"):
+    for key in ("state_dir", "auth_file", "rootlesskit_socket"):
         if key in values and values[key] is not None:
             try:
                 candidate = Path(values[key]).expanduser()

@@ -7,6 +7,7 @@ with privileged workloads. No host networking, host mounts, build secrets or SSH
 
 import copy
 import http.client
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,7 @@ import time
 
 from .errors import DeployError
 from .gateway import Gateway
+from .port_forward import RootlessPortForwarder
 from .processes import run_command, http_status
 from .secrets_store import SecretStore
 
@@ -32,6 +34,7 @@ class DeploymentBackend:
     def __init__(self, settings):
         self.settings = settings
         self.gateway = Gateway(settings)
+        self.port_forwarder = RootlessPortForwarder(settings)
         self.lock_fd = None
         self.storage_root = None
 
@@ -74,7 +77,7 @@ class DeploymentBackend:
                 "HOST_UNSAFE", "Docker socket must be owned by the nonroot worker and not world-writable"
             )
 
-    def _runtime_preflight(self, timeout=120):
+    def _runtime_preflight(self, timeout=120, deadline=None):
         if not re.fullmatch(r"[1-9][0-9]*(?::[1-9][0-9]*)?", self.settings.runtime_user):
             raise DeployError("HOST_UNSAFE", "Runtime user must be a numeric nonroot UID and GID")
         self._check_socket()
@@ -96,6 +99,13 @@ class DeploymentBackend:
             )
         if not any("seccomp" in str(option) for option in options):
             raise DeployError("HOST_UNSAFE", "Docker default seccomp enforcement is required")
+        forward_timeout = min(5, timeout)
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DeployError("ACTIVE_RECOVERY_TIMEOUT", "Active recovery exceeded its time limit")
+            forward_timeout = min(forward_timeout, remaining)
+        self.port_forwarder.check(timeout=forward_timeout)
         return info
 
     def preflight(self):
@@ -462,8 +472,7 @@ class DeploymentBackend:
                 ["network", "create", "--driver", "bridge", "--internal", *self._label_flags(job), name]
             )
 
-    def start(self, job, checkpoint):
-        self.preflight()
+    def _service_networks(self, job):
         services = job["snapshot"]["manifest"]["services"]
         networks = {name: [f"aw-{job['id']}-s-{len(name)}-{name}"] for name in services}
         for name, service in services.items():
@@ -471,9 +480,166 @@ class DeploymentBackend:
                 edge = f"aw-{job['id']}-e-{len(name)}-{name}-{len(dependency)}-{dependency}"
                 networks[name].append(edge)
                 networks[dependency].append(edge)
+        return networks
+
+    @staticmethod
+    def _private_ipv4(value):
+        try:
+            address = ipaddress.IPv4Address(value)
+            return (
+                isinstance(value, str)
+                and str(address) == value
+                and any(
+                    address in ipaddress.IPv4Network(block)
+                    for block in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+                )
+            )
+        except (ValueError, TypeError):
+            return False
+
+    def _validate_forward_record(self, job, name, record):
+        services = job["snapshot"]["manifest"]["services"]
+        expected_networks = self._service_networks(job)
+        network = record.get("network") if isinstance(record, dict) else None
+        spec = record.get("spec") if isinstance(record, dict) else None
+        if (
+            name not in services
+            or not isinstance(record, dict)
+            or set(record) != {"container_id", "network", "spec", "confirmed"}
+            or type(record.get("confirmed")) is not bool
+            or not re.fullmatch(r"[0-9a-f]{64}", str(record.get("container_id", "")))
+            or not isinstance(network, dict)
+            or set(network) != {"name", "id"}
+            or network.get("name") != expected_networks[name][0]
+            or not re.fullmatch(r"[0-9a-f]{64}", str(network.get("id", "")))
+            or not set(expected_networks[name]).issubset(set(job["execution"].get("networks", [])))
+            or not isinstance(spec, dict)
+            or set(spec) != {"proto", "parentIP", "parentPort", "childIP", "childPort"}
+            or spec.get("proto") != "tcp4"
+            or spec.get("parentIP") != "127.0.0.1"
+            or type(spec.get("parentPort")) is not int
+            or spec["parentPort"] != job["execution"].get("ports", {}).get(name)
+            or not self.settings.port_start <= spec["parentPort"] <= self.settings.port_end
+            or type(spec.get("childPort")) is not int
+            or spec["childPort"] != services[name]["port"]
+            or not 1 <= spec["childPort"] <= 65535
+            or not self._private_ipv4(spec.get("childIP"))
+        ):
+            raise DeployError("PORT_FORWARD_IDENTITY", "Invalid persisted service forwarding identity")
+        return record
+
+    def _forward_identity(self, job, name, *, timeout=5, deadline=None):
+        """Derive an endpoint only from the running owned container and its frozen networks."""
+
+        def bounded():
+            if deadline is None:
+                return timeout
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DeployError("ACTIVE_RECOVERY_TIMEOUT", "Active recovery exceeded its time limit")
+            return min(timeout, remaining)
+
+        rows = json.loads(
+            self._docker(["container", "inspect", self._container(job, name)], timeout=bounded())
+        )
+        if not isinstance(rows, list) or len(rows) != 1:
+            raise DeployError("PORT_FORWARD_IDENTITY", "Ambiguous service container identity")
+        row = rows[0]
+        attached = row.get("NetworkSettings", {}).get("Networks") or {}
+        expected = self._service_networks(job)[name]
+        if (
+            row.get("Name") != "/" + self._container(job, name)
+            or not self._owned(row.get("Config", {}).get("Labels"), job)
+            or row.get("State", {}).get("Running") is not True
+            or any(row.get("State", {}).get(flag) for flag in ("Paused", "Restarting", "Dead"))
+            or row.get("HostConfig", {}).get("PortBindings") not in (None, {})
+            or set(attached) != set(expected)
+        ):
+            raise DeployError("PORT_FORWARD_IDENTITY", "Service container forwarding identity changed")
+        inspected = json.loads(self._docker(["network", "inspect", *sorted(attached)], timeout=bounded()))
+        if (
+            len(inspected) != len(attached)
+            or {network.get("Name") for network in inspected} != set(attached)
+            or any(
+                network.get("Internal") is not True
+                or network.get("Driver") != "bridge"
+                or not self._owned(network.get("Labels"), job)
+                or network.get("Id") != attached[network["Name"]].get("NetworkID")
+                for network in inspected
+            )
+        ):
+            raise DeployError(
+                "PORT_FORWARD_IDENTITY", "Service requires its recorded owned internal networks"
+            )
+        network = expected[0]
+        record = {
+            "confirmed": False,
+            "container_id": row.get("Id"),
+            "network": {"name": network, "id": attached[network].get("NetworkID")},
+            "spec": {
+                "proto": "tcp4",
+                "parentIP": "127.0.0.1",
+                "parentPort": job["execution"]["ports"][name],
+                "childIP": attached[network].get("IPAddress"),
+                "childPort": job["snapshot"]["manifest"]["services"][name]["port"],
+            },
+        }
+        return self._validate_forward_record(job, name, record)
+
+    @staticmethod
+    def _forward_target(record):
+        return {key: record[key] for key in ("container_id", "network", "spec")}
+
+    def _checkpoint_forward(self, job, name, forward, confirmed, checkpoint):
+        record = {**copy.deepcopy(forward), "confirmed": confirmed}
+        self._validate_forward_record(job, name, record)
+        forwards = copy.deepcopy(job["execution"].get("port_forwards", {}))
+        forwards[name] = record
+        checkpoint({"port_forwards": forwards})
+        # Failed durability must never make an in-memory confirmation look committed.
+        job["execution"]["port_forwards"] = forwards
+
+    def _reconcile_forward(self, job, name, forward, checkpoint, *, deadline=None):
+        def bounded():
+            if deadline is None:
+                return 5
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DeployError("ACTIVE_RECOVERY_TIMEOUT", "Active recovery exceeded its time limit")
+            return min(5, remaining)
+
+        forwards = job["execution"].get("port_forwards", {})
+        if not isinstance(forwards, dict):
+            raise DeployError("PORT_FORWARD_IDENTITY", "Invalid persisted forwarding intentions")
+        if name in forwards:
+            saved = forwards[name]
+            self._validate_forward_record(job, name, saved)
+            if self._forward_target(saved) != self._forward_target(forward):
+                raise DeployError("PORT_FORWARD_IDENTITY", "Refusing to change a recorded forward target")
+            try:
+                # An unconfirmed POST may still be running server-side. Never issue another one.
+                self.port_forwarder.ensure(forward["spec"], timeout=bounded(), create=False)
+            except DeployError as error:
+                if not saved["confirmed"] or error.code != "PORT_FORWARD_UNCONFIRMED":
+                    raise
+                # A previously confirmed mapping disappeared; journal its replacement before POST.
+            else:
+                if not saved["confirmed"]:
+                    self._checkpoint_forward(job, name, forward, True, checkpoint)
+                return
+        self._checkpoint_forward(job, name, forward, False, checkpoint)
+        self.port_forwarder.ensure(forward["spec"], timeout=bounded(), create=True)
+        self._checkpoint_forward(job, name, forward, True, checkpoint)
+
+    def start(self, job, checkpoint):
+        self.preflight()
+        services = job["snapshot"]["manifest"]["services"]
+        networks = self._service_networks(job)
         for network in sorted({n for group in networks.values() for n in group}):
             self._ensure_network(job, network)
-        checkpoint({"networks": sorted({n for group in networks.values() for n in group})})
+        network_names = sorted({n for group in networks.values() for n in group})
+        checkpoint({"networks": network_names})
+        job["execution"]["networks"] = network_names
         started = set()
         while len(started) < len(services):
             progress = False
@@ -506,6 +672,8 @@ class DeploymentBackend:
                 else:
                     self._create_container(job, name, service, image, networks[name])
                 self._docker(["container", "start", container_name])
+                forward = self._forward_identity(job, name)
+                self._reconcile_forward(job, name, forward, checkpoint)
                 started.add(name)
                 checkpoint({"started": sorted(started)})
                 progress = True
@@ -519,7 +687,7 @@ class DeploymentBackend:
         except OSError:
             return "unknown-boot"  # Periodic checks still work if the boot identifier is unavailable.
 
-    def recover_active(self, job):
+    def recover_active(self, job, checkpoint):
         """Start only existing frozen active containers; never rebuild, recreate or touch routes."""
         self._ids(job)
         if (
@@ -539,12 +707,13 @@ class DeploymentBackend:
             return min(10, remaining)
 
         # Existing containers need the runtime identity/resource guards, not a builder or build disk budget.
-        self._runtime_preflight(timeout=bounded())
+        self._runtime_preflight(timeout=bounded(), deadline=deadline)
         services = job["snapshot"]["manifest"]["services"]
         names = [self._container(job, name) for name in services]
         rows = json.loads(self._docker(["container", "inspect", *names], timeout=bounded()))
         containers = {row.get("Name", "").removeprefix("/"): row for row in rows}
         networks = set()
+        expected_networks = self._service_networks(job)
         for name, service in services.items():
             row = containers.get(self._container(job, name))
             if row is None:
@@ -553,24 +722,32 @@ class DeploymentBackend:
                 )
             config, host = row.get("Config", {}), row.get("HostConfig", {})
             image = job["execution"].get("images", {}).get(name, "")
-            expected_binding = {
-                str(service["port"]) + "/tcp": [
-                    {"HostIp": "127.0.0.1", "HostPort": str(job["execution"]["ports"][name])}
-                ]
-            }
+            forward = self._validate_forward_record(
+                job, name, job["execution"].get("port_forwards", {}).get(name)
+            )
+            attachments = row.get("NetworkSettings", {}).get("Networks") or {}
             attached = set(row.get("NetworkSettings", {}).get("Networks") or {})
             state = row.get("State", {})
+            if (
+                row.get("Id") != forward["container_id"]
+                or attachments.get(forward["network"]["name"], {}).get("NetworkID")
+                != forward["network"]["id"]
+                or state.get("Running")
+                and attachments.get(forward["network"]["name"], {}).get("IPAddress")
+                != forward["spec"]["childIP"]
+            ):
+                raise DeployError("PORT_FORWARD_IDENTITY", "Active service forwarding identity changed")
             if (
                 not self._owned(config.get("Labels"), job)
                 or not IMMUTABLE.fullmatch(image)
                 or not (row.get("Image") == image or "@sha256:" in image and config.get("Image") == image)
-                or host.get("PortBindings") != expected_binding
+                or host.get("PortBindings") not in (None, {})
                 or not re.fullmatch(r"[1-9][0-9]*(?::[1-9][0-9]*)?", config.get("User", ""))
                 or host.get("ReadonlyRootfs") is not True
                 or host.get("RestartPolicy", {}).get("Name", "no") not in {"no", ""}
                 or any(mount.get("Type") in {"bind", "volume"} for mount in row.get("Mounts", []))
-                or not attached
-                or not attached.issubset(set(job["execution"].get("networks", attached)))
+                or attached != set(expected_networks[name])
+                or not attached.issubset(set(job["execution"].get("networks", [])))
                 or state.get("Paused")
                 or state.get("Restarting")
                 or state.get("Dead")
@@ -585,7 +762,9 @@ class DeploymentBackend:
             len(inspected) != len(networks)
             or {row.get("Name") for row in inspected} != networks
             or any(
-                row.get("Internal") is not True or not self._owned(row.get("Labels"), job)
+                row.get("Internal") is not True
+                or row.get("Driver") != "bridge"
+                or not self._owned(row.get("Labels"), job)
                 for row in inspected
             )
         ):
@@ -593,7 +772,6 @@ class DeploymentBackend:
                 "ACTIVE_NETWORK_CHANGED", "Active containers require their owned internal networks"
             )
         completed, checked, restarted = set(), set(), []
-        retry_health = job["execution"].get("active_recovery", {}).get("retry_health", False)
         while len(completed) < len(services):
             progress = False
             for name, service in services.items():
@@ -604,19 +782,25 @@ class DeploymentBackend:
                 if not row.get("State", {}).get("Running"):
                     for dependency, condition in dependencies.items():
                         if condition == "healthy" and dependency not in checked:
+                            bounded()
                             self._health_service(job, dependency, deadline)
                             checked.add(dependency)
                     self._docker(["container", "start", self._container(job, name)], timeout=bounded())
                     restarted.append(name)
-                    self._health_service(job, name, deadline)
-                    checked.add(name)
-                elif retry_health and name not in checked:
-                    self._health_service(job, name, deadline)
-                    checked.add(name)
+                # Even a running container may have lost its RootlessKit mapping after restart.
+                # Reinspect after any start; never silently retarget an existing forwarding intent.
+                forward = self._forward_identity(job, name, timeout=min(5, bounded()), deadline=deadline)
+                self._reconcile_forward(job, name, forward, checkpoint, deadline=deadline)
                 completed.add(name)
                 progress = True
             if not progress:
                 raise DeployError("DEPENDENCY_CYCLE", "Active dependencies cannot be recovered")
+        # A started dependency need not be healthy until its dependents have also restarted.
+        for name in services:
+            if name not in checked:
+                bounded()
+                self._health_service(job, name, deadline)
+                checked.add(name)
         return {"restarted": restarted}
 
     def _create_container(self, job, name, service, image, networks):
@@ -686,8 +870,6 @@ class DeploymentBackend:
                 "--network-alias",
                 name,
                 "--dns=127.0.0.1",
-                "--publish",
-                f"127.0.0.1:{job['execution']['ports'][name]}:{service['port']}",
                 "--env-file",
                 env_path,
             ]
@@ -777,6 +959,17 @@ class DeploymentBackend:
     def cleanup(self, job):
         # Filter is convenience only. Independently inspect ownership before every removal.
         self._ids(job, require_app=False)
+        forwards = job.get("execution", {}).get("port_forwards", {})
+        if not isinstance(forwards, dict):
+            raise DeployError("PORT_FORWARD_IDENTITY", "Invalid persisted forwarding intentions")
+        if forwards:
+            self._ids(job)
+            for name, forward in forwards.items():
+                self._validate_forward_record(job, name, forward)
+            # Remove every persisted exact mapping before destroying targets or releasing storage.
+            # A failure leaves Docker resources and files for the worker's normal cleanup retry.
+            for forward in forwards.values():
+                self.port_forwarder.remove(forward["spec"], require_present=not forward["confirmed"])
         if job.get("app_id") and (
             job.get("execution", {}).get("ports") or job.get("execution", {}).get("images")
         ):

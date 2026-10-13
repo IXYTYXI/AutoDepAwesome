@@ -60,7 +60,7 @@ class Backend:
     def recovery_boot_id(self):
         return self.boot_id
 
-    def recover_active(self, job):
+    def recover_active(self, job, checkpoint):
         assert job["status"] == "succeeded"
         self.call("recover_active")
         self.recovered.append(job["id"])
@@ -118,6 +118,26 @@ def setup(tmp_path):
 def worker(setup):
     settings, store, _, source, backend = setup
     return Worker(settings, store, source, backend)
+
+
+def test_active_recovery_persists_forward_journal_even_when_recovery_fails(setup):
+    _, store, _, _, backend = setup
+    first = store.enqueue(payload(), "forward-journal")
+    assert worker(setup).run_once()
+    checkpoint_seen = []
+
+    def recover(job, checkpoint):
+        checkpoint({"port_forwards": {"web": {"confirmed": False}}})
+        checkpoint_seen.append(store.get(job["id"])["execution"]["port_forwards"])
+        raise RuntimeError("recovery interrupted")
+
+    backend.recover_active = recover
+    worker(setup)._recover_active(store.get(first["id"]))
+    current = store.get(first["id"])
+    assert checkpoint_seen == [{"web": {"confirmed": False}}]
+    assert current["execution"]["port_forwards"] == checkpoint_seen[0]
+    assert current["execution"]["active_recovery"]["outcome"] == "failed"
+    assert current["status"] == "succeeded"
 
 
 def test_happy_path_persists_before_publish_and_survives_duplicate_request(setup):

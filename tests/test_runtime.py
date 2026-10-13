@@ -1,8 +1,10 @@
 import copy
+import hashlib
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -63,6 +65,11 @@ def backend(tmp_path):
     result._check_storage = lambda info: None
     result.storage_root = tmp_path / "bounded-docker"
     result.calls = []
+    result.port_forwarder = SimpleNamespace(
+        check=lambda timeout=5: {"portDriver": "builtin"},
+        ensure=lambda spec, timeout=5, **policy: {"id": 1, "spec": spec},
+        remove=lambda spec, timeout=5, **policy: None,
+    )
 
     def docker(args, **kwargs):
         result.calls.append(args)
@@ -84,10 +91,23 @@ def backend(tmp_path):
                 [{"Id": DIGEST, "RepoDigests": [IMAGE], "Config": {"Volumes": None, "OnBuild": None}}]
             )
         if args[:2] == ["container", "inspect"]:
+            name = args[-1].removeprefix("awesome-abc123-")
+            networks = [f"aw-abc123-s-{len(name)}-{name}"]
+            networks += [
+                call[-2]
+                for call in result.calls
+                if call[:2] == ["network", "connect"] and call[-1] == args[-1]
+            ]
+            for call in result.calls:
+                if call[:2] == ["network", "create"] and "-e-" in call[-1]:
+                    network = call[-1]
+                    if f"-{len(name)}-{name}" in network:
+                        networks.append(network)
             return json.dumps(
                 [
                     {
-                        "Id": "containerid",
+                        "Id": hashlib.sha256(name.encode()).hexdigest(),
+                        "Name": "/" + args[-1],
                         "Config": {
                             "Labels": {
                                 "awesome.managed": "true",
@@ -96,7 +116,29 @@ def backend(tmp_path):
                             }
                         },
                         "State": {"Running": True, "Health": {"Status": "healthy"}},
+                        "NetworkSettings": {
+                            "Networks": {
+                                network: {
+                                    "NetworkID": hashlib.sha256(network.encode()).hexdigest(),
+                                    "IPAddress": "172.20.0.2",
+                                }
+                                for network in networks
+                            }
+                        },
                     }
+                ]
+            )
+        if args[:2] == ["network", "inspect"]:
+            return json.dumps(
+                [
+                    {
+                        "Name": name,
+                        "Id": hashlib.sha256(name.encode()).hexdigest(),
+                        "Internal": True,
+                        "Driver": "bridge",
+                        "Labels": result._labels(job(tmp_path)),
+                    }
+                    for name in args[2:]
                 ]
             )
         return ""
@@ -258,7 +300,7 @@ def test_start_enforces_resources_and_no_secret_values_in_args(tmp_path):
         "--tmpfs",
     ]:
         assert flag in create
-    assert "127.0.0.1:20000:8080" in create
+    assert "--publish" not in create
     assert "literal$value" not in create
     assert any(c[:2] == ["network", "create"] and "--internal" in c for c in engine.calls)
 
@@ -392,6 +434,12 @@ def test_resumed_start_connects_networks_missing_after_crash(tmp_path):
     def docker(args, **kwargs):
         if args[:2] == ["container", "ls"]:
             return "containerid\n"
+        if args[:2] == ["container", "inspect"] and not any(
+            call[:2] == ["network", "connect"] for call in engine.calls
+        ):
+            rows = json.loads(previous(args, **kwargs))
+            rows[0]["NetworkSettings"]["Networks"] = {}
+            return json.dumps(rows)
         return previous(args, **kwargs)
 
     engine._docker = docker
@@ -552,6 +600,14 @@ def recovery_backend(tmp_path, states):
     engine.health_calls = []
     engine._health_service = lambda job, name, deadline: engine.health_calls.append(name)
 
+    def networks_for(name):
+        names = [f"aw-abc123-s-{len(name)}-{name}"]
+        for dependent, spec in record["snapshot"]["manifest"]["services"].items():
+            for dependency in spec.get("dependsOn") or {}:
+                if name in {dependent, dependency}:
+                    names.append(f"aw-abc123-e-{len(dependent)}-{dependent}-{len(dependency)}-{dependency}")
+        return names
+
     def docker(args, **kwargs):
         if args[:2] == ["container", "inspect"]:
             engine.calls.append(args)
@@ -560,25 +616,26 @@ def recovery_backend(tmp_path, states):
                 name = identifier.removeprefix("awesome-abc123-")
                 if name not in states:
                     raise DeployError("MISSING_CONTAINER", "missing")
-                svc = record["snapshot"]["manifest"]["services"][name]
                 values.append(
                     {
+                        "Id": hashlib.sha256(name.encode()).hexdigest(),
                         "Name": "/" + identifier,
                         "Image": DIGEST,
                         "Config": {"Labels": engine._labels(record), "User": "65532:65532", "Image": DIGEST},
                         "HostConfig": {
                             "RestartPolicy": {"Name": "no"},
                             "ReadonlyRootfs": True,
-                            "PortBindings": {
-                                str(svc["port"]) + "/tcp": [
-                                    {
-                                        "HostIp": "127.0.0.1",
-                                        "HostPort": str(record["execution"]["ports"][name]),
-                                    }
-                                ]
-                            },
+                            "PortBindings": {},
                         },
-                        "NetworkSettings": {"Networks": {"owned-internal": {}}},
+                        "NetworkSettings": {
+                            "Networks": {
+                                network: {
+                                    "NetworkID": hashlib.sha256(network.encode()).hexdigest(),
+                                    "IPAddress": "172.20.0.2" if states[name] else "",
+                                }
+                                for network in networks_for(name)
+                            }
+                        },
                         "State": {"Running": states[name], "Paused": False, "Restarting": False},
                         "Mounts": [],
                     }
@@ -587,7 +644,16 @@ def recovery_backend(tmp_path, states):
         if args[:2] == ["network", "inspect"]:
             engine.calls.append(args)
             return json.dumps(
-                [{"Name": name, "Internal": True, "Labels": engine._labels(record)} for name in args[2:]]
+                [
+                    {
+                        "Name": name,
+                        "Id": hashlib.sha256(name.encode()).hexdigest(),
+                        "Driver": "bridge",
+                        "Internal": True,
+                        "Labels": engine._labels(record),
+                    }
+                    for name in args[2:]
+                ]
             )
         if args[:2] == ["container", "start"]:
             engine.calls.append(args)
@@ -596,15 +662,34 @@ def recovery_backend(tmp_path, states):
         return baseline(args, **kwargs)
 
     engine._docker = docker
-    record["execution"]["networks"] = ["owned-internal"]
+    record["execution"]["networks"] = [f"aw-abc123-s-{len(name)}-{name}" for name in states]
+    record["execution"]["port_forwards"] = {
+        name: {
+            "confirmed": True,
+            "container_id": hashlib.sha256(name.encode()).hexdigest(),
+            "network": {
+                "name": networks_for(name)[0],
+                "id": hashlib.sha256(networks_for(name)[0].encode()).hexdigest(),
+            },
+            "spec": {
+                "proto": "tcp4",
+                "parentIP": "127.0.0.1",
+                "parentPort": record["execution"]["ports"][name],
+                "childIP": "172.20.0.2",
+                "childPort": 8080,
+            },
+        }
+        for name in states
+    }
     return engine, record
 
 
 def test_recovery_restarts_legacy_no_policy_in_dependency_order_without_deployment(tmp_path):
     engine, record = recovery_backend(tmp_path, {"web": False, "api": False})
     record["snapshot"]["manifest"]["services"]["web"]["dependsOn"] = {"api": "healthy"}
+    record["execution"]["networks"].append("aw-abc123-e-3-web-3-api")
     engine.preflight = lambda: (_ for _ in ()).throw(AssertionError("full build admission is not recovery"))
-    result = engine.recover_active(record)
+    result = engine.recover_active(record, lambda delta: None)
     starts = [args[-1] for args in engine.calls if args[:2] == ["container", "start"]]
     assert starts == ["awesome-abc123-api", "awesome-abc123-web"]
     assert result["restarted"] == ["api", "web"]
@@ -614,10 +699,10 @@ def test_recovery_restarts_legacy_no_policy_in_dependency_order_without_deployme
     )
 
 
-def test_recovery_running_containers_skip_start_and_health(tmp_path):
+def test_recovery_running_containers_skip_start_but_verify_forward_and_health(tmp_path):
     engine, record = recovery_backend(tmp_path, {"web": True})
-    assert engine.recover_active(record) == {"restarted": []}
-    assert engine.health_calls == []
+    assert engine.recover_active(record, lambda delta: None) == {"restarted": []}
+    assert engine.health_calls == ["web"]
     assert not any(args[:2] == ["container", "start"] for args in engine.calls)
 
 
@@ -634,7 +719,7 @@ def test_recovery_refuses_missing_or_changed_release_without_recreating(tmp_path
             if change == "image":
                 rows[0]["Image"] = "sha256:" + "f" * 64
             if change == "port":
-                rows[0]["HostConfig"]["PortBindings"]["8080/tcp"][0]["HostPort"] = "29999"
+                rows[0]["HostConfig"]["PortBindings"] = {"8080/tcp": [{"HostPort": "29999"}]}
             if change == "owner":
                 rows[0]["Config"]["Labels"]["awesome.job"] = "foreign"
             return json.dumps(rows)
@@ -646,13 +731,13 @@ def test_recovery_refuses_missing_or_changed_release_without_recreating(tmp_path
     if change == "failed":
         record["status"] = "failed"
     with pytest.raises(DeployError):
-        engine.recover_active(record)
+        engine.recover_active(record, lambda delta: None)
     assert not any(args[:2] in [["container", "start"], ["container", "create"]] for args in engine.calls)
 
 
 def test_recovery_rechecks_running_health_after_previous_attempt_failed(tmp_path):
     engine, record = recovery_backend(tmp_path, {"web": True})
     record["execution"]["active_recovery"] = {"retry_health": True}
-    assert engine.recover_active(record) == {"restarted": []}
+    assert engine.recover_active(record, lambda delta: None) == {"restarted": []}
     assert engine.health_calls == ["web"]
     assert not any(args[:2] == ["container", "start"] for args in engine.calls)

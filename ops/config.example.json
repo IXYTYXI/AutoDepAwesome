@@ -15,6 +15,7 @@
   "health_timeout": 180,
   "docker_binary": "/usr/bin/docker",
   "docker_host": "unix:///run/user/1001/docker.sock",
+  "rootlesskit_socket": null,
   "docker_storage_limit_mib": 81920,
   "required_free_mib": 2048,
   "build_network": "none",

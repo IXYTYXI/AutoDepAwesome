@@ -26,7 +26,7 @@ class HostBoundary:
     def recovery_boot_id(self):
         return self.boot_id
 
-    def recover_active(self, job):
+    def recover_active(self, job, checkpoint):
         self.recovered.append(job["id"])
         if job["id"] in self.running:
             return {"restarted": []}
