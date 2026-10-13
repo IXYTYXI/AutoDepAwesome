@@ -2,6 +2,7 @@
 
 import asyncio
 from collections import OrderedDict
+from contextlib import aclosing
 import hashlib
 import json
 import os
@@ -17,6 +18,7 @@ from .errors import DeployError
 
 REQUEST_TIMEOUT = 240.0
 RESPONSE_LIMIT = 32 * 1024
+SSE_TOTAL_LIMIT = 2 * 1024 * 1024
 TEXT_LIMIT = 12000
 CACHE_TTL = 300.0
 FAILURE_TTL = 20.0
@@ -56,6 +58,95 @@ def _read_key(path: Path) -> str:
         raise DeployError(
             "AI_KEY_UNAVAILABLE", "AI 密钥文件不可用，请管理员检查文件归属、权限和单行内容。"
         ) from None
+
+
+async def _sse_data(response):
+    """Yield bounded SSE data events, including CR, LF and CRLF across chunks."""
+    line, data = bytearray(), []
+    total = event_size = 0
+    first_line, skip_lf, ended_event = True, False, False
+    async for chunk in response.aiter_bytes():
+        total += len(chunk)
+        if total > SSE_TOTAL_LIMIT:
+            raise ValueError("SSE stream too large")
+        for char in chunk:
+            event_size += 1
+            if event_size > RESPONSE_LIMIT:
+                raise ValueError("SSE event too large")
+            if skip_lf:
+                skip_lf = False
+                if char == 10:
+                    if ended_event:
+                        event_size = 0
+                    continue
+            if char not in (10, 13):
+                line.append(char)
+                if len(line) > RESPONSE_LIMIT:
+                    raise ValueError("SSE line too large")
+                continue
+            current, line = bytes(line), bytearray()
+            if first_line:
+                current = current.removeprefix(b"\xef\xbb\xbf")
+                first_line = False
+            skip_lf, ended_event = char == 13, not current
+            if not current:
+                event_size = 0
+                if data:
+                    yield b"\n".join(data)
+                    data = []
+            elif not current.startswith(b":"):
+                field, _, value = current.partition(b":")
+                if field == b"data":
+                    data.append(value.removeprefix(b" "))
+    # An unterminated event is deliberately not dispatched at EOF.
+
+
+async def _read_sse(response, key: str) -> str:
+    text, size = "", 0
+    async with aclosing(_sse_data(response)) as events:
+        async for event in events:
+            if not event.strip():
+                continue
+            if event.strip() == b"[DONE]":
+                return text
+            choices = json.loads(event)["choices"]
+            if not isinstance(choices, list):
+                raise ValueError("invalid SSE choices")
+            for position, choice in enumerate(choices):
+                if not isinstance(choice, dict):
+                    raise ValueError("invalid SSE choice")
+                if choice.get("index", position) != 0:
+                    continue
+                delta = choice.get("delta", {})
+                if delta is None:
+                    delta = {}
+                if not isinstance(delta, dict):
+                    raise ValueError("invalid SSE delta")
+                content = delta.get("content")
+                if content is not None:
+                    if not isinstance(content, str):
+                        raise ValueError("invalid SSE content")
+                    size += len(content.encode("utf-8"))
+                    if size > TEXT_LIMIT:
+                        raise ValueError("SSE text too large")
+                    text += content
+                    if key in text:
+                        raise ValueError("invalid SSE text")
+                finish = choice.get("finish_reason")
+                if finish is not None:
+                    if finish != "stop":
+                        raise ValueError("SSE answer not completed")
+                    return text
+    raise ValueError("SSE completion marker missing")
+
+
+async def _read_json(response):
+    data = bytearray()
+    async for chunk in response.aiter_bytes():
+        if len(data) + len(chunk) > RESPONSE_LIMIT:
+            raise ValueError("JSON response too large")
+        data.extend(chunk)
+    return json.loads(data)["choices"][0]["message"]["content"]
 
 
 class AdviceService:
@@ -137,6 +228,7 @@ class AdviceService:
         key = _read_key(self._settings.ai_api_key_file)
         body = {
             "model": self._settings.ai_model,
+            "stream": True,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": serialized},
@@ -166,17 +258,9 @@ class AdviceService:
                             raise DeployError("AI_RATE_LIMITED", "AI 服务暂时限流，请稍后重试。")
                         if not 200 <= response.status_code < 300:
                             raise DeployError("AI_UNAVAILABLE", "AI 服务暂时不可用，请稍后重试。")
-                        data = bytearray()
-                        async for chunk in response.aiter_bytes():
-                            if len(data) + len(chunk) > RESPONSE_LIMIT:
-                                raise DeployError("AI_RESPONSE_INVALID", "AI 响应超出允许大小，请稍后重试。")
-                            data.extend(chunk)
-        except (TimeoutError, httpx.TimeoutException):
-            raise DeployError("AI_TIMEOUT", "AI 响应超时，请稍后重试。") from None
-        except httpx.HTTPError:
-            raise DeployError("AI_UNAVAILABLE", "无法连接 AI 服务，请稍后重试或联系管理员。") from None
-        try:
-            content = json.loads(data)["choices"][0]["message"]["content"]
+                        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                        content = (await _read_sse(response, key) if content_type == "text/event-stream"
+                                   else await _read_json(response))
             if (
                 not isinstance(content, str)
                 or not content.strip()
@@ -184,6 +268,10 @@ class AdviceService:
                 or key in content
             ):
                 raise ValueError("invalid text")
+        except (TimeoutError, httpx.TimeoutException):
+            raise DeployError("AI_TIMEOUT", "AI 响应超时，请稍后重试。") from None
+        except httpx.HTTPError:
+            raise DeployError("AI_UNAVAILABLE", "无法连接 AI 服务，请稍后重试或联系管理员。") from None
         except (ValueError, TypeError, KeyError, IndexError, UnicodeError, RecursionError):
             raise DeployError("AI_RESPONSE_INVALID", "AI 响应格式无效，请稍后重试。") from None
         return {"text": content.strip(), "model": self._settings.ai_model}
