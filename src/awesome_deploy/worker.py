@@ -36,7 +36,7 @@ class Worker:
                     and job["status"] == "running"
                     and any(
                         job["execution"].get(key)
-                        for key in ("publish_intent", "failure_intent", "resources_released")
+                        for key in ("publish_intent", "failure_intent", "resources_released", "storage_handoff_intent")
                     )
                 )
                 if not urgent_recovery:
@@ -63,6 +63,13 @@ class Worker:
                     self._fail(
                         job["id"],
                         DeployError("INTERRUPTED_CLEANUP", "An interrupted candidate cleanup was finalized."),
+                        recovered=True,
+                    )
+                    return True
+                if job["execution"].get("storage_handoff_intent"):
+                    self._fail(
+                        job["id"],
+                        DeployError("INTERRUPTED_STORAGE_HANDOFF", "An interrupted storage handoff was rolled back."),
                         recovered=True,
                     )
                     return True
@@ -152,6 +159,19 @@ class Worker:
                 job = self._phase(job_id, "build", "Building candidate images.")
                 images = self.backend.build(job, checkpoint)
                 job = self.store.checkpoint(job_id, execution={"images": images}, phase="built")
+            if job["execution"].get("previous_release") and any(
+                service.get("storage") for service in job["snapshot"]["manifest"]["services"].values()
+            ):
+                previous = self.store.active_release(job["app_id"])
+                if previous is None or previous["id"] != job["execution"]["previous_release"]:
+                    raise DeployError("STORAGE_HANDOFF_STATE", "Previous active release changed before handoff.")
+                job = self.store.checkpoint(job_id, phase="storage_handoff", execution={
+                    "storage_handoff_intent": True,
+                    "storage_volumes": previous["execution"].get("storage_volumes", {}),
+                })
+                self.store.event(job_id, "storage_handoff", "Stopping the previous release before attaching persistent data.")
+                self.backend.stop_for_storage_handoff(previous)
+                job = self.store.checkpoint(job_id, execution={"storage_previous_stopped": True})
             job = self._phase(job_id, "start", "Starting the isolated candidate release.")
             self.backend.start(job, checkpoint)
             job = self._phase(job_id, "health", "Checking candidate health.")
@@ -225,9 +245,28 @@ class Worker:
         job = self.store.get(job_id)
         failure = job["execution"].get("failure_error") or self._error(error)
         job = self.store.checkpoint(job_id, execution={"failure_intent": True, "failure_error": failure})
+        if job["execution"].get("storage_handoff_intent"):
+            # The candidate must relinquish the data before the old release can run.
+            # Keep reservations until both cleanup and any route rollback are confirmed.
+            try:
+                if not job["execution"].get("storage_candidate_cleaned"):
+                    self.backend.quiesce_storage_candidate(job)
+                    self.backend.cleanup(job)
+                    job = self.store.checkpoint(job_id, execution={"storage_candidate_cleaned": True})
+                self._recover_previous_for_rollback(job)
+            except Exception:
+                self.store.fail(job_id, {
+                    "code": "STORAGE_RECOVERY_REQUIRED",
+                    "message": "Exclusive storage handoff recovery could not be confirmed.",
+                    "path": "",
+                    "suggestion": "Verify candidate termination and volume ownership before restoring the previous release.",
+                }, recovery=True)
+                self.store.event(job_id, "storage_handoff", "Storage recovery requires operator attention; automatic active recovery is blocked.")
+                return
         if job["execution"].get("publish_intent") and not job["execution"].get("rollback_confirmed"):
             try:
-                self._recover_previous_for_rollback(job)
+                if not job["execution"].get("storage_handoff_intent"):
+                    self._recover_previous_for_rollback(job)
                 self.store.event(job_id, "rollback", "Restoring the previous public route.")
                 self.backend.rollback(job)
                 job = self.store.checkpoint(job_id, execution={"rollback_confirmed": True})
@@ -248,7 +287,8 @@ class Worker:
                 return
         if not job["execution"].get("resources_released"):
             try:
-                self.backend.cleanup(job)
+                if not job["execution"].get("storage_candidate_cleaned"):
+                    self.backend.cleanup(job)
                 self.store.release(job_id)
             except Exception:
                 self.store.fail(

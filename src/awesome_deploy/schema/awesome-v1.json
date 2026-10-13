@@ -110,7 +110,9 @@
                 "maxProperties": 128,
                 "propertyNames": {
                   "pattern": "^[A-Za-z_][A-Za-z0-9_]*(?![\\s\\S])",
-                  "not": {"pattern": "^[Bb][Uu][Ii][Ll][Dd](?:[Kk][Ii][Tt]|[Xx])_"}
+                  "not": {
+                    "pattern": "^[Bb][Uu][Ii][Ll][Dd](?:[Kk][Ii][Tt]|[Xx])_"
+                  }
                 },
                 "additionalProperties": {
                   "type": "string",
@@ -284,6 +286,23 @@
                 "started",
                 "healthy"
               ]
+            }
+          },
+          "storage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "mountPath"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,30}(?![\\s\\S])"
+              },
+              "mountPath": {
+                "const": "/data"
+              }
             }
           }
         }

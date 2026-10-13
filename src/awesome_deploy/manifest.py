@@ -16,7 +16,7 @@ from .errors import DeployError
 MAX_MANIFEST_BYTES = 256 * 1024
 MAX_YAML_DEPTH = 32
 MAX_YAML_NODES = 10000
-UNSUPPORTED = frozenset({"storage", "mounts", "migration", "lifecycle", "customegress", "customEgress", "egress"})
+UNSUPPORTED = frozenset({"mounts", "migration", "lifecycle", "customegress", "customEgress", "egress"})
 
 
 def schema_document() -> dict:
@@ -114,6 +114,10 @@ def load_manifest(text: str, settings: Settings, previous: dict | None = None) -
     if subdomain in settings.reserved_names or any(word in subdomain for word in settings.banned_words):
         raise _invalid("Subdomain is reserved or contains a prohibited word.", "app.subdomain")
     previous_services = (previous or {}).get("services", {})
+    validate_storage_transition(data, previous)
+    storage_names = [service["storage"]["name"] for service in data["services"].values() if "storage" in service]
+    if len(storage_names) != len(set(storage_names)):
+        raise _invalid("Storage names cannot be shared by services.", "services")
     for name, service in data["services"].items():
         prefix = f"services.{name}"
         old = previous_services.get(name, {}).get("resources", {})
@@ -173,3 +177,10 @@ def load_manifest(text: str, settings: Settings, previous: dict | None = None) -
             raise _invalid("Route references an unknown service.", f"routes.{index}.service")
         route.setdefault("stripPrefix", False)
     return data
+
+
+def validate_storage_transition(manifest, previous):
+    """Keep existing data reachable across updates, including service rename/removal."""
+    for name, service in (previous or {}).get("services", {}).items():
+        if service.get("storage") and manifest.get("services", {}).get(name, {}).get("storage") != service["storage"]:
+            raise _invalid("Existing storage cannot be removed, renamed or moved.", f"services.{name}.storage")

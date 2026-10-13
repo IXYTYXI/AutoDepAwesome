@@ -80,6 +80,8 @@ def test_schema_and_readiness_do_not_fake_live_deployment(client):
     assert schema.status_code == 200
     assert "schemaVersion" in schema.json()["properties"]
     capabilities = client.get("/api/v1/capabilities", auth=AUTH).json()
+    assert capabilities["persistentStorage"] is True
+    assert capabilities["storage"] == {"driver": "local", "mountPath": "/data", "perService": 1, "updates": "recreate"}
     assert capabilities["approval"] is False
     assert capabilities["serviceKinds"] == ["web"]
     assert client.get("/", auth=AUTH).status_code == 200

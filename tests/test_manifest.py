@@ -64,7 +64,7 @@ def test_subdomain_policy(subdomain):
         load(data)
 
 
-@pytest.mark.parametrize("capability", ["storage", "mounts", "migration", "lifecycle", "customegress"])
+@pytest.mark.parametrize("capability", ["mounts", "migration", "lifecycle", "customegress"])
 def test_unsupported_features_get_actionable_error(capability):
     data = valid()
     data["services"]["web"][capability] = {"enabled": True}

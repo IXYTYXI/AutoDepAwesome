@@ -1,4 +1,4 @@
-"""First-phase stateless Docker backend. Requires a dedicated rootless Docker daemon.
+"""Controlled Docker backend with application-owned persistent storage. Requires a dedicated rootless Docker daemon.
 
 Internal bridge networks restrict external routing and isolate dependency groups, but
 are not a directional firewall or a hostile-code VM boundary. Never share this daemon
@@ -23,6 +23,8 @@ from .gateway import Gateway
 from .port_forward import RootlessPortForwarder
 from .processes import run_command, http_status
 from .secrets_store import SecretStore
+from .storage import ManagedStorage
+from .manifest import validate_storage_transition
 
 
 IMMUTABLE = re.compile(r"(?:[^\s@]+@)?sha256:[0-9a-f]{64}")
@@ -152,7 +154,7 @@ class DeploymentBackend:
             "runtime": "rootless-docker",
             "build_network": "none",
             "limitations": [
-                "Stateless services only; no persistent volumes.",
+                "Persistent storage is a single owned local volume per service at /data; updates briefly stop the previous release.",
                 "Internal dependency networks are bidirectional, not an application firewall.",
                 "Containers share the host kernel; this is not a hostile-code VM sandbox.",
             ],
@@ -168,7 +170,7 @@ class DeploymentBackend:
         config = image.get("Config") or {}
         if config.get("Volumes"):
             raise DeployError(
-                "UNSUPPORTED_CAPABILITY", "Images declaring volumes are unsupported in stateless deployments"
+                "UNSUPPORTED_CAPABILITY", "Images declaring volumes (VOLUME) are unsupported; declare controlled service.storage instead"
             )
         if config.get("OnBuild"):
             raise DeployError(
@@ -290,6 +292,7 @@ class DeploymentBackend:
         self.preflight()
         self._ids(job, require_app=False)
         checkpoint({"build_storage_root": str(self.storage_root)})
+        validate_storage_transition(snapshot["manifest"], job.get("execution", {}).get("previous_manifest"))
         frozen = copy.deepcopy(snapshot)
         pins = dict(job.get("execution", {}).get("frozen_images", {}))
         frozen["build_contexts"], frozen["secret_versions"] = {}, {}
@@ -634,6 +637,16 @@ class DeploymentBackend:
     def start(self, job, checkpoint):
         self.preflight()
         services = job["snapshot"]["manifest"]["services"]
+        storage = ManagedStorage(self._docker)
+        volumes = dict(job["execution"].get("storage_volumes", {}))
+        for name, service in services.items():
+            if service.get("storage"):
+                previous = job["execution"].get("previous_manifest", {}).get("services", {}).get(name, {})
+                if previous.get("storage") and name not in volumes:
+                    raise DeployError("STORAGE_IDENTITY", "Previous storage identity is missing; operator repair is required")
+                volumes[name] = storage.ensure(job["app_id"], name, service["storage"], volumes.get(name))
+                checkpoint({"storage_volumes": dict(volumes)})
+                job["execution"]["storage_volumes"] = dict(volumes)
         networks = self._service_networks(job)
         for network in sorted({n for group in networks.values() for n in group}):
             self._ensure_network(job, network)
@@ -661,6 +674,7 @@ class DeploymentBackend:
                     row = json.loads(self._docker(["container", "inspect", container_name]))[0]
                     if not self._owned(row.get("Config", {}).get("Labels"), job):
                         raise DeployError("RESOURCE_CONFLICT", "Refusing to reuse an unowned container")
+                    storage.validate_mounts(job, name, row)
                     attached = row.get("NetworkSettings", {}).get("Networks") or {}
                     if any(network not in networks[name] for network in attached):
                         raise DeployError(
@@ -671,6 +685,11 @@ class DeploymentBackend:
                             self._docker(["network", "connect", "--alias", name, network, container_name])
                 else:
                     self._create_container(job, name, service, image, networks[name])
+                if service.get("storage"):
+                    # Docker may create an empty volume if it vanished after ensure;
+                    # recheck the persisted volume instance and actual mount before start.
+                    created = json.loads(self._docker(["container", "inspect", container_name]))[0]
+                    storage.validate_mounts(job, name, created)
                 self._docker(["container", "start", container_name])
                 forward = self._forward_identity(job, name)
                 self._reconcile_forward(job, name, forward, checkpoint)
@@ -745,7 +764,6 @@ class DeploymentBackend:
                 or not re.fullmatch(r"[1-9][0-9]*(?::[1-9][0-9]*)?", config.get("User", ""))
                 or host.get("ReadonlyRootfs") is not True
                 or host.get("RestartPolicy", {}).get("Name", "no") not in {"no", ""}
-                or any(mount.get("Type") in {"bind", "volume"} for mount in row.get("Mounts", []))
                 or attached != set(expected_networks[name])
                 or not attached.issubset(set(job["execution"].get("networks", [])))
                 or state.get("Paused")
@@ -756,6 +774,7 @@ class DeploymentBackend:
                     "ACTIVE_CONTAINER_CHANGED",
                     "An active container no longer matches its frozen identity or isolation",
                 )
+            ManagedStorage(self._docker).validate_mounts(job, name, row, timeout=bounded())
             networks.update(attached)
         inspected = json.loads(self._docker(["network", "inspect", *sorted(networks)], timeout=bounded()))
         if (
@@ -802,6 +821,63 @@ class DeploymentBackend:
                 self._health_service(job, name, deadline)
                 checked.add(name)
         return {"restarted": restarted}
+
+    def _stop_owned_containers(self, job, *, require_existing):
+        """Stop by inspected ID, then confirm exit before another release may use its data."""
+        self._ids(job)
+        services = job["snapshot"]["manifest"]["services"]
+        rows = []
+        # Validate all identities before stopping anything. A crash after any stop is
+        # covered by the worker's already durable storage_handoff_intent.
+        for name in services:
+            container = self._container(job, name)
+            if not require_existing:
+                found = self._docker(["container", "ls", "-a", "--filter", f"name=^{container}$", "--format", "{{.ID}}"]).split()
+                if not found:
+                    continue
+                if len(found) != 1:
+                    raise DeployError("STORAGE_HANDOFF_IDENTITY", "Ambiguous candidate container identity")
+            inspected = json.loads(self._docker(["container", "inspect", container]))
+            if not isinstance(inspected, list) or len(inspected) != 1:
+                raise DeployError("STORAGE_HANDOFF_IDENTITY", "Container inspection failed during storage handoff")
+            row = inspected[0]
+            image = job["execution"].get("images", {}).get(name, "")
+            config = row.get("Config", {})
+            if (not self._owned(config.get("Labels"), job)
+                    or row.get("Name", "").removeprefix("/") != container
+                    or not re.fullmatch(r"[0-9a-f]{64}", str(row.get("Id", "")))
+                    or not IMMUTABLE.fullmatch(image)
+                    or not (row.get("Image") == image or "@sha256:" in image and config.get("Image") == image)):
+                raise DeployError("STORAGE_HANDOFF_IDENTITY", "Refusing to stop an unrecognized container")
+            forward = job["execution"].get("port_forwards", {}).get(name)
+            if require_existing or forward is not None:
+                forward = self._validate_forward_record(job, name, forward)
+                if row["Id"] != forward["container_id"]:
+                    raise DeployError("STORAGE_HANDOFF_IDENTITY", "The previous container was replaced")
+            ManagedStorage(self._docker).validate_mounts(job, name, row)
+            rows.append(row)
+        for row in rows:
+            state = row.get("State", {})
+            if state.get("Paused") or state.get("Restarting"):
+                raise DeployError("STORAGE_HANDOFF_STATE", "Cannot safely stop a paused or restarting container")
+            if state.get("Running"):
+                self._docker(["container", "stop", "--time", "30", row["Id"]], timeout=45)
+            confirmed = json.loads(self._docker(["container", "inspect", row["Id"]]))
+            if (len(confirmed) != 1 or confirmed[0].get("Id") != row["Id"]
+                    or confirmed[0].get("State", {}).get("Running") is not False
+                    or confirmed[0].get("State", {}).get("Paused")
+                    or confirmed[0].get("State", {}).get("Restarting")):
+                raise DeployError("STORAGE_HANDOFF_STATE", "Container termination could not be confirmed")
+
+    def stop_for_storage_handoff(self, previous):
+        if previous.get("status") != "succeeded" or previous["execution"].get("resources_released"):
+            raise DeployError("STORAGE_HANDOFF_STATE", "Only the existing active release can hand off storage")
+        self._runtime_preflight()
+        self._stop_owned_containers(previous, require_existing=True)
+
+    def quiesce_storage_candidate(self, candidate):
+        self._runtime_preflight()
+        self._stop_owned_containers(candidate, require_existing=False)
 
     def _create_container(self, job, name, service, image, networks):
         environment = dict(service.get("env") or {})
@@ -873,6 +949,12 @@ class DeploymentBackend:
                 "--env-file",
                 env_path,
             ]
+            if service.get("storage"):
+                volume = job["execution"].get("storage_volumes", {}).get(name)
+                expected, _ = ManagedStorage.identity(job["app_id"], name, service["storage"])
+                if not volume or volume.get("name") != expected:
+                    raise DeployError("STORAGE_IDENTITY", "Container creation requires its persisted volume identity")
+                args.extend(["--mount", f"type=volume,source={expected},destination=/data"])
             if "workingDir" in service:
                 args.extend(["--workdir", service["workingDir"]])
             if service.get("entrypoint"):

@@ -182,7 +182,7 @@ sudo systemctl status awesome-api.service awesome-worker.service
 
 rootless Docker 仍由同 UID 的用户服务管理；系统级 worker unit 不会代替它启动 rootful Docker。worker 启动不再使用全量 `check` 作为 `ExecStartPre`，避免 builder 或证书暂不可用时连既有容器都无法恢复。安装和新部署仍需相应检查。升级时重新安装本仓库的 worker unit 并运行 `daemon-reload`；仅更新 Python 包、保留旧 unit 会留下原启动门槛。
 
-worker 检测到新的 Linux boot ID 后，优先逐一尝试恢复当前成功版本，再继续耗时构建；恢复失败也会记录本次尝试，避免阻塞其他应用。常态检查间隔为 60 秒，失败按 60、120、240、480、900 秒退避，上限 900 秒且跨 worker 重启保留；单次容器恢复受 `health_timeout` 限制。正在执行的部署也可能延迟周期检查，因此这些是调度间隔，不是对外可用时间保证。`recovery_required` 应用只会尝试恢复数据库记录的旧当前版本，候选资源和人工恢复标记继续保留。
+worker 检测到新的 Linux boot ID 后，优先逐一尝试恢复当前成功版本，再继续耗时构建；恢复失败也会记录本次尝试，避免阻塞其他应用。常态检查间隔为 60 秒，失败按 60、120、240、480、900 秒退避，上限 900 秒且跨 worker 重启保留；单次容器恢复受 `health_timeout` 限制。正在执行的部署也可能延迟周期检查，因此这些是调度间隔，不是对外可用时间保证。普通 `recovery_required` 应用只会尝试恢复数据库记录的旧当前版本。带未完成 `storage_handoff_intent` 的应用禁止这条自动恢复入口，即使旧当前容器已停止；必须先确认候选停止/清理，避免共享卷双写。候选资源和人工恢复标记继续保留。
 
 API unit 启用 `NoNewPrivileges` 和只读系统保护；worker 必须调用精确授权的 sudo helper，不能直接照搬 API 的 `NoNewPrivileges=true` 或把 helper 要写的 `/etc/nginx` 设为只读。停 worker 时需让进程组结束，再恢复；文件锁由子进程继承，避免父进程崩溃后出现两个并发执行者。
 
@@ -221,3 +221,18 @@ API/worker 输出进入 journald。Docker 应用容器使用 local 日志驱动�
 7. 确认现有容器丢失或身份不一致时只报告恢复问题，不会拉取最新分支、重新构建或改写网关。需要停机维护某个应用时，应先停止 worker；只执行 `docker stop` 会被平台按“当前版本应运行”恢复。
 
 Docker 的自动重启策略与主机进程管理器不宜同时管理同一容器；本平台使用 worker 这一处恢复入口，保留 `--restart=no`，详见 [Docker 重启策略说明](https://docs.docker.com/engine/containers/start-containers-automatically/)。Nginx 的配置重载会启动新 worker 并让旧 worker 完成旧连接，因此验证必须允许切换窗口，详见 [Nginx 控制说明](https://nginx.org/en/docs/control.html)。
+
+
+## 9. 持久卷更新、备份与容量（0.2.0）
+
+每个声明 `storage: {name: images, mountPath: /data}` 的服务使用唯一受控 local 卷。派生卷名、随机实例标识和创建时间保存在任务 execution 的 `storage_volumes`；归属由 `awesome.managed`、`awesome.app`、`awesome.service`、`awesome.storage` 与 `awesome.storage-instance` labels 共同确定。卷不使用 job label，跨版本复用；容器、网络和镜像退役不删除卷。不得对专用 daemon 执行 `docker volume prune`，也不得把旧容器删除与数据卷删除混为一谈。
+
+升级平台包及 API/worker 后，先确认 `/api/v1/capabilities` 的 `persistentStorage=true`。镜像内 `/data` 应归平台配置的 `runtime_user`（默认 `65532:65532`）所有，首次卷 copy-up 才有正确权限。已有卷不会自动重新初始化或递归改属主。原有无存储应用可直接沿用，无需改 manifest。
+
+有存储更新会在镜像构建完成后短暂停止整个旧版本，再启动候选。运维须安排可接受的停机窗口。候选失败时平台先验证其退出并清理，再拉起旧版本；任何未确认步骤都会保留资源并阻断维护扫描，须人工核查。不要绕开全局 worker 锁手工启动旧版或候选。主动停机维护前应停止 worker 并等待其整个进程组退出。
+
+备份建议：记录当前成功版本 ID、commit、卷名和 labels；停止 worker，再停止使用该卷的应用并确认退出，使用受审查的备份工具只读导出卷内容，连同所需版本元数据和受保护的配置/秘密做离机备份。恢复演练使用独立测试环境和新卷，逐项验证图片字节及元数据。生产卷若缺失或身份不符，平台会拒绝自动启动，恢复不能只改 execution 的创建时间来绕过校验；需要运维审查完整的容器、卷与状态迁移方案。没有通用一键灾备命令。
+
+自动应用回滚不会撤销卷写入或回滚存储格式/schema，故破坏性数据迁移须先备份并另行安排维护。卷与镜像、构建缓存共同使用专用有界 Docker 文件系统；平台不提供逐卷硬配额。除应用自身上传/总量限制外，持续监控可用字节、inode 和备份新鲜度，低容量时暂停新部署及上传，避免把持久化理解为无限容量或备份替代品。
+
+至少验收：上传后停止/恢复容器图片仍在；更新版本后字节一致；健康失败先停候选再恢复旧版；在交接意图写入后、旧版停止后、候选启动后、候选清理后分别中断 worker；未确认交接转人工恢复时维护扫描不启动旧实例；卷丢失/名称冲突/driver/options/labels/随机实例标识/CreatedAt 变化均不得创建空卷或继续运行；不同应用不能访问彼此的卷。测试应用结束时先确认数据可删除，再由管理员精确处理目标卷，勿使用批量 prune。

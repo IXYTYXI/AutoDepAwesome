@@ -132,8 +132,15 @@ class Store:
                 JOIN apps ON apps.active_release_id=jobs.id WHERE jobs.status='succeeded'
                 ORDER BY jobs.created_at,jobs.id""")
             ]
+            blocked = {
+                pending["execution"].get("previous_release")
+                for row in db.execute("SELECT * FROM jobs WHERE status IN ('running','recovery_required')")
+                if (pending := self._job(row))["execution"].get("storage_handoff_intent")
+            }
         due = []
         for job in jobs:
+            if job["id"] in blocked:
+                continue
             if job["execution"].get("resources_released") or job["execution"].get("failure_intent"):
                 continue
             state = job["execution"].get("active_recovery", {})
