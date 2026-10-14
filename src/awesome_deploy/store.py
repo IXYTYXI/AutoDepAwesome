@@ -704,16 +704,35 @@ class Store:
             return self._get(db, job_id)
 
     def _check_secret_scope(self, db, app, job, snapshot):
-        if not any(snapshot.get("secret_versions", {}).values()):
+        wanted = {(name, version) for versions in snapshot.get("secret_versions", {}).values()
+                  for name, version in versions.items()}
+        if not wanted:
             return
         # Secret files are scoped by repository/domain, not app identity. A file
         # may have been rotated or never referenced by the old manifest, so a
-        # historical snapshot cannot prove that any current version is new.
-        for row in db.execute("SELECT * FROM jobs WHERE app_id IS NOT NULL AND app_id<>?", (app["id"],)):
+        # historical snapshot cannot prove that any current version is new. A
+        # successful consumer may, however, reuse the exact versions it used.
+        shared, proven = False, set()
+        for row in db.execute("SELECT * FROM jobs WHERE app_id IS NOT NULL AND id<>?", (job["id"],)):
             previous = self._job(row)
             if (previous["input"].get("repository") != job["input"]["repository"]
                     or previous["input"].get("subdomain") != job["input"]["subdomain"]):
                 continue
+            if previous["app_id"] != app["id"]:
+                # Deleted apps and failed jobs still establish a shared scope.
+                shared = True
+                continue
+            if previous["status"] != "succeeded":
+                continue
+            frozen = previous.get("snapshot") or {}
+            manifest = frozen.get("manifest") or {}
+            if (frozen.get("repository") != job["input"]["repository"]
+                    or manifest.get("app", {}).get("subdomain") != job["input"]["subdomain"]):
+                continue
+            for service, versions in frozen.get("secret_versions", {}).items():
+                refs = manifest.get("services", {}).get(service, {}).get("secretRefs") or {}
+                proven.update((name, version) for name, version in versions.items() if name in refs.values())
+        if shared and not wanted <= proven:
             raise DeployError("SECRET_SCOPE_CONFLICT", "This secret scope was used by another application.",
                               "secretRefs", "Use the original application or configure secrets for a different free subdomain.")
 

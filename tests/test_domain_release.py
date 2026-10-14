@@ -432,3 +432,122 @@ def test_finish_requires_candidate_still_owns_its_domain(store):
         store.finish(candidate["id"])
     assert error.value.code == "DOMAIN_CONFLICT"
     assert store.active_release(reserved["app_id"]) is None
+
+
+def legacy_secret_consumer(store, monkeypatch, *, delete_old=False):
+    """A past authorized reset let a second app use the same secret scope."""
+    old = deploy(store, version="a" * 32)
+    offline(store, old)
+    with monkeypatch.context() as patch:
+        patch.setattr(Store, "_check_secret_scope", lambda *args: None)
+        consumer = deploy(store, "consumer", version="a" * 32)
+    offline(store, consumer, "consumer-offline")
+    if delete_old:
+        with store._connection(write=True) as db:
+            db.execute("DELETE FROM offline_operations WHERE app_id=?", (old["app_id"],))
+            db.execute("DELETE FROM apps WHERE id=?", (old["app_id"],))
+    return old, consumer
+
+
+def change_historical_snapshot(store, job, change):
+    frozen = copy.deepcopy(job["snapshot"])
+    change(frozen)
+    store.checkpoint(job["id"], snapshot=frozen)
+
+
+@pytest.mark.parametrize("delete_old", [False, True])
+def test_existing_successful_consumer_can_reuse_its_exact_versions_despite_older_scope_history(store, monkeypatch, delete_old):
+    old, consumer = legacy_secret_consumer(store, monkeypatch, delete_old=delete_old)
+    data = payload(app_id=consumer["app_id"])
+    attempt = store.enqueue(data, "consumer-again")
+    store.prepare_context(attempt["id"])
+    reserved = store.reserve(attempt["id"], snapshot(data, "a" * 32))
+    assert reserved["app_id"] == consumer["app_id"]
+    assert reserved["execution"]["storage_volumes"] == consumer["execution"]["storage_volumes"]
+    assert store.get(old["id"])["app_id"] == old["app_id"]
+
+
+@pytest.mark.parametrize("version,extra", [("b" * 32, False), ("a" * 32, True)])
+def test_prior_consumer_cannot_authorize_a_rotated_version_or_an_extra_secret(store, monkeypatch, version, extra):
+    _, consumer = legacy_secret_consumer(store, monkeypatch)
+    data = payload(app_id=consumer["app_id"])
+    attempt = store.enqueue(data, "consumer-again")
+    frozen = snapshot(data, version)
+    if extra:
+        frozen["manifest"]["services"]["web"]["secretRefs"]["OTHER"] = "unproven-secret"
+        frozen["secret_versions"]["web"]["unproven-secret"] = "c" * 32
+    with pytest.raises(DeployError) as error:
+        store.reserve(attempt["id"], frozen)
+    assert error.value.code == "SECRET_SCOPE_CONFLICT"
+    assert app(store, consumer["app_id"])["subdomain"] is None
+
+
+@pytest.mark.parametrize("status", ["failed", "running", "queued", "recovery_required"])
+def test_only_successful_prior_consumption_can_authorize_scope_reuse(store, monkeypatch, status):
+    _, consumer = legacy_secret_consumer(store, monkeypatch)
+    with store._connection(write=True) as db:
+        db.execute("UPDATE jobs SET status=? WHERE id=?", (status, consumer["id"]))
+    data = payload(app_id=consumer["app_id"])
+    attempt = store.enqueue(data, "consumer-again")
+    with pytest.raises(DeployError) as error:
+        store.reserve(attempt["id"], snapshot(data, "a" * 32))
+    assert error.value.code in {"SECRET_SCOPE_CONFLICT", "RECOVERY_REQUIRED"}
+
+
+@pytest.mark.parametrize("field,value", [("repository", "https://github.com/acme/other.git"), ("subdomain", "other")])
+def test_same_app_success_in_another_scope_does_not_authorize_this_scope(store, monkeypatch, field, value):
+    _, consumer = legacy_secret_consumer(store, monkeypatch)
+    other_input = {**consumer["input"], field: value}
+    with store._connection(write=True) as db:
+        db.execute("UPDATE jobs SET input=? WHERE id=?", (json.dumps(other_input), consumer["id"]))
+    data = payload(app_id=consumer["app_id"])
+    attempt = store.enqueue(data, "consumer-again")
+    with pytest.raises(DeployError) as error:
+        store.reserve(attempt["id"], snapshot(data, "a" * 32))
+    assert error.value.code == "SECRET_SCOPE_CONFLICT"
+
+
+def test_unreferenced_version_metadata_is_not_successful_consumption(store, monkeypatch):
+    _, consumer = legacy_secret_consumer(store, monkeypatch)
+    change_historical_snapshot(store, consumer, lambda frozen: frozen["manifest"]["services"]["web"].update(secretRefs={}))
+    data = payload(app_id=consumer["app_id"])
+    attempt = store.enqueue(data, "consumer-again")
+    with pytest.raises(DeployError) as error:
+        store.reserve(attempt["id"], snapshot(data, "a" * 32))
+    assert error.value.code == "SECRET_SCOPE_CONFLICT"
+
+
+def test_current_frozen_job_cannot_authorize_itself(store, monkeypatch):
+    old = deploy(store, version="a" * 32)
+    offline(store, old)
+    attempt = store.enqueue(payload(), "unproven-consumer")
+    reserved = store.reserve(attempt["id"], snapshot())
+    frozen = snapshot(version="a" * 32)
+    store.checkpoint(attempt["id"], snapshot=frozen, execution={"frozen": True})
+    # Even a corrupted current terminal status cannot grant historical rights.
+    with store._connection(write=True) as db:
+        db.execute("UPDATE jobs SET status='succeeded' WHERE id=?", (attempt["id"],))
+    with pytest.raises(DeployError) as error:
+        store.reserve(attempt["id"], frozen)
+    assert error.value.code == "SECRET_SCOPE_CONFLICT"
+    assert reserved["app_id"] != old["app_id"]
+
+
+def test_new_app_still_cannot_inherit_a_deleted_apps_secret_scope(store):
+    old = deploy(store, version="a" * 32)
+    offline(store, old)
+    with store._connection(write=True) as db:
+        db.execute("DELETE FROM offline_operations WHERE app_id=?", (old["app_id"],))
+        db.execute("DELETE FROM apps WHERE id=?", (old["app_id"],))
+    attempt = store.enqueue(payload(), "brand-new")
+    with pytest.raises(DeployError) as error:
+        store.reserve(attempt["id"], snapshot(version="a" * 32))
+    assert error.value.code == "SECRET_SCOPE_CONFLICT"
+
+
+def test_exclusive_existing_scope_can_still_rotate_secret_versions(store):
+    consumer = deploy(store, version="a" * 32)
+    offline(store, consumer)
+    data = payload(app_id=consumer["app_id"])
+    attempt = store.enqueue(data, "rotated")
+    assert store.reserve(attempt["id"], snapshot(data, "b" * 32))["app_id"] == consumer["app_id"]
