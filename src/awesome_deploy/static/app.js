@@ -310,4 +310,9 @@ $('refresh').addEventListener('click',()=>refresh().catch(error=>{$('form-error'
 api('/api/v1/capabilities').then(renderCapabilities).catch(error=>{renderCapabilities({});$('form-error').textContent=error.message;});
 updateDomainPreview();
 renderHistory();
-refresh().catch(error=>{$('form-error').textContent=error.message;});
+refresh().catch(error=>{$('form-error').textContent=error.message;}).then(()=>{
+  if(globalThis.location?.search) {
+    const id=new URLSearchParams(location.search).get('deployment');
+    if(id)watch(id,{focus:true});
+  }
+});

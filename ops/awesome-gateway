@@ -96,7 +96,7 @@ def validate(req):
         raise ValueError("Invalid gateway request fields")
     if req["base_domain"] != CONFIG["base_domain"]:
         raise ValueError("Platform base domain differs from root-owned gateway configuration")
-    if req["op"] not in {"ensure_https", "publish", "verify", "rollback", "verify_status"}:
+    if req["op"] not in {"ensure_https", "publish", "verify", "rollback", "verify_status", "deactivate"}:
         raise ValueError("Unknown gateway operation")
     if not isinstance(req["subdomain"], str) or not NAME.fullmatch(req["subdomain"]):
         raise ValueError("Invalid subdomain")
@@ -241,9 +241,95 @@ def apply_config(subdomain, content):
         raise
 
 
+def same_route(first, second):
+    return all(first[key] == second[key] for key in ("base_domain", "subdomain", "release", "ports", "routes"))
+
+
+def deactivation_record(record):
+    if record is None:
+        return None
+    if (
+        not isinstance(record, dict)
+        or set(record) != {"release", "request", "token", "completed"}
+        or type(record["completed"]) is not bool
+        or not isinstance(record["token"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", record["token"])
+    ):
+        raise ValueError("Invalid durable deactivation record")
+    validate(record["request"])
+    if record["release"] != record["request"]["release"] or record["request"]["op"] != "deactivate":
+        raise ValueError("Deactivation record differs from its release")
+    return record
+
+
+def completed_deactivation(state):
+    record = deactivation_record(state.get("deactivation"))
+    if record and not record["completed"]:
+        raise ValueError("Deactivation must be confirmed before another gateway operation")
+    return record
+
+
+def render_deactivated(req, token):
+    validate(req)
+    if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{64}", token):
+        raise ValueError("Invalid offline verification token")
+    domain = host(req)
+    acme = f"location ^~ /.well-known/acme-challenge/ {{ root {WEBROOT}; default_type text/plain; }}"
+    offline = (f'location / {{ add_header X-Awesome-Offline "{req["release"]}:{token}" always; '
+               "return 410; }")
+    return "\n".join([
+        f"server {{ listen 80; server_name {domain}; {acme} {offline} }}",
+        "server {",
+        f"listen 443 ssl; server_name {domain};",
+        f"ssl_certificate /etc/letsencrypt/live/{domain}/fullchain.pem;",
+        f"ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;",
+        "ssl_protocols TLSv1.2 TLSv1.3;",
+        acme, offline, "}\n",
+    ])
+
+
+def deactivate(req):
+    validate(req)
+    state = read_state(req["subdomain"])
+    current, pending = state["current"], state.get("pending")
+    record = deactivation_record(state.get("deactivation"))
+    if pending and pending["release"] != req["release"]:
+        raise ValueError("Refusing deactivation during another release's publication")
+    if current and not same_route(current["request"], req):
+        raise ValueError("Deactivation does not match the current release and routes")
+    if record:
+        if not same_route(record["request"], req) or (not current and not record["completed"]):
+            raise ValueError("Deactivation differs from the durable offline identity")
+    elif not current:
+        raise ValueError("No current release or matching completed deactivation exists")
+    path = config_path(req["subdomain"])
+    content = path.read_text() if path.exists() else None
+    allowed = [render(current["request"], tls=True)] if current else []
+    if record:
+        allowed.append(render_deactivated(record["request"], record["token"]))
+    if content not in allowed:
+        raise ValueError("Gateway configuration differs from the release being deactivated")
+    if not record:
+        record = {"release": req["release"], "request": req, "token": secrets.token_hex(32), "completed": False}
+        state["deactivation"] = record
+        # A committed application release may retain its old publication rollback
+        # journal. Offline intent supersedes it before touching the route.
+        state["pending"] = None
+        save_state(req["subdomain"], state)
+    apply_config(req["subdomain"], render_deactivated(req, record["token"]))
+    probe_deactivated(req, record["token"])
+    record["completed"] = True
+    state["current"], state["pending"] = None, None
+    save_state(req["subdomain"], state)
+    return {"deactivated": True, "release": req["release"]}
+
+
 def publish(req):
     validate(req)
     state = read_state(req["subdomain"])
+    offline = completed_deactivation(state)
+    if offline and offline["release"] == req["release"]:
+        raise ValueError("A deactivated release cannot be republished")
     if state["current"] and state["current"]["release"] == req["release"]:
         if (
             state["current"]["request"]["ports"] != req["ports"]
@@ -254,20 +340,31 @@ def publish(req):
     current_release = state["current"]["release"] if state["current"] else None
     if current_release != req["previous_release"]:
         raise ValueError("Gateway active release differs from the reserved previous release")
+    pending = state.get("pending")
+    if pending and pending["release"] not in {req["release"], current_release}:
+        raise ValueError("Another release has an unfinished publication journal")
     prior_content = (
         config_path(req["subdomain"]).read_text() if config_path(req["subdomain"]).exists() else None
     )
     # Write-ahead state preserves old config even if process dies during replacement/reload.
-    pending = state.get("pending")
     if pending and pending["release"] == req["release"]:
+        if pending.get("request") and not same_route(pending["request"], req):
+            raise ValueError("Pending publication has different route content")
         previous, prior_content = pending["previous"], pending["previous_config"]
+        prior_offline = deactivation_record(pending.get("previous_deactivation"))
     else:
         previous = state["current"]
-    state["pending"] = {"release": req["release"], "previous": previous, "previous_config": prior_content}
+        prior_offline = offline
+        if offline and prior_content != render_deactivated(offline["request"], offline["token"]):
+            raise ValueError("Completed deactivation differs from the current configuration")
+    state["pending"] = {"release": req["release"], "request": req, "previous": previous,
+                        "previous_config": prior_content, "previous_deactivation": prior_offline}
     save_state(req["subdomain"], state)
     content = render(req, tls=True)
     apply_config(req["subdomain"], content)
     state["current"] = {"release": req["release"], "request": req, "verified": False}
+    # The old tombstone remains in pending until publication is durably resolved.
+    state.pop("deactivation", None)
     save_state(req["subdomain"], state)
     return {"release": req["release"]}
 
@@ -275,12 +372,17 @@ def publish(req):
 def rollback(req):
     validate(req)
     state = read_state(req["subdomain"])
+    offline = completed_deactivation(state)
+    if offline and offline["release"] == req["release"]:
+        raise ValueError("A deactivated release cannot restore its former upstream")
     pending = state.get("pending")
     current_release = state["current"]["release"] if state["current"] else None
     if not pending or pending["release"] != req["release"]:
         if current_release == req["previous_release"]:
             if state["current"]:
                 probe_routes(state["current"]["request"])
+            elif offline:
+                probe_deactivated(offline["request"], offline["token"])
             return {"rolled_back": True}
         raise ValueError("Refusing stale release rollback or missing rollback journal")
     previous_release = pending["previous"]["release"] if pending["previous"] else None
@@ -289,12 +391,23 @@ def rollback(req):
         previous_release,
     }:
         raise ValueError("Rollback journal differs from expected prior release")
+    if pending.get("request") and not same_route(pending["request"], req):
+        raise ValueError("Rollback request differs from the pending route content")
+    prior_offline = deactivation_record(pending.get("previous_deactivation"))
+    if prior_offline and (pending["previous"] or not prior_offline["completed"]
+                          or pending["previous_config"] != render_deactivated(
+                              prior_offline["request"], prior_offline["token"])):
+        raise ValueError("Rollback journal has an inconsistent offline predecessor")
     apply_config(req["subdomain"], pending["previous_config"])
     # Reload only signals Nginx. Keep the write-ahead journal until fresh TLS
     # requests have actually reached the restored release's upstreams.
     if pending["previous"]:
         probe_routes(pending["previous"]["request"])
+    elif prior_offline:
+        probe_deactivated(prior_offline["request"], prior_offline["token"])
     state["current"], state["pending"] = pending["previous"], None
+    if prior_offline:
+        state["deactivation"] = prior_offline
     save_state(req["subdomain"], state)
     return {"rolled_back": True}
 
@@ -340,6 +453,46 @@ class LocalHTTPS(http.client.HTTPSConnection):
         sock = socket.create_connection(("127.0.0.1", 443), self.timeout)
         sock.settimeout(max(0.01, deadline - time.monotonic()))
         self.sock = DeadlineSocket(self._context.wrap_socket(sock, server_hostname=self.host), deadline)
+
+
+class LocalHTTP(http.client.HTTPConnection):
+    def connect(self):
+        deadline = time.monotonic() + self.timeout
+        sock = socket.create_connection(("127.0.0.1", 80), self.timeout)
+        self.sock = DeadlineSocket(sock, deadline)
+
+
+def probe_deactivated(req, token):
+    """Confirm this exact tombstone through fresh HTTP and authenticated TLS connections."""
+    deadline = time.monotonic() + 30
+    context = ssl.create_default_context()
+    paths = list(dict.fromkeys(["/", *probe_paths(req)]))
+    pending = {(tls, path) for tls in (True, False) for path in paths}
+    marker = f"{req['release']}:{token}"
+    while pending and time.monotonic() < deadline:
+        for tls, path in sorted(pending):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            args = {"timeout": min(5, remaining)}
+            if tls:
+                args["context"] = context
+            connection = (LocalHTTPS if tls else LocalHTTP)(host(req), **args)
+            nonce = secrets.token_hex(32)
+            try:
+                connection.request("GET", path + "?__awesome_probe=" + nonce,
+                                   headers={"Connection": "close", "Cache-Control": "no-cache"})
+                response = connection.getresponse()
+                if response.status == 410 and response.getheader("X-Awesome-Offline") == marker:
+                    pending.discard((tls, path))
+            except (OSError, http.client.HTTPException):
+                pass
+            finally:
+                connection.close()
+        if pending:
+            time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+    if pending:
+        raise RuntimeError("Offline probe deadline expired before every HTTP and HTTPS route was confirmed")
 
 
 def probe_paths(req):
@@ -467,6 +620,7 @@ def probe_routes(req):
 def verify(req):
     validate(req)
     state = read_state(req["subdomain"])
+    completed_deactivation(state)
     current = state["current"]
     if (
         not current

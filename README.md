@@ -4,9 +4,15 @@
 
 当前交付包含配置校验、Git 提交固定、受控容器与持久卷部署、同域名路径路由、HTTPS 网关、SQLite 状态和中断恢复。生产使用前须在目标机完成实际部署、证书、故障恢复与续期验收，不能据本地测试认定生产可用。Linux 安装前请阅读 [运维指南](ops/README.md)。
 
-## 管理界面（0.2.1）
+## 部署控制台与应用管理（0.3.1）
 
 部署表单与当前进度独立排列；最近记录显示在固定高度的滚动窗口中，可按状态筛选。API 当前最多返回最近 50 条，滚动窗口仅覆盖已加载记录。应用选择支持搜索、方向键、Enter 确认和 Escape 关闭；选择已有应用会填入仓库与域名前缀。任务编号、版本和执行日志按需展开，AI 建议仍由用户主动触发。
+
+顶部导航可在部署控制台 `/` 与应用管理 `/manage` 之间切换。应用管理读取全部应用和所有未结束部署，显示在线、排队、执行中及待处理数量；各列表固定高度并在窗口内滚动，每 3 秒自动刷新。部署队列不受最近 50 条历史记录的限制，可直接进入具体部署进度。
+
+在线应用的“下线”按钮会确认目标版本，将下线任务持久化后交给 worker 执行。平台先关闭并验证 HTTP/HTTPS 公开入口，再停止和清理该版本运行资源，全部确认后才标记已下线并释放部署配额。下线保留应用、域名归属、持久卷和部署记录；历史成功版本不再显示可访问链接。已有部署、恢复或资源回收未完成时，暂不允许下线；下线未完成时阻止该应用的新部署和自动恢复，页面提供同一操作的显式重试。
+
+重新上线需在部署控制台选择原应用并提交部署；平台继承最后下线版本的持久存储配置，严格复用原卷身份。卷缺失或身份不符会失败，不会创建空卷代替。此功能不修改应用仓库的业务代码。
 
 支持范围读取服务器能力。当前支持 Web 服务和每服务一个固定 `/data` 持久卷；有存储的更新会短暂停机。数据库服务/迁移、后台任务、每应用卷硬配额和自动备份恢复仍未实现。审批、代码审查和员工角色等后置功能不包含在当前交付中。
 
@@ -175,6 +181,9 @@ secretRefs:
 | `GET /api/v1/deployments/{id}/events` | 有界事件信息，不返回原始命令输出 |
 | `POST /api/v1/deployments/{id}/analyze` | 请求体 `{}`，按需生成 AI 修改建议；仅失败或需恢复的任务 |
 | `GET /api/v1/apps` | 应用和当前版本，应用主键字段为 `id` |
+| `GET /api/v1/management` | 全部应用、所有未结束部署和待处理下线操作的安全投影 |
+| `POST /api/v1/apps/{id}/offline` | 请求体 `{"expectedReleaseId":"当前部署编号"}`，需要幂等键，HTTP 202 |
+| `GET /api/v1/offline-operations/{id}` | 下线状态、阶段和中文错误；不返回运行快照或秘密 |
 | `POST /api/v1/preflight` | 请求体 `{"manifest":"YAML 字符串"}` |
 | `GET /api/v1/schema` | 当前 JSON Schema |
 | `GET /api/v1/capabilities` | 当前能力开关 |
@@ -204,7 +213,7 @@ curl --user operator --fail-with-body \
   https://awesome.guanghexinzhi.cn/api/v1/deployments/JOB_ID
 ```
 
-状态为 `queued`、`running`、`succeeded`、`failed` 或 `recovery_required`，`phase` 单独表示执行阶段。仅 `succeeded` 表示发布并验证完成。该服务没有多租户权限系统、审批流、删除应用 API 或恢复操作 API；`recovery_required` 需要运维诊断，不能直接修改数据库标志来跳过回滚和资源确认。
+部署状态为 `queued`、`running`、`succeeded`、`failed` 或 `recovery_required`，`phase` 单独表示执行阶段。仅 `succeeded` 表示发布并验证完成；是否仍在线以应用当前版本和管理状态为准。该服务没有多租户权限系统、审批流或删除应用 API；部署的 `recovery_required` 需要运维诊断，不能直接修改数据库标志来跳过回滚和资源确认。下线操作的 `recovery_required` 可使用原请求和同一幂等键显式重试，继续核验原目标；版本变化返回冲突，不会下线更新后的版本。
 
 ## 中文诊断与可选 AI 建议
 
@@ -234,7 +243,7 @@ AI 默认关闭。运维可在配置 JSON 中同时设置以下三项（不要�
 .venv/bin/pytest -q
 .venv/bin/ruff check src tests
 # 可选的前端交互回归，使用 Node 内置测试器，无需安装 npm 依赖。
-node --test tests/ui_diagnostics.test.cjs
+node --test tests/ui_*.test.cjs
 ```
 
 测试使用临时目录、模拟 Docker/网关和本机进程验证协议、错误处理、资源归属与崩溃恢复；端口冲突测试需要允许本机 loopback bind。测试不会通过 SSH 部署，也不代表真实 Docker/Nginx/Certbot 链路已验收。目标机的单服务、多服务、故障回滚、续期与资源上限验证步骤见 [运维指南](ops/README.md)。

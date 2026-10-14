@@ -43,6 +43,15 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, created_at);
                 CREATE INDEX IF NOT EXISTS jobs_app ON jobs(app_id, status);
+                CREATE TABLE IF NOT EXISTS offline_operations (
+                    id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE,
+                    app_id TEXT NOT NULL REFERENCES apps(id),
+                    target_release_id TEXT NOT NULL REFERENCES jobs(id),
+                    status TEXT NOT NULL, phase TEXT NOT NULL,
+                    execution TEXT NOT NULL DEFAULT '{}', error TEXT,
+                    created_at REAL NOT NULL, updated_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS offline_app ON offline_operations(app_id, status);
             """)
 
     @contextmanager
@@ -92,6 +101,7 @@ class Store:
                         "IDEMPOTENCY_CONFLICT", "This key already belongs to a different request."
                     )
                 return self._job(row)
+            self._check_offline_gate(db, payload.get("appId"), payload.get("subdomain"))
             job_id, now = uuid.uuid4().hex, time.time()
             db.execute(
                 """INSERT INTO jobs
@@ -113,6 +123,177 @@ class Store:
     def apps(self):
         with self._connection() as db:
             return [dict(row) for row in db.execute("SELECT * FROM apps ORDER BY created_at,id")]
+
+    @staticmethod
+    def _offline(row):
+        if row is None:
+            raise DeployError("NOT_FOUND", "Offline operation was not found.")
+        result = dict(row)
+        for key in ("execution", "error"):
+            result[key] = json.loads(result[key]) if result[key] is not None else None
+        return result
+
+    def _get_offline(self, db, operation_id):
+        return self._offline(db.execute("SELECT * FROM offline_operations WHERE id=?", (operation_id,)).fetchone())
+
+    def get_offline(self, operation_id):
+        with self._connection() as db:
+            return self._get_offline(db, operation_id)
+
+    def list_offline_operations(self, active_only=False):
+        clause = "WHERE status IN ('queued','running','recovery_required')" if active_only else ""
+        with self._connection() as db:
+            return [self._offline(row) for row in db.execute(
+                f"SELECT * FROM offline_operations {clause} ORDER BY created_at,id"
+            )]
+
+    @staticmethod
+    def _check_offline_gate(db, app_id, subdomain):
+        if db.execute("""SELECT operations.id FROM offline_operations AS operations
+            JOIN apps ON apps.id=operations.app_id
+            WHERE operations.status IN ('queued','running','recovery_required')
+            AND (apps.id=? OR apps.subdomain=?) LIMIT 1""", (app_id, subdomain)).fetchone():
+            raise DeployError("APP_OFFLINE_BUSY", "Application offline operation must finish first.")
+
+    def _offline_block_reason(self, db, app, *, ignore_operation=None):
+        if not app["active_release_id"]:
+            return "OFFLINE_RELEASE_CHANGED"
+        if db.execute("""SELECT id FROM offline_operations WHERE app_id=?
+            AND status IN ('queued','running','recovery_required') AND id<>? LIMIT 1""",
+            (app["id"], ignore_operation or "")).fetchone():
+            return "APP_OFFLINE_BUSY"
+        for row in db.execute("SELECT * FROM jobs WHERE status IN ('queued','running','recovery_required')"):
+            job = self._job(row)
+            if (job["app_id"] == app["id"] or job["input"].get("appId") == app["id"]
+                    or job["input"].get("subdomain") == app["subdomain"]):
+                return "APP_BUSY"
+        release = self._get(db, app["active_release_id"])
+        if release["status"] != "succeeded" or release["execution"].get("resources_released"):
+            return "OFFLINE_STATE"
+        if self.retirement_pending(release):
+            return "APP_BUSY"
+        return None
+
+    def enqueue_offline(self, app_id, expected_release_id, idempotency_key):
+        if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 200:
+            raise DeployError("INVALID_IDEMPOTENCY_KEY", "Provide an idempotency key of 1–200 characters.")
+        with self._connection(write=True) as db:
+            row = db.execute("SELECT * FROM offline_operations WHERE idempotency_key=?", (idempotency_key,)).fetchone()
+            existing = self._offline(row) if row else None
+            if existing:
+                if existing["app_id"] != app_id or existing["target_release_id"] != expected_release_id:
+                    raise DeployError("IDEMPOTENCY_CONFLICT", "This key already belongs to a different request.")
+                if existing["status"] != "recovery_required":
+                    return existing
+            row = db.execute("SELECT * FROM apps WHERE id=?", (app_id,)).fetchone()
+            if row is None:
+                raise DeployError("NOT_FOUND", "Application was not found.")
+            app = dict(row)
+            if not expected_release_id or app["active_release_id"] != expected_release_id:
+                raise DeployError("OFFLINE_RELEASE_CHANGED", "The active release changed; refresh before taking it offline.")
+            reason = self._offline_block_reason(db, app, ignore_operation=existing["id"] if existing else None)
+            if reason:
+                raise DeployError(reason, "Application has unfinished deployment or offline work.")
+            now = time.time()
+            if existing:
+                # The same confirmed request explicitly retries the durable journal.
+                db.execute("UPDATE offline_operations SET status='queued',error=NULL,updated_at=? WHERE id=?",
+                           (now, existing["id"]))
+                return self._get_offline(db, existing["id"])
+            operation_id = uuid.uuid4().hex
+            db.execute("""INSERT INTO offline_operations
+                (id,idempotency_key,app_id,target_release_id,status,phase,created_at,updated_at)
+                VALUES (?,?,?,?,'queued','offline_queued',?,?)""",
+                (operation_id, idempotency_key, app_id, expected_release_id, now, now))
+            return self._get_offline(db, operation_id)
+
+    def next_offline(self):
+        with self._connection() as db:
+            row = db.execute("""SELECT * FROM offline_operations WHERE status IN ('queued','running')
+                ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,created_at,id LIMIT 1""").fetchone()
+            return self._offline(row) if row else None
+
+    def claim_offline(self, operation_id):
+        with self._connection(write=True) as db:
+            operation = self._get_offline(db, operation_id)
+            if operation["status"] not in {"queued", "running"}:
+                raise DeployError("OFFLINE_STATE", "This offline operation cannot be started.")
+            app = db.execute("SELECT * FROM apps WHERE id=?", (operation["app_id"],)).fetchone()
+            if app is None or app["active_release_id"] != operation["target_release_id"]:
+                raise DeployError("OFFLINE_RELEASE_CHANGED", "The active release changed before offline execution.")
+            reason = self._offline_block_reason(db, app, ignore_operation=operation_id)
+            if reason:
+                raise DeployError(reason, "Application is not ready to go offline.")
+            db.execute("UPDATE offline_operations SET status='running',phase='offline',updated_at=? WHERE id=?",
+                       (time.time(), operation_id))
+            return self._get_offline(db, operation_id)
+
+    def checkpoint_offline(self, operation_id, execution):
+        with self._connection(write=True) as db:
+            operation = self._get_offline(db, operation_id)
+            if operation["status"] != "running":
+                raise DeployError("OFFLINE_STATE", "Only a running offline operation may checkpoint.")
+            patch = dict(execution)
+            phase = patch.pop("phase", operation["phase"])
+            state = {**operation["execution"], **patch}
+            db.execute("UPDATE offline_operations SET phase=?,execution=?,updated_at=? WHERE id=?",
+                       (phase, _json(state), time.time(), operation_id))
+            return self._get_offline(db, operation_id)
+
+    def fail_offline(self, operation_id, error):
+        with self._connection(write=True) as db:
+            operation = self._get_offline(db, operation_id)
+            if operation["status"] == "succeeded":
+                raise DeployError("OFFLINE_STATE", "A completed offline operation cannot fail.")
+            db.execute("UPDATE offline_operations SET status='recovery_required',error=?,updated_at=? WHERE id=?",
+                       (_json(error), time.time(), operation_id))
+            return self._get_offline(db, operation_id)
+
+    def finish_offline(self, operation_id):
+        with self._connection(write=True) as db:
+            operation = self._get_offline(db, operation_id)
+            if operation["status"] == "succeeded":
+                return operation
+            if operation["status"] != "running" or not all(operation["execution"].get(key) is True for key in
+                    ("gateway_deactivated", "containers_stopped", "cleanup_confirmed")):
+                raise DeployError("OFFLINE_STATE", "Offline completion requires confirmed route and runtime cleanup.")
+            app = db.execute("SELECT * FROM apps WHERE id=?", (operation["app_id"],)).fetchone()
+            if app is None or app["active_release_id"] != operation["target_release_id"]:
+                raise DeployError("OFFLINE_RELEASE_CHANGED", "The active release changed before offline completion.")
+            job = self._get(db, operation["target_release_id"])
+            now = time.time()
+            state = {**job["execution"], "resources_released": True, "offline_operation": operation_id}
+            db.execute("UPDATE apps SET active_release_id=NULL,updated_at=? WHERE id=?", (now, app["id"]))
+            db.execute("DELETE FROM reservations WHERE job_id=?", (job["id"],))
+            db.execute("UPDATE jobs SET execution=?,updated_at=? WHERE id=?", (_json(state), now, job["id"]))
+            db.execute("UPDATE offline_operations SET status='succeeded',phase='offline_complete',error=NULL,updated_at=? WHERE id=?",
+                       (now, operation_id))
+            return self._get_offline(db, operation_id)
+
+    def _retained_release(self, db, app_id):
+        row = db.execute("""SELECT jobs.* FROM offline_operations AS operations
+            JOIN jobs ON jobs.id=operations.target_release_id
+            WHERE operations.app_id=? AND operations.status='succeeded'
+            ORDER BY operations.created_at DESC,operations.id DESC LIMIT 1""", (app_id,)).fetchone()
+        return self._job(row) if row else None
+
+    def management_snapshot(self):
+        with self._connection() as db:
+            db.execute("BEGIN")
+            operations = [self._offline(row) for row in db.execute(
+                "SELECT * FROM offline_operations ORDER BY created_at,id")]
+            latest = {operation["app_id"]: operation for operation in operations}
+            apps = []
+            for row in db.execute("SELECT * FROM apps ORDER BY created_at,id"):
+                app = dict(row)
+                reason = self._offline_block_reason(db, app)
+                app.update(active_job=self._get(db, app["active_release_id"]) if app["active_release_id"] else None,
+                           retained_job=self._retained_release(db, app["id"]), operation=latest.get(app["id"]),
+                           can_offline=reason is None, offline_block_reason=reason)
+                apps.append(app)
+            return {"apps": apps, "deployments": [self._job(row) for row in db.execute(
+                "SELECT * FROM jobs WHERE status IN ('queued','running','recovery_required') ORDER BY created_at,id")],
+                "offline_operations": [operation for operation in operations if operation["status"] != "succeeded"]}
 
     def active_release(self, app_id):
         with self._connection() as db:
@@ -137,6 +318,8 @@ class Store:
                 for row in db.execute("SELECT * FROM jobs WHERE status IN ('running','recovery_required')")
                 if (pending := self._job(row))["execution"].get("storage_handoff_intent")
             }
+            blocked.update(row[0] for row in db.execute("""SELECT target_release_id FROM offline_operations
+                WHERE status IN ('queued','running','recovery_required')"""))
         due = []
         for job in jobs:
             if job["id"] in blocked:
@@ -149,8 +332,10 @@ class Store:
                 due.append((not different_boot, state.get("next_at", 0), job["created_at"], job["id"], job))
         return min(due, key=lambda item: item[:4])[-1] if due else None
 
-    def _require_active(self, db, job_id):
+    def _require_active(self, db, job_id, *, allow_offline_pending=False):
         job = self._get(db, job_id)
+        if not allow_offline_pending:
+            self._check_offline_gate(db, job["app_id"], job["input"].get("subdomain"))
         if (
             job["status"] != "succeeded"
             or job["execution"].get("resources_released")
@@ -187,7 +372,9 @@ class Store:
     def finish_active_recovery(self, job_id, *, success, restarted=None, now=None):
         now = time.time() if now is None else now
         with self._connection(write=True) as db:
-            job = self._require_active(db, job_id)
+            # A request may arrive while the worker is already checking this release.
+            # Finishing bookkeeping starts nothing; the same worker lock then handles offline.
+            job = self._require_active(db, job_id, allow_offline_pending=True)
             previous = job["execution"].get("active_recovery", {})
             attempts = 0 if success else min(max(previous.get("attempts", 1), 1), 16)
             state = {
@@ -270,6 +457,7 @@ class Store:
     def _app_context(self, db, job, create=False):
         payload = job["input"]
         app_id = job["app_id"] or payload.get("appId")
+        self._check_offline_gate(db, app_id, payload.get("subdomain"))
         if app_id:
             row = db.execute("SELECT * FROM apps WHERE id=?", (app_id,)).fetchone()
             if not row:
@@ -310,6 +498,11 @@ class Store:
                 if previous_id:
                     previous = self._get(db, previous_id)
                     state["previous_manifest"] = previous["snapshot"]["manifest"]
+                else:
+                    retained = self._retained_release(db, app["id"])
+                    if retained:
+                        state["previous_manifest"] = retained["snapshot"]["manifest"]
+                        state["storage_volumes"] = retained["execution"].get("storage_volumes", {})
                 db.execute(
                     "UPDATE jobs SET app_id=?,execution=?,updated_at=? WHERE id=?",
                     (app["id"], _json(state), time.time(), job_id),
@@ -372,6 +565,11 @@ class Store:
             state["previous_release"] = app["active_release_id"]
             if app["active_release_id"]:
                 state["previous_manifest"] = self._get(db, app["active_release_id"])["snapshot"]["manifest"]
+            else:
+                retained = self._retained_release(db, app["id"])
+                if retained:
+                    state["previous_manifest"] = retained["snapshot"]["manifest"]
+                    state["storage_volumes"] = retained["execution"].get("storage_volumes", {})
             db.execute(
                 "UPDATE jobs SET app_id=?,snapshot=?,execution=?,phase='reserved',updated_at=? WHERE id=?",
                 (app["id"], _json(snapshot), _json(state), time.time(), job_id),
