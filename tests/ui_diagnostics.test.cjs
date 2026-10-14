@@ -329,3 +329,23 @@ test('application identity remains a hidden form field and the original select i
   assert.match(html,/<div[^>]+id="history"[^>]+tabindex="0"[^>]+role="region"[^>]+aria-label="[^"]+"/);
   assert.doesNotMatch(html,/history-(?:prev|next|page|pagination)/);
 });
+
+test('runtime capability copy distinguishes isolated deployments and controlled public TCP 443',async()=>{
+  const h=harness();await new Promise(setImmediate);
+  h.run("renderCapabilities({runtimeNetwork:{mode:'internal',enabled:false}})");
+  assert.match(h.get('runtime-network-capability').textContent,/隔离网络/);
+  assert.match(h.get('runtime-network-capability').textContent,/不能直连/);
+  h.run("renderCapabilities({runtimeNetwork:{mode:'public-https-v1',enabled:true}})");
+  const text=h.get('runtime-network-capability').textContent;
+  assert.match(text,/新部署/);assert.match(text,/公网 IPv4/);assert.match(text,/TCP 443/);
+  assert.match(text,/受控 DNS/);assert.match(text,/不进行 TLS/);assert.match(text,/域名白名单/);
+  assert.match(text,/私网/);assert.match(text,/IPv6/);assert.match(text,/HTTP 80/);
+  assert.match(text,/已有部署/);
+  h.run('renderCapabilities({})');
+  assert.match(h.get('runtime-network-capability').textContent,/暂未确认/);
+  h.run("renderCapabilities({runtimeNetwork:{mode:'<script>secret</script>',enabled:true}})");
+  assert.match(h.get('runtime-network-capability').textContent,/暂未确认/);
+  assert.ok(!h.get('runtime-network-capability').textContent.includes('<script>'));
+  const markup=fs.readFileSync(path.join(__dirname,'../src/awesome_deploy/static/index.html'),'utf8');
+  assert.match(markup,/id="runtime-network-capability"/);
+});

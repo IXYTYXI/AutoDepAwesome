@@ -26,6 +26,10 @@ class Settings:
     builder_name: str = "awesome-builder"
     gateway_command: tuple[str, ...] = ("sudo", "-n", "/usr/local/libexec/awesome-gateway")
     runtime_user: str = "65532:65532"
+    runtime_network: str = "internal"
+    runtime_dns: tuple[str, ...] = ("223.5.5.5", "1.1.1.1")
+    runtime_blocked_ips: tuple[str, ...] = ()
+    egress_docker_pid_file: Path | None = None
     required_free_mib: int = 2048
     docker_storage_limit_mib: int = 81920
     repo_size_limit_mib: int = 256

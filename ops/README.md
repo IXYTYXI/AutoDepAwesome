@@ -40,7 +40,19 @@ sudo install -o root -g root -m 0755 ops/awesome-gateway /usr/local/libexec/awes
 
 Docker daemon 与 worker 必须由**同一个非 root UID**运行，使用专属 Unix socket，例如 `unix:///run/user/1001/docker.sock`。socket 必须属于 worker，不能是 root 所有或任意用户可写。必须有 cgroup v2、CPU/内存/PID 配额支持和默认 seccomp；`docker info` 中相关 limit 标记必须实际启用，而不是只存在配置项。
 
-从 0.1.2 起，隔离容器的本机入口由同一 UID 的 RootlessKit builtin 端口驱动提供。普通 Docker `--publish` 在仅连接 `--internal` 网络时不会建立实际主机端口，不能作为健康探测或 Nginx 上游。平台保留 internal 网络，直接将 `127.0.0.1:<预留端口>` 转发到受管容器 IPv4 和冻结服务端口；业务容器不新增外联网。
+从 0.1.2 起，隔离容器的本机入口由同一 UID 的 RootlessKit builtin 端口驱动提供。普通 Docker `--publish` 在仅连接 `--internal` 网络时不会建立实际主机端口，不能作为健康探测或 Nginx 上游。平台保留 internal 网络，直接将 `127.0.0.1:<预留端口>` 转发到受管容器 IPv4 和冻结服务端口。0.5.0 的可选公网模式另外添加受限出口网，入站转发目标仍使用原服务网地址。
+
+### 运行时公网直连
+
+默认配置仍为 `runtime_network: internal`。启用新模式前，安装 `nft`、`nsenter`，使用支持 `network connect --gw-priority` 的 Docker，并确认 RootlessKit 使用 slirp4netns、tap0 与 builtin 端口驱动，开启 `--disable-host-loopback`。Docker 必须关闭 live-restore，业务容器保持 `restart=no`，由 worker 在恢复隔离规则后统一恢复。不得另设自动启动业务容器的进程。
+
+配置 `runtime_network: public-https-v1`、`egress_docker_pid_file: /run/user/<实际UID>/docker.pid`、`runtime_dns: ["223.5.5.5", "1.1.1.1"]`，并在 `runtime_blocked_ips` 中列出**全部**宿主机公网/私网 IPv4 地址，尤其云平台 NAT 公网地址。示例文件不填写虚构的公网地址，也不会默认启用。DNS 和地址策略会冻结到任务快照，修改全局策略前须停止所有公网模式应用，制定旧快照与配置的迁移/回滚方案；不能在在线应用间切换不一致的全局策略。
+
+worker 以自身 UID 进入经过验证的 Docker user/net namespace，只管理 `inet aw_egress_v1` 表；不改 Docker 表，也不需要额外 root sudo 权限。guard 在任何公网业务网络连接/启动之前安装完整原子规则，既有表不符则拒绝继续。`awx-*` 为专属出口桥，`awi-*` 为新模式内部桥；内部跨桥隔离仍依赖 Docker 的 internal 网络规则。不要手工修改这些接口、Docker 防火墙或该表。规则检查失败时，当前被恢复的应用会停止并等待处理；周期恢复不是对管理员恶意删防火墙的零空窗防护。
+
+公网模式只允许公网 IPv4 TCP 443 及指定 DNS 的 TCP/UDP 53，拒绝非公网地址、配置的宿主地址、IPv6 和其他端口。公网端口过滤不检查 TLS 内容，也不限制域名；HTTP 80、UDP 443/QUIC 和自定义模型 API 端口均不支持。构建网络仍为 `none`。原有没有策略字段的快照保持旧行为，升级后需新部署才获得出口。
+
+以 awesome 运行 `ops/verify-direct-egress.py --config <已配置文件>` 可用已有 `python:3.12-slim` 镜像创建并清理独立的验收容器，验证 TLS、DNS、依赖连接、入站健康检查、拒绝目标及容器恢复。该命令不会提交用户项目或发布应用路由；需要先在隔离环境覆盖 daemon/worker 重启和失败回滚，再启用正式发布。只有 TCP 握手/HTTP 响应成功不等于模型账户鉴权、配额或推理已经验证。
 
 默认 RootlessKit API 位于 Docker socket 同级目录的 `dockerd-rootless/api.sock`；非标准安装可设置配置项 `rootlesskit_socket`，相对路径按配置文件目录解析。API socket 须属于 worker，不能为 root 所有或 world-writable，端口驱动必须是 builtin。检查会失败关闭，不能通过更改业务网络来绕过。协议参见 [RootlessKit v3.2.0 API](https://raw.githubusercontent.com/rootless-containers/rootlesskit/v3.2.0/pkg/api/openapi.yaml)。
 

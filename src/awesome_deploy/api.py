@@ -49,12 +49,30 @@ class OfflineRequest(BaseModel):
     expectedReleaseId: StrictStr
 
 
+_RUNTIME_NETWORK_TEXT = {
+    "internal": "运行服务使用 internal 隔离网络，不能直连外部模型 API。缺少策略字段的旧部署保持此模式，不会自动升级。",
+    "public-https-v1": "允许直连公网 IPv4 的 TCP 443，并使用平台受控 DNS；不进行 TLS 检查，也不提供域名白名单。私网、宿主机、元数据地址、IPv6 及 HTTP 80 等其他业务外连端口仍禁止访问。",
+    "unknown": "无法确认本次部署固定的运行网络模式，请运维核验；不要假定已开放外部网络访问。",
+}
+
+
+def _frozen_runtime_network(job):
+    snapshot = job.get("snapshot")
+    if snapshot is None or (isinstance(snapshot, dict) and "runtime_network" not in snapshot):
+        return "internal"
+    policy = snapshot.get("runtime_network") if isinstance(snapshot, dict) else None
+    mode = policy.get("mode") if isinstance(policy, dict) else None
+    return mode if isinstance(mode, str) and mode in {"internal", "public-https-v1"} else "unknown"
+
+
 def advice_context(job):
     """Only fixed diagnostic text and public platform rules may leave this server."""
+    runtime_network = _frozen_runtime_network(job)
     raw = job.get("error") or {}
     code = raw.get("code")
     safe_error = localize_error({**raw, "code": code if code in ERROR_CODES else "UNKNOWN_ERROR"})
     return {
+        "runtime_network": {"mode": runtime_network},
         "failure": {
             "code": safe_error["code"],
             "phase": PHASE_LABELS.get(job.get("phase"), "未知阶段"),
@@ -65,7 +83,8 @@ def advice_context(job):
         "platform_rules": [
             "仓库根目录必须包含 UTF-8 的 awesome.yaml，大小不超过 256 KiB，schemaVersion 为 1。",
             "当前支持 Web 服务和受控持久存储，服务必须为 HTTP 服务；桌面应用不能直接作为 Web 服务部署。",
-            "构建命令默认不能访问网络；基础镜像由平台获取并固定摘要。",
+            "构建命令默认不能访问网络；基础镜像由平台获取并固定摘要。运行外连能力不改变构建网络限制。",
+            "以下运行网络说明仅依据本次部署固定的策略，不依据当前平台开关：" + _RUNTIME_NETWORK_TEXT[runtime_network],
             "不支持数据库服务类型、后台任务或任意宿主机访问。持久卷通过 services.<服务名>.storage 声明 name 和固定 mountPath: /data；每服务一个独立卷，禁止共享卷、任意驱动和主机挂载。",
             "已有 storage 不得删除、改名或移动；持久存储更新使用 Recreate，会短暂停机，先确认旧版停止才启动候选。",
             "持久存储恢复必须先确认候选已停止和清理，再恢复旧版；应用回滚不会撤销数据写入或回滚数据格式，需备份及向后兼容。",
@@ -201,6 +220,8 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
 
     @app.get("/api/v1/capabilities", dependencies=[Depends(authenticated)])
     def capabilities():
+        runtime_mode = getattr(settings, "runtime_network", "internal")
+        public_egress = runtime_mode == "public-https-v1"
         return {
             "schemaVersion": 1,
             "serviceKinds": ["web"],
@@ -211,6 +232,16 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
             "workers": False,
             "customEgress": False,
             "buildNetwork": settings.build_network,
+            "runtimeNetwork": {
+                "mode": runtime_mode,
+                "enabled": public_egress,
+                "publicIPv4TcpPorts": [443] if public_egress else [],
+                "controlledDns": public_egress,
+                "tlsInspection": False,
+                "domainAllowlist": False,
+                "appliesTo": "new-deployments",
+                "description": _RUNTIME_NETWORK_TEXT.get(runtime_mode, _RUNTIME_NETWORK_TEXT["unknown"]),
+            },
             "baseDomain": settings.base_domain,
             "aiAdvice": {"configured": app.state.advice.configured},
             "applicationManagement": {"offline": True, "retainsData": True},

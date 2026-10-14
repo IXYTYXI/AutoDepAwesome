@@ -170,7 +170,7 @@ def host(req):
     return f"{req['subdomain']}.{CONFIG['base_domain']}"
 
 
-def render(req, tls):
+def render(req, tls, *, legacy=False):
     validate(req)
     domain = host(req)
     acme = f"location ^~ /.well-known/acme-challenge/ {{ root {WEBROOT}; default_type text/plain; }}"
@@ -212,7 +212,8 @@ def render(req, tls):
                     "proxy_set_header X-Forwarded-Proto https;",
                     "proxy_set_header X-Forwarded-For $remote_addr;",
                     "proxy_connect_timeout 5s;",
-                    "proxy_read_timeout 60s;",
+                    "proxy_read_timeout 60s;" if legacy else "proxy_read_timeout 300s;",
+                    *([] if legacy else ["proxy_buffering off;"]),
                     "proxy_redirect off;",
                     "}",
                 ]
@@ -313,7 +314,8 @@ def deactivate(req):
         raise ValueError("No current release or matching completed deactivation exists")
     path = config_path(req["subdomain"])
     content = path.read_text() if path.exists() else None
-    allowed = [render(current["request"], tls=True)] if current else []
+    # Existing releases keep the exact 0.4.1 config until their next publication.
+    allowed = [render(current["request"], tls=True, legacy=legacy) for legacy in (False, True)] if current else []
     if record:
         allowed.append(render_deactivated(record["request"], record["token"]))
         allowed.append(render_deactivated(record["request"], record["token"], legacy=True))
