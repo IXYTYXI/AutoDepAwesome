@@ -307,6 +307,14 @@ function renderCapabilities(capabilities) {
   } else if(capabilities.persistentStorage===false)storage='当前平台的持久存储暂未开放，请勿将需要保留的数据仅写入容器。';
   else storage='暂未确认持久存储支持情况，请以平台字段规范和运维配置为准。';
   $('storage-capability').textContent=storage;
+  const network=capabilities.runtimeNetwork;
+  let runtimeNetwork='暂未确认运行外连支持情况，请以平台能力和本次部署固定的策略为准。';
+  if(network?.mode==='public-https-v1' && network.enabled===true) {
+    runtimeNetwork='新部署允许直连公网 IPv4 的 TCP 443，并使用受控 DNS；不进行 TLS 检查，也不提供域名白名单。私网、宿主机、元数据地址、IPv6 及 HTTP 80 等其他业务外连端口仍禁止访问。已有部署保持原先固定的网络策略，构建网络限制不变。';
+  } else if(network?.mode==='internal' && network.enabled===false) {
+    runtimeNetwork='运行服务使用隔离网络，不能直连外部模型 API。已有部署保持原先固定的网络策略；构建网络限制不变。';
+  }
+  $('runtime-network-capability').textContent=runtimeNetwork;
   if(currentJob)showJob(currentJob);
 }
 form.addEventListener('input',event=>{

@@ -25,6 +25,7 @@ from .processes import run_command, http_status
 from .secrets_store import SecretStore
 from .storage import ManagedStorage
 from .manifest import validate_storage_transition
+from .egress import EgressGuard, bridge_name, policy, validate_policy
 
 
 IMMUTABLE = re.compile(r"(?:[^\s@]+@)?sha256:[0-9a-f]{64}")
@@ -37,6 +38,7 @@ class DeploymentBackend:
         self.settings = settings
         self.gateway = Gateway(settings)
         self.port_forwarder = RootlessPortForwarder(settings)
+        self.egress_guard = EgressGuard(settings)
         self.lock_fd = None
         self.storage_root = None
 
@@ -118,6 +120,7 @@ class DeploymentBackend:
         self._check_storage(info)
         if self.settings.build_network != "none":
             raise DeployError("UNSUPPORTED_CAPABILITY", "First-phase builds require build_network=none")
+        return info
 
     def _check_storage(self, info, require_free=True):
         root = Path(info.get("DockerRootDir") or "/nonexistent-docker-root").resolve()
@@ -145,7 +148,12 @@ class DeploymentBackend:
             raise DeployError("DISK_CAPACITY", "Docker storage has insufficient free bytes or inodes")
 
     def check(self):
-        self.preflight()
+        info = self.preflight()
+        network_policy = policy(self.settings)
+        if network_policy is not None:
+            self._check_live_restore(info)
+            self.egress_guard.lock_fd = self.lock_fd
+            self.egress_guard.check(network_policy)
         self._builder()
         self.gateway.lock_fd = self.lock_fd
         self.gateway.check()
@@ -153,6 +161,7 @@ class DeploymentBackend:
             "ready": True,
             "runtime": "rootless-docker",
             "build_network": "none",
+            "runtime_network": "internal" if network_policy is None else network_policy["mode"],
             "limitations": [
                 "Persistent storage is a single owned local volume per service at /data; updates briefly stop the previous release.",
                 "Internal dependency networks are bidirectional, not an application firewall.",
@@ -289,11 +298,15 @@ class DeploymentBackend:
         return "\n".join(output) + "\n"
 
     def freeze(self, snapshot, job, checkpoint):
-        self.preflight()
+        info = self.preflight()
         self._ids(job, require_app=False)
         checkpoint({"build_storage_root": str(self.storage_root)})
         validate_storage_transition(snapshot["manifest"], job.get("execution", {}).get("previous_manifest"))
         frozen = copy.deepcopy(snapshot)
+        network_policy = validate_policy(job) if "runtime_network" in snapshot else policy(self.settings)
+        if network_policy is not None:
+            self._check_live_restore(info)
+            frozen["runtime_network"] = copy.deepcopy(network_policy)
         pins = dict(job.get("execution", {}).get("frozen_images", {}))
         frozen["build_contexts"], frozen["secret_versions"] = {}, {}
         source = Path(snapshot["source_dir"]).resolve()
@@ -462,18 +475,139 @@ class DeploymentBackend:
         self._ids(job)
         return f"awesome-{job['id']}-{service}"
 
+    @staticmethod
+    def _check_live_restore(info):
+        if info.get("LiveRestoreEnabled") is not False:
+            raise DeployError("EGRESS_UNSAFE", "Public HTTPS requires Docker live restore to be disabled")
+
+    def _ensure_egress(self, job, info):
+        network_policy = validate_policy(job)
+        if network_policy is not None:
+            self._check_live_restore(info)
+            self.egress_guard.lock_fd = self.lock_fd
+            identifiers = self._docker([
+                "container", "ls", "-a", "--filter", f"label=awesome.job={job['id']}",
+                "--format", "{{.ID}}",
+            ]).split()
+            running = False
+            if identifiers:
+                rows = json.loads(self._docker(["container", "inspect", *identifiers]))
+                if (not isinstance(rows, list) or len(rows) != len(identifiers)
+                        or any(not self._owned(row.get("Config", {}).get("Labels"), job) for row in rows)):
+                    raise DeployError("EGRESS_NETWORK_IDENTITY", "Cannot identify existing release containers")
+                running = any(row.get("State", {}).get("Running") is True for row in rows)
+            if running:
+                # Never repair a missing guard while business containers are running.
+                # Failure stops this release; the next attempt can install after exit.
+                self.egress_guard.check(network_policy)
+            else:
+                self.egress_guard.ensure(network_policy)
+        return network_policy
+
+    def _check_egress(self, job):
+        network_policy = validate_policy(job)
+        if network_policy is not None:
+            self.egress_guard.lock_fd = self.lock_fd
+            self.egress_guard.check(network_policy)
+
+    def _stop_after_network_failure(self, job, error):
+        if (validate_policy(job) is not None and
+                (error.code.startswith("EGRESS_") or error.code in {
+                    "RESOURCE_CONFLICT", "PORT_FORWARD_IDENTITY", "ACTIVE_NETWORK_CHANGED",
+                    "ACTIVE_CONTAINER_CHANGED",
+                })):
+            self._stop_owned_containers(job, require_existing=False)
+
+    def _external_network(self, job, name):
+        return validate_policy(job) is not None and name in {
+            f"aw-{job['id']}-x-{len(service)}-{service}"
+            for service in job["snapshot"]["manifest"]["services"]
+        }
+
+    def _network_identity(self, job, row, name):
+        external = self._external_network(job, name)
+        result = {"id": row.get("Id"), "bridge": bridge_name(name, external), "internal": not external}
+        if (row.get("Name") != name or row.get("Internal") is not (not external)
+                or row.get("Driver") != "bridge" or not self._owned(row.get("Labels"), job)
+                or row.get("EnableIPv6") is not False
+                or row.get("Options") != {"com.docker.network.bridge.name": result["bridge"]}
+                or not re.fullmatch(r"[0-9a-f]{64}", str(row.get("Id", "")))):
+            raise DeployError("EGRESS_NETWORK_IDENTITY", "Managed network does not match its frozen exit policy")
+        saved = job.get("execution", {}).get("network_identities", {})
+        if not isinstance(saved, dict) or (name in saved and saved[name] != result):
+            raise DeployError("EGRESS_NETWORK_IDENTITY", "Persisted managed network identity changed")
+        return result
+
+    def _validate_container_network_policy(self, job, name, row):
+        network_policy = validate_policy(job)
+        if network_policy is None:
+            return  # Legacy containers keep their original identity contract.
+        if row.get("HostConfig", {}).get("Dns") != network_policy["dns"]:
+            raise DeployError("EGRESS_NETWORK_IDENTITY", "Container DNS differs from its frozen exit policy")
+        expected = self._service_networks(job)[name]
+        state = row.get("State") or {}
+        unallocated = (
+            state.get("Status") == "created" and state.get("Running") is False
+            and not any(state.get(flag) for flag in ("Paused", "Restarting", "Dead"))
+            and name not in job["execution"].get("started", [])
+            and name not in job["execution"].get("port_forwards", {})
+        )
+        pending = []
+        for network, endpoint in (row.get("NetworkSettings", {}).get("Networks") or {}).items():
+            if network not in expected:
+                raise DeployError("EGRESS_NETWORK_IDENTITY", "Container has an unexpected network attachment")
+            if endpoint.get("GwPriority", 0) != (1 if self._external_network(job, network) else 0):
+                raise DeployError("EGRESS_NETWORK_IDENTITY", "Container exit gateway priority changed")
+            saved = job["execution"].get("network_identities", {}).get(network)
+            if saved is None:
+                raise DeployError("EGRESS_NETWORK_IDENTITY", "Missing persisted managed network identity")
+            if (unallocated and endpoint.get("NetworkID") == ""
+                    and endpoint.get("EndpointID") == "" and endpoint.get("IPAddress") == ""):
+                pending.append(network)
+            elif endpoint.get("NetworkID") != saved.get("id"):
+                raise DeployError("EGRESS_NETWORK_IDENTITY", "Container network differs from its persisted identity")
+        if pending:
+            # Docker 29 records named attachments on a created container before it
+            # allocates endpoints. Validate those names against the frozen network
+            # instances now; _forward_identity requires actual IDs after start.
+            rows = json.loads(self._docker(["network", "inspect", *sorted(pending)]))
+            if (not isinstance(rows, list) or len(rows) != len(pending)
+                    or {network.get("Name") for network in rows} != set(pending)):
+                raise DeployError("EGRESS_NETWORK_IDENTITY", "Created container network intent is ambiguous")
+            for network in rows:
+                self._network_identity(job, network, network["Name"])
+
+    def _connect_network(self, job, network, name, container):
+        self._check_egress(job)
+        priority = ["--gw-priority=1"] if self._external_network(job, network) else []
+        self._docker(["network", "connect", *priority, "--alias", name, network, container])
+
     def _ensure_network(self, job, name):
+        network_policy = validate_policy(job)
         ids = self._docker(["network", "ls", "--filter", f"name=^{name}$", "--format", "{{.ID}}"]).split()
         if ids:
             if len(ids) != 1:
                 raise DeployError("RESOURCE_CONFLICT", "Conflicting network identity")
             network = json.loads(self._docker(["network", "inspect", ids[0]]))[0]
+            if network_policy is not None:
+                return self._network_identity(job, network, name)
             if not self._owned(network.get("Labels"), job) or network.get("Internal") is not True:
                 raise DeployError("RESOURCE_CONFLICT", "Refusing to use an unowned or external network")
         else:
+            if network_policy is not None and name in job["execution"].get("network_identities", {}):
+                raise DeployError("EGRESS_NETWORK_IDENTITY", "A persisted managed network is missing")
+            external = self._external_network(job, name)
+            options = (["--ipv6=false", "--opt", f"com.docker.network.bridge.name={bridge_name(name, external)}"]
+                       if network_policy is not None else [])
             self._docker(
-                ["network", "create", "--driver", "bridge", "--internal", *self._label_flags(job), name]
+                ["network", "create", "--driver", "bridge", *([] if external else ["--internal"]),
+                 *options, *self._label_flags(job), name]
             )
+            if network_policy is not None:
+                rows = json.loads(self._docker(["network", "inspect", name]))
+                if not isinstance(rows, list) or len(rows) != 1:
+                    raise DeployError("EGRESS_NETWORK_IDENTITY", "Cannot confirm created managed network")
+                return self._network_identity(job, rows[0], name)
 
     def _service_networks(self, job):
         services = job["snapshot"]["manifest"]["services"]
@@ -483,6 +617,9 @@ class DeploymentBackend:
                 edge = f"aw-{job['id']}-e-{len(name)}-{name}-{len(dependency)}-{dependency}"
                 networks[name].append(edge)
                 networks[dependency].append(edge)
+        if validate_policy(job) is not None:
+            for name in services:
+                networks[name].append(f"aw-{job['id']}-x-{len(name)}-{name}")
         return networks
 
     @staticmethod
@@ -548,6 +685,7 @@ class DeploymentBackend:
         if not isinstance(rows, list) or len(rows) != 1:
             raise DeployError("PORT_FORWARD_IDENTITY", "Ambiguous service container identity")
         row = rows[0]
+        self._validate_container_network_policy(job, name, row)
         attached = row.get("NetworkSettings", {}).get("Networks") or {}
         expected = self._service_networks(job)[name]
         if (
@@ -564,7 +702,7 @@ class DeploymentBackend:
             len(inspected) != len(attached)
             or {network.get("Name") for network in inspected} != set(attached)
             or any(
-                network.get("Internal") is not True
+                network.get("Internal") is not (not self._external_network(job, network.get("Name")))
                 or network.get("Driver") != "bridge"
                 or not self._owned(network.get("Labels"), job)
                 or network.get("Id") != attached[network["Name"]].get("NetworkID")
@@ -574,6 +712,9 @@ class DeploymentBackend:
             raise DeployError(
                 "PORT_FORWARD_IDENTITY", "Service requires its recorded owned internal networks"
             )
+        if validate_policy(job) is not None:
+            for inspected_network in inspected:
+                self._network_identity(job, inspected_network, inspected_network["Name"])
         network = expected[0]
         record = {
             "confirmed": False,
@@ -635,7 +776,16 @@ class DeploymentBackend:
         self._checkpoint_forward(job, name, forward, True, checkpoint)
 
     def start(self, job, checkpoint):
-        self.preflight()
+        validate_policy(job)
+        try:
+            return self._start(job, checkpoint)
+        except DeployError as error:
+            self._stop_after_network_failure(job, error)
+            raise
+
+    def _start(self, job, checkpoint):
+        info = self.preflight()
+        network_policy = self._ensure_egress(job, info)
         services = job["snapshot"]["manifest"]["services"]
         storage = ManagedStorage(self._docker)
         volumes = dict(job["execution"].get("storage_volumes", {}))
@@ -648,8 +798,13 @@ class DeploymentBackend:
                 checkpoint({"storage_volumes": dict(volumes)})
                 job["execution"]["storage_volumes"] = dict(volumes)
         networks = self._service_networks(job)
+        network_identities = copy.deepcopy(job["execution"].get("network_identities", {}))
         for network in sorted({n for group in networks.values() for n in group}):
-            self._ensure_network(job, network)
+            identity = self._ensure_network(job, network)
+            if network_policy is not None:
+                network_identities[network] = identity
+                checkpoint({"network_identities": copy.deepcopy(network_identities)})
+                job["execution"]["network_identities"] = copy.deepcopy(network_identities)
         network_names = sorted({n for group in networks.values() for n in group})
         checkpoint({"networks": network_names})
         job["execution"]["networks"] = network_names
@@ -675,6 +830,7 @@ class DeploymentBackend:
                     if not self._owned(row.get("Config", {}).get("Labels"), job):
                         raise DeployError("RESOURCE_CONFLICT", "Refusing to reuse an unowned container")
                     storage.validate_mounts(job, name, row)
+                    self._validate_container_network_policy(job, name, row)
                     attached = row.get("NetworkSettings", {}).get("Networks") or {}
                     if any(network not in networks[name] for network in attached):
                         raise DeployError(
@@ -682,14 +838,16 @@ class DeploymentBackend:
                         )
                     for network in networks[name]:
                         if network not in attached:
-                            self._docker(["network", "connect", "--alias", name, network, container_name])
+                            self._connect_network(job, network, name, container_name)
                 else:
                     self._create_container(job, name, service, image, networks[name])
-                if service.get("storage"):
+                if service.get("storage") or network_policy is not None:
                     # Docker may create an empty volume if it vanished after ensure;
                     # recheck the persisted volume instance and actual mount before start.
                     created = json.loads(self._docker(["container", "inspect", container_name]))[0]
                     storage.validate_mounts(job, name, created)
+                    self._validate_container_network_policy(job, name, created)
+                self._check_egress(job)
                 self._docker(["container", "start", container_name])
                 forward = self._forward_identity(job, name)
                 self._reconcile_forward(job, name, forward, checkpoint)
@@ -707,6 +865,14 @@ class DeploymentBackend:
             return "unknown-boot"  # Periodic checks still work if the boot identifier is unavailable.
 
     def recover_active(self, job, checkpoint):
+        validate_policy(job)
+        try:
+            return self._recover_active(job, checkpoint)
+        except DeployError as error:
+            self._stop_after_network_failure(job, error)
+            raise
+
+    def _recover_active(self, job, checkpoint):
         """Start only existing frozen active containers; never rebuild, recreate or touch routes."""
         self._ids(job)
         if (
@@ -726,7 +892,8 @@ class DeploymentBackend:
             return min(10, remaining)
 
         # Existing containers need the runtime identity/resource guards, not a builder or build disk budget.
-        self._runtime_preflight(timeout=bounded(), deadline=deadline)
+        info = self._runtime_preflight(timeout=bounded(), deadline=deadline)
+        self._ensure_egress(job, info)
         services = job["snapshot"]["manifest"]["services"]
         names = [self._container(job, name) for name in services]
         rows = json.loads(self._docker(["container", "inspect", *names], timeout=bounded()))
@@ -740,6 +907,7 @@ class DeploymentBackend:
                     "ACTIVE_CONTAINER_MISSING", "An active container is missing; operator repair is required"
                 )
             config, host = row.get("Config", {}), row.get("HostConfig", {})
+            self._validate_container_network_policy(job, name, row)
             image = job["execution"].get("images", {}).get(name, "")
             forward = self._validate_forward_record(
                 job, name, job["execution"].get("port_forwards", {}).get(name)
@@ -781,7 +949,7 @@ class DeploymentBackend:
             len(inspected) != len(networks)
             or {row.get("Name") for row in inspected} != networks
             or any(
-                row.get("Internal") is not True
+                row.get("Internal") is not (not self._external_network(job, row.get("Name")))
                 or row.get("Driver") != "bridge"
                 or not self._owned(row.get("Labels"), job)
                 for row in inspected
@@ -790,6 +958,9 @@ class DeploymentBackend:
             raise DeployError(
                 "ACTIVE_NETWORK_CHANGED", "Active containers require their owned internal networks"
             )
+        if validate_policy(job) is not None:
+            for network in inspected:
+                self._network_identity(job, network, network["Name"])
         completed, checked, restarted = set(), set(), []
         while len(completed) < len(services):
             progress = False
@@ -804,6 +975,7 @@ class DeploymentBackend:
                             bounded()
                             self._health_service(job, dependency, deadline)
                             checked.add(dependency)
+                    self._check_egress(job)
                     self._docker(["container", "start", self._container(job, name)], timeout=bounded())
                     restarted.append(name)
                 # Even a running container may have lost its RootlessKit mapping after restart.
@@ -945,7 +1117,7 @@ class DeploymentBackend:
                 networks[0],
                 "--network-alias",
                 name,
-                "--dns=127.0.0.1",
+                *[f"--dns={address}" for address in (validate_policy(job) or {"dns": ["127.0.0.1"]})["dns"]],
                 "--env-file",
                 env_path,
             ]
@@ -968,7 +1140,7 @@ class DeploymentBackend:
                 args.extend(image.get("Config", {}).get("Cmd") or [])
             self._docker(args, secrets=tuple(secret_values.values()))
             for network in networks[1:]:
-                self._docker(["network", "connect", "--alias", name, network, self._container(job, name)])
+                self._connect_network(job, network, name, self._container(job, name))
         finally:
             Path(env_path).unlink(missing_ok=True)
 

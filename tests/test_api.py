@@ -95,3 +95,72 @@ def test_ai_platform_rules_describe_persistent_storage_without_unsafe_recovery_a
     assert "services" in rules and "/data" in rules and "Recreate" in rules
     assert "仅支持无状态" not in rules and "不支持数据库、持久卷" not in rules
     assert "不会" in rules and "数据" in rules
+
+
+def test_runtime_capabilities_default_to_internal_without_affecting_builds(client):
+    capabilities = client.get('/api/v1/capabilities', auth=AUTH).json()
+    network = capabilities['runtimeNetwork']
+    assert network['mode'] == 'internal' and network['enabled'] is False
+    assert network['publicIPv4TcpPorts'] == [] and network['controlledDns'] is False
+    assert capabilities['buildNetwork'] == 'none'
+    assert capabilities['customEgress'] is False
+
+
+def test_runtime_capabilities_describe_transport_policy_without_exposing_resolvers(tmp_path):
+    from awesome_deploy.api import create_app
+    auth = tmp_path / 'admin.json'
+    initialize_credentials(auth, *AUTH)
+    settings = Settings(state_dir=tmp_path, auth_file=auth, public_url='http://testserver')
+    object.__setattr__(settings, 'runtime_network', 'public-https-v1')
+    object.__setattr__(settings, 'runtime_dns', ('203.0.113.53',))
+    with TestClient(create_app(settings)) as client:
+        response = client.get('/api/v1/capabilities', auth=AUTH)
+    assert response.status_code == 200
+    capabilities = response.json()
+    network = capabilities['runtimeNetwork']
+    assert network['mode'] == 'public-https-v1' and network['enabled'] is True
+    assert network['publicIPv4TcpPorts'] == [443] and network['controlledDns'] is True
+    assert network['tlsInspection'] is False and network['domainAllowlist'] is False
+    assert network['appliesTo'] == 'new-deployments'
+    assert '私网' in network['description'] and 'IPv6' in network['description']
+    assert '203.0.113.53' not in response.text
+    assert capabilities['buildNetwork'] == 'none' and capabilities['customEgress'] is False
+
+
+@pytest.mark.parametrize('policy,expected', [
+    ({'mode': 'internal'}, 'internal'),
+    ({'mode': 'public-https-v1', 'dns': ['203.0.113.53'], 'blocked_ips': ['203.0.113.44'],
+      'secret': 'RAW_NETWORK_SECRET'}, 'public-https-v1'),
+    ({'mode': 'RAW_NETWORK_SECRET'}, 'unknown'),
+    ({'mode': ['RAW_NETWORK_SECRET']}, 'unknown'),
+    ('RAW_NETWORK_SECRET', 'unknown'),
+    (None, 'unknown'),
+])
+def test_ai_network_rules_only_describe_the_frozen_mode(policy, expected):
+    import copy
+    import json
+    from awesome_deploy.api import advice_context
+    job = {'status': 'failed', 'phase': 'start', 'error': {'code': 'HEALTH_FAILED'},
+           'snapshot': {'runtime_network': policy, 'repository': 'private-repository-sentinel'}}
+    before = copy.deepcopy(job)
+    context = advice_context(job)
+    assert context['runtime_network'] == {'mode': expected}
+    text = json.dumps(context, ensure_ascii=False)
+    assert all(secret not in text for secret in ('203.0.113.53', '203.0.113.44', 'RAW_NETWORK_SECRET',
+                                                'private-repository-sentinel'))
+    assert job == before
+    if expected == 'public-https-v1':
+        assert 'IPv4' in text and 'TCP 443' in text and '受控 DNS' in text
+        assert '不进行 TLS' in text and '域名白名单' in text
+    elif expected == 'internal':
+        assert '不能直连' in text
+    else:
+        assert '无法确认' in text
+
+
+def test_legacy_ai_context_remains_internal_even_when_new_deployments_allow_egress():
+    from awesome_deploy.api import advice_context
+    for snapshot in (None, {}, {'manifest': {}}):
+        context = advice_context({'snapshot': snapshot, 'error': {'code': 'HEALTH_FAILED'}})
+        assert context['runtime_network'] == {'mode': 'internal'}
+        assert '旧部署' in ' '.join(context['platform_rules'])

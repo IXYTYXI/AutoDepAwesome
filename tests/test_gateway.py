@@ -45,6 +45,18 @@ def test_segment_boundary_and_acme_protection():
     assert "proxy_pass http://127.0.0.1:20001/;" in text
 
 
+def test_streaming_routes_do_not_buffer_model_responses():
+    module = helper()
+    module.CONFIG = {"base_domain": "example.com", "port_start": 20000, "port_end": 29999}
+    text = module.render(request(), tls=True)
+    # Every generated application location must forward each upstream chunk.
+    locations = text.count("proxy_pass ")
+    assert locations > 0
+    assert text.count("proxy_buffering off;") == locations
+    assert text.count("proxy_read_timeout 300s;") == locations
+    assert "proxy_connect_timeout 5s;" in text
+
+
 @pytest.mark.parametrize(
     "patch",
     [
@@ -117,6 +129,23 @@ def test_failed_nginx_reload_restores_previous_route(tmp_path):
     assert module.config_path("demo").read_text() == old
     module.rollback(request("rollback"))
     assert module.read_state("demo")["current"]["release"] == "old"
+
+
+@pytest.mark.parametrize("tamper", [False, True])
+def test_upgrade_can_offline_exact_legacy_route_but_rejects_unowned_changes(tmp_path, tamper):
+    module = setup_state(tmp_path)
+    legacy = (Path(__file__).parent / "fixtures/gateway-0.4.1.conf").read_text()
+    if tamper:
+        legacy = legacy.replace("proxy_read_timeout 60s;", "proxy_read_timeout 61s;")
+    module.config_path("demo").write_text(legacy)
+    module.probe_deactivated = lambda *args, **kwargs: None
+    if tamper:
+        with pytest.raises(ValueError, match="configuration differs"):
+            module.deactivate(request("deactivate", "old"))
+        assert module.read_state("demo")["current"]["release"] == "old"
+    else:
+        assert module.deactivate(request("deactivate", "old"))["deactivated"] is True
+        assert module.read_state("demo")["current"] is None
 
 
 def test_probe_failure_rolls_back_durable_previous_route(tmp_path):

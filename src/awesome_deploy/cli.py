@@ -29,13 +29,17 @@ def load_settings(path: Path | None) -> Settings:
             raise DeployError("INVALID_CONFIG", "无法读取运维配置 JSON。") from exc
     if not isinstance(values, dict) or set(values) - {f.name for f in dataclasses.fields(Settings)}:
         raise DeployError("INVALID_CONFIG", "运维配置包含未知字段或不是对象。")
-    for key in ("state_dir", "auth_file", "rootlesskit_socket", "ai_api_key_file"):
+    for key in ("state_dir", "auth_file", "rootlesskit_socket", "ai_api_key_file", "egress_docker_pid_file"):
         if key in values and values[key] is not None:
             try:
                 candidate = Path(values[key]).expanduser()
             except TypeError as exc:
                 raise DeployError("INVALID_CONFIG", f"{key} 必须是路径。") from exc
-            if key == "ai_api_key_file":
+            if key == "egress_docker_pid_file":
+                if not candidate.is_absolute() or any(part == ".." for part in candidate.parts):
+                    raise DeployError("INVALID_CONFIG", "egress_docker_pid_file 必须是绝对路径。")
+                values[key] = candidate
+            elif key == "ai_api_key_file":
                 # Preserve the final path component so O_NOFOLLOW can reject symlinks.
                 values[key] = Path(os.path.abspath(base / candidate))
             else:
@@ -51,11 +55,24 @@ def load_settings(path: Path | None) -> Settings:
             ):
                 raise DeployError("INVALID_CONFIG", f"{key} 必须是非空字符串数组。")
             values[key] = tuple(values[key])
+    for key in ("runtime_dns", "runtime_blocked_ips"):
+        if key in values:
+            if not isinstance(values[key], list) or not all(isinstance(v, str) for v in values[key]):
+                raise DeployError("INVALID_CONFIG", f"{key} 必须是字符串数组。")
+            values[key] = tuple(values[key])
     if not values.get("auth_file"):
         values["auth_file"] = values["state_dir"] / "admin.json"
     try:
         settings = Settings(**values)
         validate_ai_settings(settings)
+        from .egress import policy
+
+        try:
+            runtime_policy = policy(settings)
+        except DeployError as exc:
+            raise ValueError("runtime network") from exc
+        if runtime_policy is not None and not isinstance(settings.egress_docker_pid_file, Path):
+            raise ValueError("public runtime requires an explicit Docker PID path")
         integers = (
             "listen_port",
             "port_start",
@@ -101,7 +118,7 @@ def load_settings(path: Path | None) -> Settings:
         if not isinstance(settings.docker_host, str) or not settings.docker_host.startswith("unix:///"):
             raise ValueError("local rootless Docker socket required")
     except (TypeError, ValueError) as exc:
-        raise DeployError("INVALID_CONFIG", "运维配置中的域名、URL、端口、资源限制、构建网络或 AI 配置无效。") from exc
+        raise DeployError("INVALID_CONFIG", "运维配置中的域名、URL、端口、资源限制、网络或 AI 配置无效。") from exc
     return settings
 
 

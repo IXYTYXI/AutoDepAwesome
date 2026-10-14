@@ -80,7 +80,7 @@ def test_all_existing_static_codes_have_fixed_chinese_advice():
     root = Path(__file__).parents[1] / "src/awesome_deploy"
     # Include literal dictionary errors and port-forward helper calls as well as DeployError.
     sources = ("api.py", "auth.py", "cli.py", "manifest.py", "runtime.py", "store.py", "source.py",
-               "worker.py", "processes.py", "gateway.py", "port_forward.py", "secrets_store.py", "storage.py")
+               "worker.py", "processes.py", "gateway.py", "port_forward.py", "secrets_store.py", "storage.py", "egress.py")
     codes = set()
     for name in sources:
         tree = ast.parse((root / name).read_text())
@@ -184,3 +184,23 @@ def test_storage_handoff_events_have_specific_safe_chinese_translation(message, 
     result = diagnostics().localize_event({"phase": "storage_handoff", "message": message})
     assert expected in result["message"]
     assert diagnostics().PHASE_LABELS["storage_handoff"] == "持久存储交接"
+
+
+@pytest.mark.parametrize('code,expected', [
+    ('EGRESS_POLICY_INVALID', '策略'),
+    ('EGRESS_POLICY_CHANGED', '固定'),
+    ('EGRESS_NAMESPACE_UNSAFE', '身份'),
+    ('EGRESS_UNAVAILABLE', '执行器'),
+    ('EGRESS_GUARD_MISSING', '缺失'),
+    ('EGRESS_GUARD_CHANGED', '变化'),
+    ('EGRESS_UNSAFE', '条件'),
+    ('EGRESS_NETWORK_IDENTITY', '身份'),
+])
+def test_egress_guard_errors_have_specific_chinese_actions_and_no_raw_details(code, expected):
+    result = diagnostics().localize_error({'code': code, 'message': 'PRIVATE_DNS_OR_IP',
+                                          'path': 'PRIVATE_DNS_OR_IP', 'suggestion': 'PRIVATE_DNS_OR_IP'})
+    assert code in diagnostics().ERROR_CODES
+    assert expected in result['title'] + result['message']
+    assert result['steps'] and '运维' in ' '.join(result['steps'])
+    assert 'PRIVATE_DNS_OR_IP' not in str(result)
+    assert '不要关闭' in ' '.join(result['steps'])
