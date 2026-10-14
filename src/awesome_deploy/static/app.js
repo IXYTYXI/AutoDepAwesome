@@ -78,9 +78,22 @@ async function analyzeJob(id) {
   if(adviceStates.size>50){for(const [key,state] of adviceStates){if(key!==id && !state.loading){adviceStates.delete(key);break;}}}
   if(selectedJob===id && currentJob?.id===id)showJob(currentJob);
 }
+function appIdentityLabel(app) {
+  const name=app.subdomain || app.lastSubdomain || '未绑定域名';
+  const history=!app.subdomain && app.lastSubdomain ? ' · 上次使用' : '';
+  return `${name}${history} · 应用 ${app.id.slice(0,8)}`;
+}
+function updateAppHelp() {
+  const app=allApps.find(item=>item.id===$('appId').value);
+  if(app?.domainBound===false) {
+    $('app-picker-help').textContent=`当前未绑定域名${app.lastSubdomain ? '；上次使用：'+app.lastSubdomain : ''}。保留此应用选择以沿用数据，请填写空闲前缀，并与自己的 awesome.yaml 保持一致。`;
+  } else if(app) {
+    $('app-picker-help').textContent='更新此应用会沿用仓库和当前域名前缀；请与 awesome.yaml 保持一致。';
+  } else $('app-picker-help').textContent='选择已有应用以沿用数据与部署记录；未绑定域名的应用需填写空闲前缀。';
+}
 function selectedAppLabel() {
   const app=allApps.find(item=>item.id===$('appId').value);
-  return app ? `${app.subdomain} · 更新已有应用` : '创建新应用';
+  return app ? `${appIdentityLabel(app)} · ${app.domainBound===false ? '未绑定域名' : '更新已有应用'}` : '创建新应用';
 }
 function updateDomainPreview() {
   $('domain-prefix').textContent=$('subdomain').value || '你的前缀';
@@ -97,7 +110,7 @@ function highlightAppOption() {
 }
 function renderAppOptions() {
   const query=pickerQuery.trim().toLocaleLowerCase();
-  const matching=allApps.filter(app=>`${app.subdomain} ${app.repository} ${app.id}`.toLocaleLowerCase().includes(query));
+  const matching=allApps.filter(app=>`${app.subdomain || ''} ${app.lastSubdomain || ''} ${app.repository} ${app.id}`.toLocaleLowerCase().includes(query));
   appChoices=[{id:'',subdomain:'创建新应用',repository:'使用新的域名前缀部署项目'},...matching];
   activeAppIndex=Math.max(0,Math.min(activeAppIndex,appChoices.length-1));
   $('app-options').replaceChildren();
@@ -107,8 +120,8 @@ function renderAppOptions() {
     option.setAttribute('role','option');
     option.setAttribute('aria-selected',String(app.id===$('appId').value));
     const copy=text('span','','option-copy');
-    copy.append(text('span',app.subdomain,'option-label'));
-    copy.append(text('span',app.repository,'option-description'));
+    copy.append(text('span',app.id ? appIdentityLabel(app) : app.subdomain,'option-label'));
+    copy.append(text('span',(app.domainBound===false ? '未绑定域名 · ' : '')+app.repository,'option-description'));
     option.append(copy,text('span',app.id===$('appId').value ? '✓' : '', 'option-check'));
     option.addEventListener('mousedown',event=>event.preventDefault());
     option.addEventListener('click',()=>chooseApp(app.id));
@@ -144,9 +157,10 @@ function chooseApp(id) {
   $('appId').value=id;
   if(app) {
     $('repository').value=app.repository;
-    $('subdomain').value=app.subdomain;
+    if(app.domainBound!==false)$('subdomain').value=app.subdomain || '';
+    else if(previousValues[0]!==id)$('subdomain').value='';
   }
-  updateDomainPreview();
+  updateDomainPreview();updateAppHelp();
   if(fields.some((field,index)=>$(field).value!==previousValues[index]))requestKey=crypto.randomUUID();
   closeAppPicker();
   $('app-search').focus();
@@ -158,6 +172,7 @@ function updateApps(items) {
   }
   if(pickerOpen)renderAppOptions();
   else $('app-search').value=selectedAppLabel();
+  updateAppHelp();
 }
 $('app-search').addEventListener('input',()=>openAppPicker($('app-search').value));
 $('app-search').addEventListener('click',()=>{if(!pickerOpen)openAppPicker();});

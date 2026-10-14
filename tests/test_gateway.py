@@ -94,6 +94,7 @@ def setup_state(tmp_path):
     module.run = lambda args, **kwargs: ""
     # These journal/config tests stub host TLS; probe behavior has separate tests below.
     module.probe_routes = lambda req: None
+    module.nginx_process_snapshot = lambda expected=None: ((1, 1), {2: (2, 2, 1, 1, 1)})
     old = request(release="old")
     module.publish(old)
     return module
@@ -444,6 +445,7 @@ def test_failed_rollback_probe_retains_journal_for_retry(tmp_path):
     assert state["pending"]["release"] == "new"
     assert module.config_path("demo").read_text() == previous_config
     module.probe_routes = lambda req: None
+    module.nginx_process_snapshot = lambda expected=None: ((1, 1), {2: (2, 2, 1, 1, 1)})
     assert module.rollback(request("rollback"))["rolled_back"] is True
     assert module.read_state("demo")["current"]["release"] == "old"
 

@@ -69,11 +69,13 @@ function operationFor(app) {
 function retryAllowed(operation) {
   return operation?.status==='recovery_required' && operation.retryable===true && typeof operation.retryKey==='string' && Boolean(operation.retryKey);
 }
+function appName(app) {return app.subdomain || app.lastSubdomain || '未绑定域名';}
 function appRow(app) {
   const row=text('article','','management-row');row.setAttribute('data-app-id',app.id);
-  const info=text('div','');info.append(text('strong',app.subdomain,'management-name'),text('span',app.repository || '仓库信息未记录','management-repository'));
+  const info=text('div','');info.append(text('strong',appName(app),'management-name'),text('span',app.repository || '仓库信息未记录','management-repository'));
   const meta=text('div','');meta.append(text('p',`${app.ref || '版本未记录'}${app.commit ? ' · '+app.commit.slice(0,10) : ''}`,'management-meta'));
   meta.append(text('p',`应用 ${app.id.slice(0,8)}`,'management-meta'));
+  if(!app.subdomain && app.lastSubdomain)meta.append(text('p',`上次使用：${app.lastSubdomain}`,'management-meta'));
   const operation=operationFor(app),pending=['queued','running'].includes(operation?.status);
   const state=text('div','');const status=pending ? 'offlining' : (appLabels[app.status] ? app.status : 'attention');
   state.append(text('span',appLabels[status],`status-chip status-${status}`));
@@ -81,11 +83,17 @@ function appRow(app) {
     state.append(text('p',operationLabels[operation.status] || '下线状态未确认',`management-state ${operation.status==='succeeded' ? 'confirmed' : operation.status==='recovery_required' ? 'attention' : ''}`));
     if(operation.error)state.append(text('p',errorMessage(operation.error),'management-state attention'));
   }
-  if(['offline','not_deployed'].includes(app.status))state.append(text('p','域名前缀保留，可更新此应用。','management-state'));
+  if(app.domainBound===false && app.status==='offline' && operation?.status==='succeeded') {
+    state.append(text('p','域名与端口已释放，应用数据和部署历史保留。','management-state'));
+  } else if(app.domainBound===false) {
+    state.append(text('p','当前未绑定域名。重新部署时请选择空闲前缀。','management-state'));
+  } else if(['offline','not_deployed'].includes(app.status)) {
+    state.append(text('p','应用数据和部署历史保留，重新部署前请核对当前域名状态。','management-state'));
+  }
   if(app.offlineBlockReason && !pending)state.append(text('p',errorMessage(app.offlineBlockReason),'management-state'));
   const actions=text('div','','management-actions');
   const url=publicURL(app.url);
-  if(url && app.status==='online' && !pending) {
+  if(url && app.status==='online' && app.domainBound!==false && !pending) {
     const link=action('a','访问 ↗',`visit:${app.id}`);link.href=url;link.target='_blank';link.rel='noopener';actions.append(link);
   }
   if(retryAllowed(operation)) {
@@ -93,7 +101,7 @@ function appRow(app) {
   } else if(app.status==='online') {
     const button=action('button',pending ? '下线处理中' : '下线',`offline:${app.id}`);
     button.disabled=app.canOffline!==true || !app.activeReleaseId || pending;
-    button.setAttribute('aria-label',`${app.subdomain}，下线应用`);
+    button.setAttribute('aria-label',`${appName(app)}，应用 ${app.id.slice(0,8)}，下线应用`);
     button.addEventListener('click',()=>openOfflineDialog(app.id));actions.append(button);
   } else if(['offline','not_deployed'].includes(app.status)) {
     const link=action('a','去部署控制台 ↗',`deploy:${app.id}`);link.href='/';actions.append(link);
@@ -122,7 +130,7 @@ function renderManagement(data) {
   $('count-attention').textContent=String(data.apps.filter(app=>app.status==='attention').length+jobs.filter(job=>job.status==='recovery_required').length);
   $('online-count').textContent=`全部应用 ${data.apps.length} 个 · 当前列表 ${current.length} 个 · 在窗口内滚动查看`;
   $('deployment-count').textContent=`当前 ${jobs.length} 项 · 包含排队、执行中和需要恢复处理的部署`;
-  $('retained-count').textContent=`保留 ${retained.length} 个应用 · 域名前缀和部署记录保留，可返回部署控制台更新`;
+  $('retained-count').textContent=`保留 ${retained.length} 个应用 · 数据和部署历史保留，重新部署时需使用可用域名`;
   renderList('online-apps',current.map(appRow),'暂无在线应用或待处理服务。');
   renderList('deployment-list',jobs.map(deploymentRow),'当前没有排队、执行中或待恢复的部署。');
   renderList('retained-apps',retained.map(appRow),'暂无已下线或未部署的应用。');
@@ -151,7 +159,7 @@ function openOfflineDialog(id,retry=false) {
   offlineTarget={appId:id,releaseId:retry ? operation.releaseId : app.activeReleaseId,retry,retryKey:retry ? operation.retryKey : null};
   returnFocusKey=`offline:${id}`;
   $('offline-title').textContent=retry ? '重试下线应用' : '确认下线应用';
-  $('offline-target').textContent=`${app.subdomain} · 版本 ${offlineTarget.releaseId.slice(0,12)}`;
+  $('offline-target').textContent=`${appName(app)} · 应用 ${app.id.slice(0,8)} · 版本 ${offlineTarget.releaseId.slice(0,12)}`;
   $('offline-error').textContent='';$('offline-confirm').textContent=retry ? '确认重试下线' : '确认下线';
   $('offline-confirm').disabled=false;$('offline-cancel').disabled=false;
   $('offline-dialog').showModal();$('offline-cancel').focus();

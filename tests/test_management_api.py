@@ -119,3 +119,31 @@ def test_success_history_does_not_link_to_now_offline_or_replaced_release(client
     historical = client.get(f"/api/v1/deployments/{job['id']}", auth=AUTH).json()
     assert historical["status"] == "succeeded"
     assert historical["url"] is None and historical["active"] is False
+
+
+def test_released_domain_is_distinct_from_history_and_new_occupant(client):
+    job = active(client)
+    store = client.app.state.store
+    operation = store.enqueue_offline(job["app_id"], job["id"], "release-domain")
+    store.claim_offline(operation["id"])
+    store.checkpoint_offline(operation["id"], {
+        "gateway_deactivated": True, "containers_stopped": True, "cleanup_confirmed": True,
+    })
+    store.finish_offline(operation["id"])
+    before = client.get("/api/v1/management", auth=AUTH).json()["apps"][0]
+    assert before["subdomain"] is None and before["lastSubdomain"] == "demo"
+    assert before["domainBound"] is False and before["url"] is None
+    assert before["status"] == "offline"
+    listed = client.get("/api/v1/apps", auth=AUTH).json()["items"][0]
+    assert listed["subdomain"] is None and listed["lastSubdomain"] == "demo"
+    assert listed["domainBound"] is False
+    second = store.enqueue({**BODY, "repository": "https://github.com/org/other.git"}, "new-occupant")
+    snapshot = copy.deepcopy(job["snapshot"])
+    snapshot["repository"] = second["input"]["repository"]
+    second = store.reserve(second["id"], snapshot)
+    store.finish(second["id"])
+    apps = {app["id"]: app for app in client.get("/api/v1/management", auth=AUTH).json()["apps"]}
+    assert apps[second["app_id"]]["domainBound"] is True
+    assert apps[second["app_id"]]["url"] == "https://demo.awesome.guanghexinzhi.cn"
+    assert apps[job["app_id"]]["subdomain"] is None and apps[job["app_id"]]["url"] is None
+    assert client.get(f"/api/v1/deployments/{job['id']}", auth=AUTH).json()["url"] is None

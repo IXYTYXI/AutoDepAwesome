@@ -50,6 +50,8 @@ test('management page has its own navigation, named scroll windows and confirmat
   assert.match(html,/href="\/manage"[^>]*aria-current="page"/);
   assert.match(html,/<dialog[^>]+id="offline-dialog"/);
   assert.match(html,/下线后将停止服务并关闭公开访问。数据和部署记录保留。/);
+  assert.match(html,/下线完成后释放域名和运行端口/);
+  assert.doesNotMatch(html,/域名前缀(?:继续)?保留/);
   assert.doesNotMatch(html,/<select\b/);
   assert.match(html,/id="online-apps"[^>]+tabindex="0"[^>]+role="region"/);
   assert.doesNotMatch(fs.readFileSync(path.join(staticRoot,'index.html'),'utf8'),/运维控制台/);
@@ -156,7 +158,29 @@ test('offline applications stay visible and recovery is not displayed as success
   assert.equal(h.get('count-online').textContent,'0');
   assert.equal(h.get('retained-apps').children.length,1);
   assert.ok(all(h.get('retained-apps')).some(node=>node.textContent.includes('下线已确认')));
-  assert.ok(all(h.get('retained-apps')).some(node=>node.textContent.includes('域名前缀保留')));
+  assert.ok(!all(h.get('retained-apps')).some(node=>node.textContent.includes('已释放')));
+});
+
+test('completed unbound apps show historical identity and confirmed resource release',async()=>{
+  const operation={id:'done',appId:'app-one',releaseId:'release-one',status:'succeeded'};
+  const released={...online,subdomain:null,lastSubdomain:'demo',domainBound:false,status:'offline',activeReleaseId:null,retainedReleaseId:'release-one',canOffline:false,operation};
+  const h=harness({data:{...empty,apps:[released]}});await settle();
+  const nodes=all(h.get('retained-apps'));
+  assert.ok(nodes.some(node=>node.className==='management-name' && node.textContent==='demo'));
+  assert.ok(nodes.some(node=>node.textContent.includes('上次使用')));
+  assert.ok(nodes.some(node=>node.textContent.includes('应用 app-one')));
+  assert.ok(nodes.some(node=>node.textContent.includes('域名与端口已释放')));
+  assert.ok(!nodes.some(node=>node.textContent.includes('域名前缀保留')));
+  assert.ok(!h.get('retained-count').textContent.includes('域名前缀'));
+});
+
+test('pending or recovery states never claim release even when a domain is unbound',async()=>{
+  for(const status of ['queued','running','recovery_required']) {
+    const operation={id:'op',appId:'app-one',releaseId:'release-one',status};
+    const h=harness({data:{...empty,apps:[{...online,subdomain:null,lastSubdomain:'demo',domainBound:false,status:'attention',canOffline:false,operation}]}});await settle();
+    assert.ok(!all(h.get('online-apps')).some(node=>node.textContent.includes('已释放')));
+    assert.ok(all(h.get('online-apps')).some(node=>node.textContent==='demo'));
+  }
 });
 
 test('recovery retry requires the server retry key and reuses it for the original release',async()=>{

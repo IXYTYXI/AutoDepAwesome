@@ -1,6 +1,7 @@
 """Short, transactional SQLite state changes for durable deployments."""
 
 from contextlib import contextmanager
+from collections.abc import Mapping
 import json
 import re
 import socket
@@ -16,7 +17,7 @@ def _json(value):
 
 
 class Store:
-    def __init__(self, settings):
+    def __init__(self, settings, *, verified_offline_domains=None):
         self.settings = settings
         settings.state_dir.mkdir(parents=True, exist_ok=True)
         with self._connection() as db:
@@ -29,7 +30,7 @@ class Store:
                     created_at REAL NOT NULL, updated_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS apps (
-                    id TEXT PRIMARY KEY, repository TEXT NOT NULL, subdomain TEXT NOT NULL UNIQUE,
+                    id TEXT PRIMARY KEY, repository TEXT NOT NULL, subdomain TEXT UNIQUE,
                     active_release_id TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS reservations (
@@ -53,6 +54,107 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS offline_app ON offline_operations(app_id, status);
             """)
+            self._migrate_domain_bindings(db, verified_offline_domains)
+
+    def _migrate_domain_bindings(self, db, verified_offline_domains):
+        """Relax only the old domain constraint; preserve every child table and foreign key."""
+        if verified_offline_domains is None:
+            verified_offline_domains = {}
+        if not isinstance(verified_offline_domains, Mapping) or any(
+            not isinstance(value, str) or re.fullmatch(r"[a-f0-9]{32}", value) is None
+            for pair in verified_offline_domains.items() for value in pair
+        ):
+            raise DeployError("STATE_MIGRATION_FAILED", "Verified offline domains must identify exact applications and releases.")
+        columns = list(db.execute("PRAGMA table_info(apps)"))
+        legacy_schema = next(row for row in columns if row["name"] == "subdomain")["notnull"]
+        if not legacy_schema and not verified_offline_domains:
+            return
+        if legacy_schema:
+            db.execute("PRAGMA foreign_keys=OFF")
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            # Another process may have migrated while this connection waited for the write lock.
+            columns = list(db.execute("PRAGMA table_info(apps)"))
+            if not next(row for row in columns if row["name"] == "subdomain")["notnull"]:
+                self._release_verified_offline_domains(db, verified_offline_domains)
+                db.commit()
+                return
+            if [row["name"] for row in columns] != [
+                "id", "repository", "subdomain", "active_release_id", "created_at", "updated_at"
+            ] or db.execute("PRAGMA foreign_key_check").fetchall():
+                raise DeployError("STATE_MIGRATION_FAILED", "Application domain migration requires a consistent database.")
+            existing_sql = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='apps'").fetchone()[0]
+            normalized = re.sub(r"\s+", "", existing_sql).replace('"apps"', 'apps').lower()
+            expected = ("createtableapps(idtextprimarykey,repositorytextnotnull,subdomaintextnotnullunique,"
+                        "active_release_idtext,created_atrealnotnull,updated_atrealnotnull)")
+            if normalized != expected:
+                raise DeployError("STATE_MIGRATION_FAILED", "Application schema differs from the reviewed legacy version.")
+            # Do not silently discard operator-added app indexes or triggers.
+            if db.execute("SELECT 1 FROM sqlite_master WHERE tbl_name='apps' AND type!='table' AND sql IS NOT NULL").fetchone():
+                raise DeployError("STATE_MIGRATION_FAILED", "Application schema has unexpected custom objects.")
+            other_schema = [tuple(row) for row in db.execute(
+                "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name!='apps' ORDER BY type,name")]
+            db.execute("""CREATE TABLE apps_domain_migration (
+                id TEXT PRIMARY KEY, repository TEXT NOT NULL, subdomain TEXT UNIQUE,
+                active_release_id TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL
+            )""")
+            db.execute("INSERT INTO apps_domain_migration SELECT * FROM apps")
+            # Keep the original name in all child FOREIGN KEY declarations. Renaming
+            # the old table first would rewrite those references on current SQLite.
+            db.execute("DROP TABLE apps")
+            db.execute("ALTER TABLE apps_domain_migration RENAME TO apps")
+            current_schema = [tuple(row) for row in db.execute(
+                "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name!='apps' ORDER BY type,name")]
+            if current_schema != other_schema or db.execute("PRAGMA foreign_key_check").fetchall():
+                raise DeployError("STATE_MIGRATION_FAILED", "Application migration changed a dependent schema.")
+            self._release_verified_offline_domains(db, verified_offline_domains)
+            db.commit()
+        except BaseException as error:
+            db.rollback()
+            if isinstance(error, sqlite3.Error):
+                raise DeployError("STATE_MIGRATION_FAILED", "Application domain migration could not be completed safely.") from None
+            raise
+        finally:
+            db.execute("PRAGMA foreign_keys=ON")
+
+    def _release_verified_offline_domains(self, db, verified_offline_domains):
+        # Old completion flags did not prove that every old gateway worker had
+        # drained. Only the upgrade caller can supply that external verification.
+        if verified_offline_domains and db.execute("PRAGMA foreign_key_check").fetchall():
+            raise DeployError("STATE_MIGRATION_FAILED", "Verified domain release requires a consistent database.")
+        for app_id, release_id in verified_offline_domains.items():
+            row = db.execute("SELECT * FROM apps WHERE id=?", (app_id,)).fetchone()
+            if row is None or not self._legacy_offline_releasable(db, dict(row), release_id):
+                raise DeployError("STATE_MIGRATION_FAILED", "Verified offline application state changed; no domains were released.")
+            db.execute("UPDATE apps SET subdomain=NULL WHERE id=?", (app_id,))
+
+    def _legacy_offline_releasable(self, db, app, expected_release_id):
+        if app["active_release_id"] is not None:
+            return False
+        row = db.execute("""SELECT * FROM offline_operations WHERE app_id=?
+            ORDER BY created_at DESC,id DESC LIMIT 1""", (app["id"],)).fetchone()
+        if not row or row["status"] != "succeeded" or row["target_release_id"] != expected_release_id:
+            return False
+        operation = self._offline(row)
+        previous = self._get(db, operation["target_release_id"])
+        if (previous["app_id"] != app["id"] or previous["status"] != "succeeded"
+                or app["subdomain"] not in (None, previous["input"].get("subdomain"))
+                or not previous["execution"].get("resources_released")
+                or not all(operation["execution"].get(key) is True for key in
+                           ("gateway_deactivated", "containers_stopped", "cleanup_confirmed"))):
+            return False
+        if db.execute("""SELECT 1 FROM reservations JOIN jobs ON jobs.id=reservations.job_id
+            WHERE jobs.app_id=? LIMIT 1""", (app["id"],)).fetchone():
+            return False
+        if db.execute("""SELECT 1 FROM offline_operations WHERE app_id=?
+            AND status IN ('queued','running','recovery_required') LIMIT 1""", (app["id"],)).fetchone():
+            return False
+        for row in db.execute("SELECT * FROM jobs WHERE status IN ('queued','running','recovery_required')"):
+            pending = self._job(row)
+            if (pending["app_id"] == app["id"] or pending["input"].get("appId") == app["id"]
+                    or (app["subdomain"] is not None and pending["input"].get("subdomain") == app["subdomain"])):
+                return False
+        return True
 
     @contextmanager
     def _connection(self, write=False):
@@ -122,7 +224,18 @@ class Store:
 
     def apps(self):
         with self._connection() as db:
-            return [dict(row) for row in db.execute("SELECT * FROM apps ORDER BY created_at,id")]
+            return [self._app_view(db, row) for row in db.execute("SELECT * FROM apps ORDER BY created_at,id")]
+
+    def _app_view(self, db, row):
+        app = dict(row)
+        last = app["subdomain"]
+        if last is None:
+            retained = self._retained_release(db, app["id"])
+            recent = db.execute("SELECT * FROM jobs WHERE app_id=? ORDER BY created_at DESC,id DESC LIMIT 1",
+                                (app["id"],)).fetchone()
+            job = retained or (self._job(recent) if recent else None)
+            last = job["input"].get("subdomain") if job else None
+        return {**app, "lastSubdomain": last, "domainBound": app["subdomain"] is not None}
 
     @staticmethod
     def _offline(row):
@@ -263,7 +376,7 @@ class Store:
             job = self._get(db, operation["target_release_id"])
             now = time.time()
             state = {**job["execution"], "resources_released": True, "offline_operation": operation_id}
-            db.execute("UPDATE apps SET active_release_id=NULL,updated_at=? WHERE id=?", (now, app["id"]))
+            db.execute("UPDATE apps SET active_release_id=NULL,subdomain=NULL,updated_at=? WHERE id=?", (now, app["id"]))
             db.execute("DELETE FROM reservations WHERE job_id=?", (job["id"],))
             db.execute("UPDATE jobs SET execution=?,updated_at=? WHERE id=?", (_json(state), now, job["id"]))
             db.execute("UPDATE offline_operations SET status='succeeded',phase='offline_complete',error=NULL,updated_at=? WHERE id=?",
@@ -285,7 +398,7 @@ class Store:
             latest = {operation["app_id"]: operation for operation in operations}
             apps = []
             for row in db.execute("SELECT * FROM apps ORDER BY created_at,id"):
-                app = dict(row)
+                app = self._app_view(db, row)
                 reason = self._offline_block_reason(db, app)
                 app.update(active_job=self._get(db, app["active_release_id"]) if app["active_release_id"] else None,
                            retained_job=self._retained_release(db, app["id"]), operation=latest.get(app["id"]),
@@ -463,16 +576,27 @@ class Store:
             if not row:
                 raise DeployError("NOT_FOUND", "Application was not found.")
             app = dict(row)
-            if app["repository"] != payload["repository"] or app["subdomain"] != payload["subdomain"]:
+            if (app["repository"] != payload["repository"]
+                    or app["subdomain"] is not None and app["subdomain"] != payload["subdomain"]):
                 raise DeployError(
                     "APP_IDENTITY_CONFLICT", "Repository and subdomain must match the application."
                 )
+            if app["active_release_id"] and app["subdomain"] is None:
+                raise DeployError("APP_IDENTITY_CONFLICT", "An active application must retain its bound subdomain.")
             recovery = db.execute(
                 "SELECT id FROM jobs WHERE app_id=? AND status='recovery_required' AND id<>?",
                 (app_id, job["id"]),
             ).fetchone()
             if recovery:
                 raise DeployError("RECOVERY_REQUIRED", "This application requires deployment recovery first.")
+            occupied = db.execute("SELECT id FROM apps WHERE subdomain=? AND id<>?",
+                                  (payload["subdomain"], app_id)).fetchone()
+            if occupied:
+                raise DeployError("DOMAIN_CONFLICT", "This subdomain belongs to an existing application.")
+            if create and app["subdomain"] is None:
+                db.execute("UPDATE apps SET subdomain=?,updated_at=? WHERE id=?",
+                           (payload["subdomain"], time.time(), app_id))
+                app["subdomain"] = payload["subdomain"]
             return app
         row = db.execute("SELECT id FROM apps WHERE subdomain=?", (payload["subdomain"],)).fetchone()
         if row:
@@ -531,6 +655,9 @@ class Store:
                     "JOB_STATE", "A cleaned or failing deployment cannot reserve resources again."
                 )
             app = self._app_context(db, job, create=True)
+            # freeze reads only version identifiers. Enforce their application
+            # ownership before every reservation, including a frozen job replay.
+            self._check_secret_scope(db, app, job, snapshot)
             existing = list(db.execute("SELECT service,port FROM reservations WHERE job_id=?", (job_id,)))
             if existing:
                 return job
@@ -576,6 +703,20 @@ class Store:
             )
             return self._get(db, job_id)
 
+    def _check_secret_scope(self, db, app, job, snapshot):
+        if not any(snapshot.get("secret_versions", {}).values()):
+            return
+        # Secret files are scoped by repository/domain, not app identity. A file
+        # may have been rotated or never referenced by the old manifest, so a
+        # historical snapshot cannot prove that any current version is new.
+        for row in db.execute("SELECT * FROM jobs WHERE app_id IS NOT NULL AND app_id<>?", (app["id"],)):
+            previous = self._job(row)
+            if (previous["input"].get("repository") != job["input"]["repository"]
+                    or previous["input"].get("subdomain") != job["input"]["subdomain"]):
+                continue
+            raise DeployError("SECRET_SCOPE_CONFLICT", "This secret scope was used by another application.",
+                              "secretRefs", "Use the original application or configure secrets for a different free subdomain.")
+
     def finish(self, job_id):
         with self._connection(write=True) as db:
             job = self._get(db, job_id)
@@ -585,6 +726,9 @@ class Store:
                 raise DeployError("JOB_STATE", "An unreserved deployment cannot become active.")
             if job["status"] not in ("queued", "running", "succeeded"):
                 raise DeployError("JOB_STATE", "A failed deployment cannot become active.")
+            app = db.execute("SELECT subdomain FROM apps WHERE id=?", (job["app_id"],)).fetchone()
+            if app is None or app["subdomain"] != job["input"]["subdomain"]:
+                raise DeployError("DOMAIN_CONFLICT", "The candidate no longer owns its requested subdomain.")
             now = time.time()
             state = job["execution"]
             previous_id = state.get("previous_release")
@@ -620,6 +764,15 @@ class Store:
             if db.execute("SELECT id FROM apps WHERE active_release_id=?", (job_id,)).fetchone():
                 raise DeployError("ACTIVE_RELEASE", "The current active release cannot be removed.")
             db.execute("DELETE FROM reservations WHERE job_id=?", (job_id,))
+            if job["app_id"] and not job["execution"].get("resources_released"):
+                remaining = db.execute("""SELECT 1 FROM reservations JOIN jobs ON jobs.id=reservations.job_id
+                    WHERE jobs.app_id=? LIMIT 1""", (job["app_id"],)).fetchone()
+                if not remaining:
+                    # cleanup/rollback has been confirmed by the caller. Never clear
+                    # a live release's name, another candidate's claim, or a later replay.
+                    db.execute("""UPDATE apps SET subdomain=NULL,updated_at=?
+                        WHERE id=? AND active_release_id IS NULL AND subdomain=?""",
+                        (time.time(), job["app_id"], job["input"].get("subdomain")))
             state = {**job["execution"], "resources_released": True}
             # A candidate cleanup and its terminal status commit together, so a
             # crash cannot leave a released candidate eligible for deployment.
