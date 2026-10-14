@@ -112,6 +112,10 @@ test('offline duplicate clicks are blocked and a failed request retries with the
   assert.equal(h.get('offline-dialog').open,false);
   assert.ok(!h.get('management-notice').textContent.includes('下线成功'));
   assert.ok(all(h.get('online-apps')).some(node=>node.textContent.includes('下线排队中')));
+  h.context.completed={apps:[{...online,status:'offline',canOffline:false,activeReleaseId:null,retainedReleaseId:'release-one',operation:{id:'op-one',appId:'app-one',releaseId:'release-one',status:'succeeded'}}],deployments:[],offlineOperations:[]};
+  h.run('renderManagement(completed)');
+  assert.doesNotMatch(h.get('management-notice').textContent,/等待平台确认/);
+  assert.ok(all(h.get('retained-apps')).some(node=>node.textContent.includes('下线已确认')));
 });
 
 test('confirmation cannot offline a different release that appeared while the dialog was open',async()=>{

@@ -177,7 +177,7 @@ async function submitOffline() {
     const result=await request(`/api/v1/apps/${encodeURIComponent(target.appId)}/offline`,{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify({expectedReleaseId:target.releaseId})});
     if(!result || typeof result.id!=='string' || result.appId!==target.appId || result.releaseId!==target.releaseId || !operationLabels[result.status])throw new Error('未能确认下线请求结果，请刷新状态后重试。');
     acceptedOperations.set(target.appId,result);renderManagement(managementData);
-    $('management-notice').textContent=result.status==='succeeded' ? '下线已确认，应用与部署记录已保留。' : result.status==='recovery_required' ? '下线尚未确认，请查看应用的恢复处理提示。' : '下线请求已受理，正在等待平台确认。';
+    $('management-notice').textContent=result.status==='succeeded' ? '下线已确认，应用与部署记录已保留。' : result.status==='recovery_required' ? '下线尚未确认，请查看应用的恢复处理提示。' : '下线请求已受理，请在应用列表中查看执行状态。';
     offlineSubmitting=false;closeOfflineDialog();refreshManagement();
   } catch(error) {
     $('offline-error').textContent=error.message;
