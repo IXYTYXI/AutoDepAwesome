@@ -18,6 +18,7 @@ from .config import Settings
 from .diagnostics import ERROR_CODES, PHASE_LABELS, localize_error, localize_event
 from .errors import DeployError
 from .manifest import load_manifest, schema_document
+from .management import public_application, public_operation
 from .source import validate_ref, validate_repository
 from .store import Store
 
@@ -41,6 +42,11 @@ class Preflight(BaseModel):
 class AnalysisRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     poll: StrictBool = False
+
+
+class OfflineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expectedReleaseId: StrictStr
 
 
 def advice_context(job):
@@ -86,7 +92,7 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
         ):
             raise HTTPException(
                 401,
-                "请使用运维账号登录。",
+                "请使用部署控制台账号登录。",
                 headers={"WWW-Authenticate": 'Basic realm="Awesome Deploy", charset="UTF-8"'},
             )
         return credentials.username
@@ -140,7 +146,7 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
             else 503
             if code.startswith("AI_")
             else 409
-            if code == "DIAGNOSIS_NOT_AVAILABLE"
+            if code in {"DIAGNOSIS_NOT_AVAILABLE", "OFFLINE_RELEASE_CHANGED", "OFFLINE_STATE"}
             else 404
             if code == "NOT_FOUND"
             else 409
@@ -156,6 +162,8 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
 
     def public_job(job):
         data = job["input"]
+        current = store.active_release(job["app_id"]) if job.get("app_id") and job["status"] == "succeeded" else None
+        active = bool(current and current["id"] == job["id"])
         return {
             "id": job["id"],
             "appId": job.get("app_id"),
@@ -166,8 +174,9 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
             "subdomain": data["subdomain"],
             "commit": (job.get("snapshot") or {}).get("commit") or job.get("execution", {}).get("commit"),
             "url": f"https://{data['subdomain']}.{settings.base_domain}"
-            if job["status"] == "succeeded"
+            if active
             else None,
+            "active": active,
             "error": localize_error(job.get("error"), job["phase"]),
             "createdAt": job.get("created_at"),
         }
@@ -176,9 +185,13 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
     def home():
         return FileResponse(STATIC / "index.html")
 
+    @app.get("/manage", dependencies=[Depends(authenticated)])
+    def manage():
+        return FileResponse(STATIC / "manage.html")
+
     @app.get("/assets/{name}", dependencies=[Depends(authenticated)])
     def asset(name: str):
-        if name not in ("app.js", "app.css"):
+        if name not in ("app.js", "app.css", "manage.js", "manage.css"):
             raise HTTPException(404)
         return FileResponse(STATIC / name)
 
@@ -200,6 +213,7 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
             "buildNetwork": settings.build_network,
             "baseDomain": settings.base_domain,
             "aiAdvice": {"configured": app.state.advice.configured},
+            "applicationManagement": {"offline": True, "retainsData": True},
         }
 
     @app.get("/api/v1/openapi.json", dependencies=[Depends(authenticated)])
@@ -267,5 +281,29 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
     @app.get("/api/v1/apps", dependencies=[Depends(authenticated)])
     def apps():
         return {"items": store.apps()}
+
+    @app.get("/api/v1/management", dependencies=[Depends(authenticated)])
+    def management():
+        snapshot = store.management_snapshot()
+        return {
+            "apps": [public_application(item, settings.base_domain) for item in snapshot["apps"]],
+            "deployments": [public_job(item) for item in snapshot["deployments"]],
+            "offlineOperations": [public_operation(item) for item in snapshot["offline_operations"]],
+        }
+
+    @app.post("/api/v1/apps/{app_id}/offline", status_code=202, dependencies=[Depends(write_access)])
+    def offline(app_id: str, body: OfflineRequest, request: Request):
+        key = request.headers.get("idempotency-key", "")
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", key):
+            raise HTTPException(400, "必须提供 1–128 字符的 Idempotency-Key。")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", app_id):
+            raise DeployError("INVALID_APP_ID", "应用编号格式错误。", "appId")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", body.expectedReleaseId):
+            raise DeployError("OFFLINE_STATE", "下线目标版本格式错误。")
+        return public_operation(store.enqueue_offline(app_id, body.expectedReleaseId, key))
+
+    @app.get("/api/v1/offline-operations/{operation_id}", dependencies=[Depends(authenticated)])
+    def offline_operation(operation_id: str):
+        return public_operation(store.get_offline(operation_id))
 
     return app

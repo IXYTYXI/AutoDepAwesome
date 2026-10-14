@@ -1038,6 +1038,25 @@ class DeploymentBackend:
     def rollback(self, job):
         self._gateway("rollback", job)
 
+    def offline(self, job, checkpoint):
+        """Replay a durable deactivation without changing data or deployment inputs."""
+        if job.get("status") != "succeeded" or job["execution"].get("resources_released"):
+            raise DeployError("OFFLINE_STATE", "Only an unreleased successful application may go offline.")
+        checkpoint({"phase": "offline_deactivate", "deactivate_intent": True})
+        self._runtime_preflight()
+        result = self._gateway("deactivate", job)
+        if not isinstance(result, dict) or result.get("deactivated") is not True or result.get("release") != job["id"]:
+            raise DeployError("GATEWAY_DEACTIVATE_FAILED", "Gateway did not confirm the exact release is offline.")
+        checkpoint({"gateway_deactivated": True})
+        # Missing containers are valid on replay after partially completed cleanup.
+        # Every existing container still has its ownership, image and storage checked.
+        checkpoint({"phase": "offline_stop", "stop_intent": True})
+        self._stop_owned_containers(job, require_existing=False)
+        checkpoint({"containers_stopped": True})
+        checkpoint({"phase": "offline_cleanup", "cleanup_intent": True})
+        self.cleanup(job)
+        checkpoint({"cleanup_confirmed": True})
+
     def cleanup(self, job):
         # Filter is convenience only. Independently inspect ownership before every removal.
         self._ids(job, require_app=False)

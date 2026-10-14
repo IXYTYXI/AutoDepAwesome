@@ -17,6 +17,9 @@ PHASE_LABELS = {
     "verify": "验证发布版本", "verifying": "验证发布版本", "rollback": "恢复上一版本",
     "retire": "清理旧版本", "cleanup": "清理资源", "failed": "失败处理", "complete": "完成",
     "recovery": "恢复运行状态", "storage_handoff": "持久存储交接",
+    "deactivate": "关闭访问入口", "offline": "下线应用", "stop": "停止服务",
+    "offline_queued": "等待下线", "offline_deactivate": "关闭访问入口",
+    "offline_stop": "停止服务", "offline_cleanup": "清理运行资源", "offline_complete": "已下线",
 }
 
 
@@ -31,6 +34,17 @@ def _register(codes, title, message, *steps):
 
 _register("DEPLOYMENT_FAILED", "部署未完成", "部署执行失败，当前信息不足以确定具体原因。",
           "查看失败阶段和部署记录，核对对应配置。", "请运维人员结合受保护的服务器日志排查；修复后提交新的部署。")
+_register("APP_BUSY", "应用正在处理其他任务", "该应用存在排队、执行、恢复或旧版本清理任务，暂时不能下线。",
+          "等待相关任务完成后刷新管理页面，再选择当前上线版本下线。")
+_register("APP_OFFLINE_BUSY", "应用正在下线", "该应用有尚未完成的下线操作，暂时不能提交部署。",
+          "在应用管理页面检查下线进度；需要恢复时先处理原下线任务，不要并行部署。")
+_register("OFFLINE_RELEASE_CHANGED", "上线版本已变化", "页面中的版本已不是应用当前上线版本，本次未对新版本执行下线。",
+          "刷新应用管理页面，核对当前应用及版本后重新操作。")
+_register("OFFLINE_STATE", "下线状态不符合要求", "当前应用或下线任务状态不允许执行该操作。",
+          "刷新管理页面并核对应用状态；已下线的应用无需重复下线。")
+_register("OFFLINE_FAILED GATEWAY_DEACTIVATE_FAILED", "下线尚未完成", "尚未确认访问入口和运行资源全部下线，操作需要处理。数据和部署记录仍保留。",
+          "查看管理页面的失败阶段，排查网关或运行资源状态。",
+          "确认原因后使用原任务的重试下线按钮继续；不要删除持久卷或手工跳过资源确认。")
 _register("INVALID_REPOSITORY", "仓库地址不符合要求", "仓库地址必须是允许访问的 HTTPS Git 仓库地址。",
           "使用 https://github.com/所有者/仓库 或平台允许的 GitLab 仓库地址。",
           "地址不要包含令牌、账号密码、查询参数、端口或分支路径；私有仓库凭证由运维配置。")

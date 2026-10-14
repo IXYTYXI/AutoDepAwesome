@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Awesome · 应用管理</title>
+  <link rel="stylesheet" href="/assets/app.css?v=0.3.0"><link rel="stylesheet" href="/assets/manage.css?v=0.3.0"><script src="/assets/manage.js?v=0.3.0" defer></script>
+</head>
+<body><main>
+  <header><span class="brand"><span class="brand-mark" aria-hidden="true">A</span> AWESOME / DEPLOY</span><nav class="console-nav" aria-label="控制台导航"><a href="/">部署控制台</a><a href="/manage" aria-current="page">应用管理</a></nav></header>
+  <section class="intro management-intro"><div><h1>应用管理</h1><p>查看全部应用与部署队列，管理公开服务的运行状态。</p></div><button id="management-refresh" type="button" class="secondary">刷新状态 ↻</button></section>
+  <div class="management-summary" aria-label="平台运行概况">
+    <div class="summary-card"><span>在线应用</span><strong id="count-online">—</strong></div>
+    <div class="summary-card"><span>排队部署</span><strong id="count-queued">—</strong></div>
+    <div class="summary-card"><span>执行中部署</span><strong id="count-running">—</strong></div>
+    <div class="summary-card"><span>待处理状态</span><strong id="count-attention">—</strong></div>
+  </div>
+  <p id="management-error" class="management-error" role="alert"></p><p id="management-notice" class="management-notice" role="status"></p>
+  <section class="panel management-panel" aria-labelledby="online-title">
+    <div class="section-head"><div><h2 id="online-title">在线应用与待处理服务</h2><p id="online-count" class="section-description">正在读取应用…</p></div><span id="management-updated" class="hint">每 3 秒更新状态</span></div>
+    <div id="online-apps" class="management-list app-list" tabindex="0" role="region" aria-label="在线应用与待处理服务，可上下滚动" aria-describedby="online-count"><p class="empty">正在读取应用状态…</p></div>
+  </section>
+  <section class="panel management-panel" aria-labelledby="queue-title">
+    <div class="section-head"><div><h2 id="queue-title">部署队列</h2><p id="deployment-count" class="section-description">排队、执行中与需要恢复处理的部署。</p></div><a href="/" class="management-link">发起部署 ↗</a></div>
+    <div id="deployment-list" class="management-list deployment-list" tabindex="0" role="region" aria-label="部署队列，可上下滚动" aria-describedby="deployment-count"><p class="empty">正在读取部署队列…</p></div>
+  </section>
+  <section class="panel management-panel retained-panel" aria-labelledby="retained-title">
+    <div class="section-head"><div><h2 id="retained-title">已下线与未部署应用</h2><p id="retained-count" class="section-description">应用、域名前缀和部署记录保留，可返回部署控制台更新。</p></div></div>
+    <div id="retained-apps" class="management-list retained-list" tabindex="0" role="region" aria-label="已下线与未部署应用，可上下滚动" aria-describedby="retained-count"><p class="empty">正在读取保留记录…</p></div>
+  </section>
+  <footer><span class="footer-dot" aria-hidden="true"></span>下线会关闭公开访问并停止服务；只有平台完成验证后，才显示下线已确认。</footer>
+</main>
+<dialog id="offline-dialog" class="offline-dialog" aria-labelledby="offline-title" aria-describedby="offline-description offline-target">
+  <span class="dialog-icon" aria-hidden="true">Ⅱ</span><h2 id="offline-title">确认下线应用</h2>
+  <p id="offline-target" class="offline-target"></p>
+  <p id="offline-description">下线后将停止服务并关闭公开访问。数据和部署记录保留。</p>
+  <p class="hint">域名前缀继续保留。需要恢复公开访问时，请在部署控制台更新该应用。</p>
+  <p id="offline-error" class="management-error" role="alert"></p>
+  <div class="dialog-actions"><button id="offline-cancel" class="secondary" type="button" autofocus>取消</button><button id="offline-confirm" class="offline-button" type="button">确认下线</button></div>
+</dialog>
+</body></html>

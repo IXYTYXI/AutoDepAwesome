@@ -40,6 +40,10 @@ class Worker:
                     )
                 )
                 if not urgent_recovery:
+                    offline = self.store.next_offline()
+                    if offline:
+                        self._offline(offline)
+                        return True
                     boot_id = self.backend.recovery_boot_id()
                     active = self.store.next_active_recovery(boot_id)
                     if active:
@@ -87,8 +91,28 @@ class Worker:
                 self.source.lock_fd = None
                 # Closing, rather than LOCK_UN, preserves the flock in inherited child descriptors.
 
+    def _offline(self, operation):
+        try:
+            operation = self.store.claim_offline(operation["id"])
+            job = self.store.get(operation["target_release_id"])
+            self.backend.offline(job, lambda delta: self.store.checkpoint_offline(operation["id"], delta))
+            self.store.finish_offline(operation["id"])
+        except Exception as error:
+            failure = error.as_dict() if isinstance(error, DeployError) else {
+                "code": "OFFLINE_FAILED", "message": "Application offline requires an explicit retry.",
+                "path": "", "suggestion": "Verify the gateway and runtime, then retry this offline request.",
+            }
+            # Never restore online traffic after a durable user request to stop it.
+            # Keep reservations and the admission/recovery gate until cleanup is confirmed.
+            self.store.fail_offline(operation["id"], failure)
+
     def _recover_active(self, job, required=False):
-        job = self.store.begin_active_recovery(job["id"], self.backend.recovery_boot_id())
+        try:
+            job = self.store.begin_active_recovery(job["id"], self.backend.recovery_boot_id())
+        except DeployError as error:
+            if error.code == "APP_OFFLINE_BUSY" and not required:
+                return  # A user requested offline after this recovery scan selected the release.
+            raise
         try:
             result = self.backend.recover_active(
                 job, lambda delta: self.store.checkpoint(job["id"], execution=delta)
