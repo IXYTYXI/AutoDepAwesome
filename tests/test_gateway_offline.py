@@ -1,4 +1,5 @@
 import copy
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +13,7 @@ def offline_request(release="old"):
 
 def offline_gateway(tmp_path):
     module = setup_state(tmp_path)
-    module.probe_deactivated = lambda req, token: None
+    module.probe_deactivated = lambda req, token, **kwargs: None
     return module
 
 
@@ -25,7 +26,7 @@ def test_deactivate_journals_before_tombstone_and_only_commits_after_probe(tmp_p
     module = offline_gateway(tmp_path)
     observed = []
 
-    def probe(req, token):
+    def probe(req, token, **kwargs):
         state = module.read_state("demo")
         assert state["current"]["release"] == "old"
         assert state["deactivation"]["completed"] is False
@@ -76,7 +77,7 @@ def test_deactivate_refuses_unknown_missing_current_and_different_pending_publis
 def test_deactivate_failed_intent_checkpoint_does_not_touch_config(tmp_path):
     module = offline_gateway(tmp_path)
     text = module.config_path("demo").read_text()
-    module.save_state = lambda *args: (_ for _ in ()).throw(OSError("disk full"))
+    module.save_state = lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full"))
     with pytest.raises(OSError, match="disk full"):
         module.deactivate(offline_request())
     assert module.config_path("demo").read_text() == text
@@ -108,7 +109,7 @@ def test_deactivate_crash_replays_durable_intent_with_same_token(tmp_path, crash
 
 def test_deactivate_probe_failure_retains_intent_and_blocks_old_publish_rollback_verify(tmp_path):
     module = offline_gateway(tmp_path)
-    module.probe_deactivated = lambda *args: (_ for _ in ()).throw(RuntimeError("old nginx worker"))
+    module.probe_deactivated = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("old nginx worker"))
     with pytest.raises(RuntimeError, match="old nginx worker"):
         module.deactivate(offline_request())
     state = module.read_state("demo")
@@ -118,7 +119,7 @@ def test_deactivate_probe_failure_retains_intent_and_blocks_old_publish_rollback
         with pytest.raises(ValueError):
             operation(request(operation.__name__, "old"))
     assert module.read_state("demo") == state
-    module.probe_deactivated = lambda *args: None
+    module.probe_deactivated = lambda *args, **kwargs: None
     assert module.deactivate(offline_request())["deactivated"] is True
 
 
@@ -128,7 +129,7 @@ def test_completed_deactivate_replay_reprobes_and_never_restores_former_release(
     module.deactivate(offline_request("new"))
     tombstone = module.config_path("demo").read_text()
     tokens = []
-    module.probe_deactivated = lambda req, token: tokens.append(token)
+    module.probe_deactivated = lambda req, token, **kwargs: tokens.append(token)
     assert module.deactivate(offline_request("new"))["deactivated"] is True
     assert len(tokens) == 1
     with pytest.raises(ValueError):
@@ -183,7 +184,7 @@ def test_new_publish_after_deactivate_rolls_back_to_verified_tombstone(tmp_path)
     with pytest.raises(ValueError):
         module.deactivate(offline_request())
     probes = []
-    module.probe_deactivated = lambda req, token: probes.append(token)
+    module.probe_deactivated = lambda req, token, **kwargs: probes.append(token)
     module.probe_routes = lambda req: (_ for _ in ()).throw(RuntimeError("candidate fails"))
     with pytest.raises(RuntimeError, match="candidate fails"):
         module.verify({**req, "op": "verify"})
@@ -232,12 +233,12 @@ def test_failed_tombstone_rollback_probe_keeps_new_publish_journal(tmp_path):
     module.deactivate(offline_request())
     req = {**request(), "previous_release": None}
     module.publish(req)
-    module.probe_deactivated = lambda *args: (_ for _ in ()).throw(RuntimeError("not offline yet"))
+    module.probe_deactivated = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("not offline yet"))
     with pytest.raises(RuntimeError, match="not offline yet"):
         module.rollback({**req, "op": "rollback"})
     state = module.read_state("demo")
     assert state["current"]["release"] == state["pending"]["release"] == "new"
-    module.probe_deactivated = lambda *args: None
+    module.probe_deactivated = lambda *args, **kwargs: None
     assert module.rollback({**req, "op": "rollback"})["rolled_back"] is True
     assert module.read_state("demo")["deactivation"]["completed"] is True
 
@@ -247,7 +248,7 @@ def test_rollback_before_new_publish_checks_offline_route_without_restoring_anyt
     module.deactivate(offline_request())
     state, text = module.read_state("demo"), module.config_path("demo").read_text()
     probes = []
-    module.probe_deactivated = lambda req, token: probes.append(token)
+    module.probe_deactivated = lambda req, token, **kwargs: probes.append(token)
     assert module.rollback({**request("rollback"), "previous_release": None})["rolled_back"] is True
     assert probes == [state["deactivation"]["token"]]
     assert module.read_state("demo") == state
@@ -256,6 +257,7 @@ def test_rollback_before_new_publish_checks_offline_route_without_restoring_anyt
 
 def probe_gateway(tmp_path, outcomes):
     module = setup_state(tmp_path)
+    module.PROBE_LOG = tmp_path / "probe.log"
     clock = SimpleNamespace(now=0)
     module.time = SimpleNamespace(monotonic=lambda: clock.now,
                                   sleep=lambda n: setattr(clock, "now", clock.now + n))
@@ -280,7 +282,13 @@ def probe_gateway(tmp_path, outcomes):
             if isinstance(outcome, Exception):
                 raise outcome
             status, marker = outcome
-            return SimpleNamespace(status=status, getheader=lambda key: marker)
+            nonce = self.headers.get("X-Awesome-Probe")
+            if nonce:
+                with module.PROBE_LOG.open("a") as stream:
+                    stream.write(json.dumps({"probe": nonce, "host": self.host, "uri": self.path.split("?")[0],
+                        "upstream": "-", "status": status, "pid": 2}) + "\n")
+            return SimpleNamespace(status=status, getheader=lambda key:
+                {"X-Awesome-Offline": marker, "X-Awesome-Gateway-Worker": "2"}.get(key))
 
         def close(self):
             self.closed = True

@@ -193,6 +193,46 @@ test('application refresh preserves manual form edits and supports creating a ne
   assert.equal(h.get('app-search').value,'创建新应用');
 });
 
+test('unbound application selection retains its identity but requires a new domain prefix',async()=>{
+  const h=harness();await new Promise(setImmediate);
+  const released={...apps[0],subdomain:null,lastSubdomain:'alpha',domainBound:false};
+  await loadRecords(h,[],[released,apps[1]]);h.get('subdomain').value='previous';
+  h.run("chooseApp('app-alpha')");
+  assert.equal(h.get('appId').value,'app-alpha');
+  assert.equal(h.get('repository').value,released.repository);
+  assert.equal(h.get('subdomain').value,'');
+  assert.ok(h.get('app-picker-help').textContent.includes('当前未绑定域名'));
+  assert.ok(h.get('app-picker-help').textContent.includes('alpha'));
+  assert.ok(h.get('app-picker-help').textContent.includes('空闲前缀'));
+  assert.ok(h.get('app-picker-help').textContent.includes('awesome.yaml'));
+  h.get('subdomain').value='fresh';h.get('subdomain').listeners.input();
+  await loadRecords(h,[],[released,apps[1]]);
+  const before=h.run('requestKey');h.run("chooseApp('app-alpha')");
+  assert.equal(h.get('subdomain').value,'fresh');
+  assert.equal(h.get('domain-prefix').textContent,'fresh');
+  assert.equal(h.run('requestKey'),before);
+});
+
+test('picker searches historical prefixes and distinguishes duplicate names by app identity',async()=>{
+  const h=harness();await new Promise(setImmediate);
+  const released=[{...apps[0],subdomain:null,lastSubdomain:'shared',domainBound:false},{...apps[1],subdomain:null,lastSubdomain:'shared',domainBound:false}];
+  await loadRecords(h,[],released);h.get('app-search').value='shared';h.get('app-search').listeners.input();
+  assert.equal(h.get('app-options').children.length,3);
+  const labels=h.get('app-options').children.slice(1).map(option=>all(option).map(node=>node.textContent).join(' '));
+  assert.ok(labels.every(label=>label.includes('shared') && label.includes('上次使用')));
+  assert.ok(labels[0].includes('app-alph'));
+  assert.ok(labels[1].includes('app-beta'));
+  h.get('app-options').children[2].listeners.click();assert.equal(h.get('appId').value,'app-beta');
+});
+
+test('missing domainBound remains compatible with bound applications even without an active release',async()=>{
+  const h=harness();await new Promise(setImmediate);
+  await loadRecords(h,[],[{...apps[0],active_release_id:null}]);h.run("chooseApp('app-alpha')");
+  assert.equal(h.get('subdomain').value,'alpha');
+  assert.ok(!h.get('app-picker-help').textContent.includes('已释放'));
+  assert.ok(!h.get('app-picker-help').textContent.includes('未绑定'));
+});
+
 test('search cancellation preserves the deployment idempotency key and real changes replace it',async()=>{
   const h=harness();await new Promise(setImmediate);await loadRecords(h,[],apps);
   h.run("chooseApp('app-alpha')");
