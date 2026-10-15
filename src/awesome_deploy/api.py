@@ -16,6 +16,7 @@ from .auth import verify_credentials
 from .ai_advice import AdviceService
 from .config import Settings
 from .diagnostics import ERROR_CODES, PHASE_LABELS, localize_error, localize_event
+from .deployment_secrets import DeploymentSecrets
 from .errors import DeployError
 from .manifest import load_manifest, schema_document
 from .management import public_application, public_operation
@@ -47,6 +48,11 @@ class AnalysisRequest(BaseModel):
 class OfflineRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expectedReleaseId: StrictStr
+
+
+class SecretConfigurationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    values: dict[StrictStr, StrictStr]
 
 
 _RUNTIME_NETWORK_TEXT = {
@@ -101,6 +107,7 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
     app = FastAPI(title="Awesome Deploy", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store = store
     app.state.advice = AdviceService(settings)
+    app.state.deployment_secrets = DeploymentSecrets(settings, store)
     public = urlsplit(settings.public_url)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[public.hostname or "127.0.0.1"])
     basic = HTTPBasic(auto_error=False)
@@ -165,7 +172,8 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
             else 503
             if code.startswith("AI_")
             else 409
-            if code in {"DIAGNOSIS_NOT_AVAILABLE", "OFFLINE_RELEASE_CHANGED", "OFFLINE_STATE"}
+            if code in {"DIAGNOSIS_NOT_AVAILABLE", "OFFLINE_RELEASE_CHANGED", "OFFLINE_STATE",
+                        "SECRET_CONFIGURATION_NOT_AVAILABLE", "SECRET_ALREADY_CONFIGURED", "SECRET_UNAVAILABLE"}
             else 404
             if code == "NOT_FOUND"
             else 409
@@ -294,6 +302,14 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
     def events(job_id: str):
         store.get(job_id)
         return {"items": [localize_event(event) for event in store.events(job_id)]}
+
+    @app.get("/api/v1/deployments/{job_id}/secrets", dependencies=[Depends(authenticated)])
+    def deployment_secret_requirements(job_id: str):
+        return app.state.deployment_secrets.describe(job_id)
+
+    @app.post("/api/v1/deployments/{job_id}/secrets", dependencies=[Depends(write_access)])
+    def save_deployment_secrets(job_id: str, body: SecretConfigurationRequest):
+        return app.state.deployment_secrets.save(job_id, body.values)
 
     @app.post("/api/v1/deployments/{job_id}/analyze", dependencies=[Depends(write_access)])
     async def analyze(job_id: str, body: AnalysisRequest):

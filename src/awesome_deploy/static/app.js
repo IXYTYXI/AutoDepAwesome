@@ -16,6 +16,8 @@ let pickerOpen = false;
 let pickerQuery = '';
 let appChoices = [];
 let activeAppIndex = 0;
+let secretEditor = null;
+let deploymentSubmitting = false;
 const statusLabels = {queued:'已排队',running:'执行中',succeeded:'部署成功',failed:'部署失败',recovery_required:'需要处理恢复状态'};
 const phaseLabels = {source:'获取代码',prepared:'配置已校验',freeze:'固定部署输入',frozen:'输入已固定',build:'构建镜像',built:'镜像构建完成',start:'启动服务',https:'准备 HTTPS 证书',publish:'切换路由',verify:'验证发布版本',rollback:'恢复上一版本',retire:'清理旧版本',failed:'失败清理完成',queued:'排队',fetching:'获取代码',preparing:'准备配置',validating:'校验',reserved:'资源已预留',building:'构建镜像',starting:'启动服务',health:'健康检查',certificate:'准备证书',publishing:'切换路由',verifying:'验证发布版本',cleanup:'清理旧版本',complete:'完成',recovery:'恢复运行状态'};
 async function api(url, options={}) {
@@ -34,6 +36,155 @@ async function api(url, options={}) {
   return data;
 }
 function text(tag, value, className) {const node=document.createElement(tag);node.textContent=value;if(className)node.className=className;return node;}
+function secretEditorActive(editor) {return secretEditor===editor && currentJob?.id===editor.jobId;}
+function clearSecretEditor() {
+  if(secretEditor)for(const field of secretEditor.fields.values())field.input.value='';
+  secretEditor=null;
+}
+function generatedSecretsNeedConfirmation(editor) {return Array.from(editor.fields.values()).some(field=>field.input.generated) && !editor.acknowledgement.checked;}
+function secretControls(editor) {
+  const unavailable=editor.items.some(item=>item.state==='unavailable');
+  const missing=editor.items.some(item=>item.state==='missing');
+  editor.submit.textContent=editor.busy ? '正在处理…' : missing ? '保存并继续部署' : '继续部署';
+  editor.acknowledgementRow.hidden=!Array.from(editor.fields.values()).some(field=>field.input.generated);
+  editor.acknowledgement.disabled=editor.busy || editor.loading;
+  editor.submit.disabled=deploymentSubmitting || editor.busy || editor.loading || !editor.loaded || unavailable || generatedSecretsNeedConfirmation(editor);
+  editor.retry.disabled=editor.busy || editor.loading;
+  for(const field of editor.fields.values()) {
+    field.input.disabled=editor.busy || editor.loading;
+    for(const button of field.buttons)button.disabled=editor.busy || editor.loading;
+    if(field.generate)field.generate.hidden=!editor.canGenerate;
+  }
+}
+function secretField(editor,item) {
+  const row=text('div','','secret-field');
+  const label=text('label',item.name);const input=text('input','');
+  input.id=`secret-${editor.jobId}-${item.name}`;label.setAttribute('for',input.id);
+  input.type='password';input.autocomplete='new-password';input.spellcheck=false;input.maxLength=16384;
+  input.setAttribute('data-secret-name',item.name);
+  input.addEventListener('input',()=>{if(input.generated){editor.acknowledgement.checked=false;secretControls(editor);}});
+  const control=text('div','','secret-input');control.append(input);
+  row.append(label,text('small',item.uses.map(use=>`${use.service} · ${use.environmentVariable}`).join('；')),control);
+  const actions=text('div','','secret-actions');const buttons=[];
+  const addButton=(label,callback)=>{const button=text('button',label,'secondary');button.type='button';button.addEventListener('click',callback);actions.append(button);buttons.push(button);return button;};
+  const reveal=addButton('显示',()=>{input.type=input.type==='password' ? 'text' : 'password';reveal.textContent=input.type==='password' ? '显示' : '隐藏';});
+  addButton('复制',async()=>{
+    if(!input.value){editor.message.textContent='请先填写或生成该配置。';return;}
+    try {
+      if(!globalThis.navigator?.clipboard?.writeText)throw new Error('unavailable');
+      await navigator.clipboard.writeText(input.value);
+      if(secretEditorActive(editor))editor.message.textContent='已复制，请妥善保存；提交后页面不会再显示已保存的值。';
+    } catch {if(secretEditorActive(editor))editor.message.textContent='无法访问剪贴板，请点击显示后手动复制。';}
+  });
+  const randomUses=new Set(['BOOTSTRAP_PASSWORD','MASTER_KEY']);
+  let generate;
+  if(item.uses.length && item.uses.every(use=>randomUses.has(use.environmentVariable))) {
+    generate=addButton('生成随机值',()=>{
+      if(!secretEditorActive(editor) || !editor.canGenerate)return;
+      try {
+        const bytes=crypto.getRandomValues(new Uint8Array(32));
+        input.value=Array.from(bytes,value=>value.toString(16).padStart(2,'0')).join('');
+        input.generated=true;editor.acknowledgement.checked=false;secretControls(editor);
+        editor.message.textContent='已生成 64 位十六进制随机值。请按项目要求确认并保存需要留存的密码或密钥。';
+      } catch {editor.message.textContent='当前浏览器不能安全生成随机值，请手动填写项目所需的值。';}
+    });
+  }
+  row.append(actions);return {row,input,buttons,generate};
+}
+function renderSecretRequirements(editor,data) {
+  if(data.jobId!==editor.jobId || data.repository!==editor.payload.repository || data.subdomain!==editor.payload.subdomain
+    || !Array.isArray(data.items) || data.items.some(item=>typeof item.name!=='string' || !Array.isArray(item.uses)
+      || !['missing','configured','unavailable'].includes(item.state))
+    || new Set(data.items.map(item=>item.name)).size!==data.items.length)throw new Error('配置状态与当前部署不一致，请重新读取。');
+  editor.canGenerate=data.canGenerate===true;editor.items=data.items;editor.loaded=true;
+  const needed=new Set(data.items.filter(item=>item.state==='missing').map(item=>item.name));
+  for(const [name,field] of editor.fields)if(!needed.has(name)){field.input.value='';editor.fields.delete(name);}
+  editor.list.replaceChildren();
+  for(const item of data.items) {
+    if(item.state==='missing') {
+      if(!editor.fields.has(item.name))editor.fields.set(item.name,secretField(editor,item));
+      editor.list.append(editor.fields.get(item.name).row);
+    } else {
+      const row=text('div','','secret-status');row.append(text('strong',item.name),text('span',item.state==='configured' ? '已配置' : '需要恢复','status-chip'));
+      row.append(text('small',item.state==='configured' ? '已保存在服务器，不显示或覆盖现有值。' : '已有配置不可读取，请恢复原值或联系管理员；不能用随机值替换。'));
+      editor.list.append(row);
+    }
+  }
+  if(!data.items.length)editor.list.append(text('p','此部署没有需要填写的秘密配置。','hint'));
+  editor.retry.hidden=true;secretControls(editor);
+}
+async function loadSecretRequirements(editor,{preserveMessage=false}={}) {
+  if(!secretEditorActive(editor))return;
+  editor.loading=true;secretControls(editor);
+  if(!preserveMessage)editor.message.textContent='正在读取此部署需要的配置…';
+  try {
+    const data=await api(`/api/v1/deployments/${encodeURIComponent(editor.jobId)}/secrets`);
+    if(!secretEditorActive(editor))return;
+    renderSecretRequirements(editor,data);
+    if(!preserveMessage)editor.message.textContent=editor.items.some(item=>item.state==='missing') ? '填写以下缺失项即可继续，无需登录服务器或创建文件。' : '配置状态已更新。';
+  } catch(error) {
+    if(!secretEditorActive(editor))return;
+    editor.loaded=false;editor.retry.hidden=false;editor.message.textContent=`无法读取配置：${error.message}`;
+  } finally {if(secretEditorActive(editor)){editor.loading=false;secretControls(editor);}}
+}
+async function submitDeployment(body,key) {
+  return api('/api/v1/deployments',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify(body)});
+}
+async function saveSecretsAndContinue(editor) {
+  if(!secretEditorActive(editor) || deploymentSubmitting || editor.busy || editor.loading || !editor.loaded || editor.items.some(item=>item.state==='unavailable'))return;
+  if(generatedSecretsNeedConfirmation(editor)){editor.message.textContent='请先复制并保存需要留存的密码和密钥，再勾选确认继续。';return;}
+  const values=Object.create(null);
+  for(const item of editor.items)if(item.state==='missing') {
+    const input=editor.fields.get(item.name).input;
+    if(!input.value || /[\r\n\x00]/.test(input.value) || new TextEncoder().encode(input.value).length>16384) {
+      editor.message.textContent=`请填写 ${item.name}：值不能为空，须为单行且不超过 16 KiB。`;input.focus();return;
+    }
+    values[item.name]=input.value;
+  }
+  deploymentSubmitting=true;$('submit').disabled=true;
+  editor.busy=true;editor.message.textContent='正在安全保存配置…';secretControls(editor);
+  let saving=Object.keys(values).length>0;
+  try {
+    if(saving) {
+      const data=await api(`/api/v1/deployments/${encodeURIComponent(editor.jobId)}/secrets`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({values})});
+      if(!secretEditorActive(editor))return;
+      renderSecretRequirements(editor,data);editor.saved=true;saving=false;
+    }
+    if(editor.items.some(item=>item.state!=='configured'))throw new Error('仍有配置未就绪，请核对配置状态后继续。');
+    editor.message.textContent='配置已保存，正在提交新的部署…';
+    const job=await submitDeployment(editor.payload,editor.requestKey);
+    if(!secretEditorActive(editor))return;
+    historyFilter='all';$('history').scrollTop=0;
+    await refresh();
+    if(secretEditorActive(editor))await watch(job.id);
+  } catch(error) {
+    if(!secretEditorActive(editor))return;
+    editor.message.textContent=(editor.saved ? '配置已保存，无需重新填写。部署提交未完成，可点击继续部署重试。\n' : '')+error.message;
+    if(saving)await loadSecretRequirements(editor,{preserveMessage:true});
+  } finally {
+    for(const name of Object.keys(values))delete values[name];
+    deploymentSubmitting=false;$('submit').disabled=false;editor.busy=false;
+    if(secretEditor)secretControls(secretEditor);
+  }
+}
+function createSecretEditor(job) {
+  const editor=text('section','','secret-editor');editor.jobId=job.id;
+  editor.payload={repository:job.repository,ref:job.ref,subdomain:job.subdomain};if(job.appId)editor.payload.appId=job.appId;
+  editor.fields=new Map();editor.items=[];editor.loaded=false;editor.loading=false;editor.busy=false;editor.saved=false;
+  // One failed task has one continuation, including retries after navigation or a page reload.
+  editor.requestKey=`configure-${job.id}`;
+  editor.append(text('h4','补齐配置，继续部署'),text('p','直接在这里填写。平台会将值私密保存在部署服务器，并按项目声明传给应用；无需另找文件位置。','hint'));
+  editor.append(text('p','生成随机值仅用于新密码或随机密钥（32 字节 / 64 位十六进制）。外部 API Key 请填写供应商提供的有效值。','hint'));
+  editor.list=text('div','','secret-fields');editor.list.setAttribute('role','region');editor.list.setAttribute('aria-label','此部署需要的配置，可上下滚动');
+  editor.acknowledgementRow=text('label','','secret-ack');editor.acknowledgementRow.hidden=true;
+  editor.acknowledgement=text('input','');editor.acknowledgement.type='checkbox';editor.acknowledgement.checked=false;
+  editor.acknowledgement.addEventListener('change',()=>secretControls(editor));
+  editor.acknowledgementRow.append(editor.acknowledgement,text('span','我已保存需要留存的密码和密钥；提交后不再显示已保存的值。'));
+  editor.message=text('p','','secret-message');editor.message.setAttribute('role','status');editor.message.setAttribute('aria-live','polite');
+  editor.retry=text('button','重试读取配置','secondary');editor.retry.type='button';editor.retry.hidden=true;editor.retry.addEventListener('click',()=>loadSecretRequirements(editor));
+  editor.submit=text('button','保存并继续部署','secret-submit');editor.submit.type='button';editor.submit.disabled=true;editor.submit.addEventListener('click',()=>saveSecretsAndContinue(editor));
+  editor.append(editor.list,editor.acknowledgementRow,editor.message,editor.retry,editor.submit);return editor;
+}
 function showDiagnosis(container, job) {
   const error=job.error;
   const box=text('section','','diagnosis');
@@ -244,11 +395,20 @@ function renderHistory({resetScroll=false}={}) {
   $('history').scrollTop=scrollTop;
 }
 function showJob(job) {
+  const needsSecrets=job.status==='failed' && job.error?.code==='SECRET_NOT_FOUND';
+  if(secretEditor && (secretEditor.jobId!==job.id || !needsSecrets))clearSecretEditor();
+  const focused=secretEditor?.contains(document.activeElement) ? document.activeElement : null;
   currentJob=job;
   const container=$('current');container.replaceChildren();
   container.append(text('h3',`${job.subdomain} · ${statusLabels[job.status] || '未知状态'}`,'current-title'));
   container.append(text('p',`阶段：${phaseLabels[job.phase] || '处理部署任务'}`,'current-phase'));
-  if(job.error)showDiagnosis(container,job);
+  if(needsSecrets) {
+    if(!secretEditor){secretEditor=createSecretEditor(job);loadSecretRequirements(secretEditor);}
+    container.append(secretEditor);
+    const editor=secretEditor;const diagnosis=text('details','','secret-diagnosis');diagnosis.open=editor.diagnosisOpen===true;
+    diagnosis.addEventListener('toggle',()=>{editor.diagnosisOpen=diagnosis.open;});
+    diagnosis.append(text('summary','错误详情与 AI 建议'));showDiagnosis(diagnosis,job);container.append(diagnosis);
+  } else if(job.error)showDiagnosis(container,job);
   if(job.url) {
     const link=text('a','打开已部署应用 ↗','app-link');link.href=job.url;link.target='_blank';link.rel='noopener';container.append(link);
   }
@@ -259,11 +419,13 @@ function showJob(job) {
   for(const [label,value] of entries)if(value)values.append(text('dt',label),text('dd',value,label.includes('编号') || label==='代码版本' ? 'mono' : ''));
   metadata.append(values);metadata.addEventListener('toggle',()=>metadataStates.set(job.id,metadata.open));
   container.append(metadata);
+  if(focused)focused.focus({preventScroll:true});
 }
 async function watch(id,{focus=false}={}) {
   clearTimeout(pollTimer);
   const changed=selectedJob!==id;selectedJob=id;renderHistory();
   if(changed) {
+    clearSecretEditor();
     currentJob=null;
     $('current').replaceChildren(text('p','正在读取部署详情…','empty'));
     $('events').textContent='正在读取执行记录…';$('event-details').open=false;
@@ -321,13 +483,15 @@ form.addEventListener('input',event=>{
   if(['repository','ref','subdomain','appId'].some(id=>$(id)===event.target))requestKey=crypto.randomUUID();
 });
 form.addEventListener('submit',async(event)=>{
-  event.preventDefault();$('submit').disabled=true;$('form-error').textContent='';
+  event.preventDefault();if(deploymentSubmitting)return;
+  deploymentSubmitting=true;$('submit').disabled=true;$('form-error').textContent='';
+  if(secretEditor)secretControls(secretEditor);
   try {
     const body=Object.fromEntries(new FormData(form));if(!body.appId)delete body.appId;
-    const job=await api('/api/v1/deployments',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':requestKey},body:JSON.stringify(body)});
+    const job=await submitDeployment(body,requestKey);
     requestKey=crypto.randomUUID();historyFilter='all';$('history').scrollTop=0;await refresh();await watch(job.id);
   } catch(error){$('form-error').textContent=error.message;}
-  finally{$('submit').disabled=false;}
+  finally{deploymentSubmitting=false;$('submit').disabled=false;if(secretEditor)secretControls(secretEditor);}
 });
 $('refresh').addEventListener('click',()=>refresh().catch(error=>{$('form-error').textContent=error.message;}));
 api('/api/v1/capabilities').then(renderCapabilities).catch(error=>{renderCapabilities({});$('form-error').textContent=error.message;});

@@ -191,6 +191,85 @@ class Store:
         with self._connection() as db:
             return self._get(db, job_id)
 
+    @contextmanager
+    def secret_configuration_scope(self, job_id, *, write=False):
+        """Authorize a new secret writer independently of old-version reuse rules.
+
+        The caller holds worker.lock before requesting a write transaction, and
+        keeps this transaction open until all create-only filesystem writes end.
+        Read transactions authorize metadata from a single consistent DB view.
+        """
+        with self._connection(write=write) as db:
+            if not write:
+                db.execute("BEGIN")
+            job = self._get(db, job_id)
+            if (job["status"] != "failed" or not isinstance(job.get("error"), dict)
+                    or job["error"].get("code") != "SECRET_NOT_FOUND"
+                    or not isinstance(job.get("input"), dict)):
+                raise DeployError("SECRET_CONFIGURATION_NOT_AVAILABLE", "该任务不能补充秘密配置。")
+            can_generate = self._authorize_secret_configuration(db, job)
+            yield job, can_generate
+
+    def _authorize_secret_configuration(self, db, job):
+        payload = job["input"]
+        repository, subdomain = payload.get("repository"), payload.get("subdomain")
+        if not isinstance(repository, str) or not isinstance(subdomain, str):
+            raise DeployError("SECRET_CONFIGURATION_NOT_AVAILABLE", "该任务不能补充秘密配置。")
+        conflict = DeployError("SECRET_SCOPE_CONFLICT", "该配置空间不属于所选应用。")
+        busy = DeployError("SECRET_CONFIGURATION_BUSY", "相关部署或恢复工作尚未结束。")
+        selected, assigned = payload.get("appId"), job.get("app_id")
+        if selected is not None and (not isinstance(selected, str) or not selected):
+            raise conflict
+        if assigned is not None and (not isinstance(assigned, str) or not assigned):
+            raise conflict
+        if selected and assigned and selected != assigned:
+            raise conflict
+        owner = assigned or selected
+        active_release = None
+        if owner:
+            app = db.execute("SELECT * FROM apps WHERE id=?", (owner,)).fetchone()
+            if (not app or app["repository"] != repository
+                    or app["subdomain"] is not None and app["subdomain"] != subdomain):
+                raise conflict
+            active_release = app["active_release_id"]
+        occupied = db.execute("SELECT id FROM apps WHERE subdomain=?", (subdomain,)).fetchone()
+        if occupied and occupied["id"] != owner:
+            raise conflict
+        relevant_ids = set()
+        for row in db.execute("SELECT * FROM jobs"):
+            other = self._job(row)
+            data = other.get("input")
+            if not isinstance(data, dict):
+                raise DeployError("SECRET_CONFIGURATION_NOT_AVAILABLE", "无法核验配置空间的历史归属。")
+            identities = {value for value in (other.get("app_id"), data.get("appId")) if isinstance(value, str) and value}
+            same_scope = data.get("repository") == repository and data.get("subdomain") == subdomain
+            same_owner = owner is not None and owner in identities
+            if same_scope:
+                relevant_ids.add(other["id"])
+                # Failed jobs and deleted applications still establish ownership.
+                # A rejected user app selection is not a confirmed allocation.
+                if other.get("app_id") is not None and other["app_id"] != owner:
+                    raise conflict
+                if not owner and any((other.get("execution") or {}).get(key) for key in (
+                    "ports", "storage_volumes", "images", "publish_intent", "storage_handoff_intent",
+                )):
+                    raise busy
+            if same_owner or data.get("subdomain") == subdomain:
+                if other["status"] in {"queued", "running", "recovery_required"}:
+                    raise busy
+                recovery = (other.get("execution") or {}).get("active_recovery", {})
+                if (other["id"] == active_release and isinstance(recovery, dict)
+                        and recovery.get("outcome") in {"checking", "failed"}):
+                    raise busy
+            if (same_scope or same_owner) and db.execute(
+                "SELECT 1 FROM reservations WHERE job_id=? LIMIT 1", (other["id"],)
+            ).fetchone() and (not owner or other["status"] != "succeeded"):
+                raise busy
+        for row in db.execute("SELECT * FROM offline_operations WHERE status IN ('queued','running','recovery_required')"):
+            if row["app_id"] == owner or row["target_release_id"] in relevant_ids:
+                raise busy
+        return owner is None
+
     def enqueue(self, payload, idempotency_key):
         encoded = _json(payload)
         if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 200:

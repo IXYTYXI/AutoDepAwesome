@@ -216,6 +216,10 @@ API unit 启用 `NoNewPrivileges` 和只读系统保护；worker 必须调用精
 
 ### 私有仓库与秘密配置
 
+0.6.0 增加部署页面的缺失配置填写入口。只有已经固定代码并报告 `SECRET_NOT_FOUND` 的失败任务可使用；GET 只显示所需引用和状态，POST 使用管理账号及同源写入保护。网页不接受客户端指定仓库、域名或应用身份，均从任务记录推导。保存时按 worker 锁、SQLite 写事务顺序重新核对归属和进行中的任务；已有指针原子保护，不覆盖现有配置。历史归属冲突仍需使用原应用或独立前缀。
+
+网页请求为 `POST /api/v1/deployments/<job_id>/secrets`，JSON 形如 `{"values":{"REFERENCE":"用户输入的值"}}`；值通过 HTTPS 请求正文传输，不应写入命令参数或访问日志。该接口只保存配置，不创建部署；页面在保存成功后通过既有部署接口提交新任务。磁盘写入中断时，已保存项保留，刷新状态后只补剩余缺项。不可用的旧配置不能通过此入口随机替换，需由运维恢复或轮换。
+
 私有 Git 使用 root 管理、服务账号可执行的绝对路径 `git_askpass`。helper 应按提示读取仓库外的受限凭证，并只输出 Git 所需值，不输出调试信息。Git 会清除普通用户配置、credential helper 和任意继承环境；不要假设 `HOME`、shell profile 或交互登录中的 token 对 worker 可见。模板默认 `git_askpass: null`，只适合无交互可读取的公开仓库。
 
 应用秘密通过 `secret-set --repository ... --subdomain ... --name ...` 交互输入；详见主 README。备份 state 时包含版本化秘密及凭证，按秘密备份管理；不要把 SQLite 或 state 打包上传为公开诊断附件。
