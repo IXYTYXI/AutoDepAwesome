@@ -200,6 +200,22 @@ API unit 启用 `NoNewPrivileges` 和只读系统保护；worker 必须调用精
 
 ## 7. 私有 Git、应用秘密和日志
 
+### Git 拉取代理（0.5.1）
+
+仓库拉取运行在宿主机 worker 内。若服务器已有受管理员管理的代理，在 `/etc/awesome-deploy/config.json` 设置：
+
+```json
+"git_proxy_url": "http://127.0.0.1:7890"
+```
+
+将上面的字段加入现有 JSON 对象；不要用这一行覆盖整个配置文件。默认值为 `null`，保持直连。仅接受带明确端口的 `http`、`https` 或 `socks5h` 地址；禁止用户名、密码、查询参数、fragment、非根路径和空白字符。代理本身应在平台之外安装和维护，确保服务账号可连接。
+
+平台使用 Git 的 `--config-env` 将地址传给拉取进程，要求 Git 2.31 或更新版本。代理地址不写入仓库配置，也不放进 Git 命令参数；不会继承 shell 的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 或 `NO_PROXY`。HTTPS 仓库证书和 HTTPS 代理证书校验始终开启；配置了代理后，代理不可用就按原有错误分类失败，不会静默尝试直连。认证仍由单独的 `git_askpass` 管理，代理不能代替私有仓库凭证。
+
+在平台空闲时修改配置并重启 API 与 worker，使用一个公开测试仓库核对实际分支和拉取结果。代理只影响 Git 的网络操作，本地提交解析、归档、业务容器、镜像构建、模型 API 均保持原行为；不修改用户仓库文件或用户提交的 ref。拉取仍受 `git_timeout` 限制；代理不能修复不存在的分支、标签或提交。
+
+### 私有仓库与秘密配置
+
 私有 Git 使用 root 管理、服务账号可执行的绝对路径 `git_askpass`。helper 应按提示读取仓库外的受限凭证，并只输出 Git 所需值，不输出调试信息。Git 会清除普通用户配置、credential helper 和任意继承环境；不要假设 `HOME`、shell profile 或交互登录中的 token 对 worker 可见。模板默认 `git_askpass: null`，只适合无交互可读取的公开仓库。
 
 应用秘密通过 `secret-set --repository ... --subdomain ... --name ...` 交互输入；详见主 README。备份 state 时包含版本化秘密及凭证，按秘密备份管理；不要把 SQLite 或 state 打包上传为公开诊断附件。

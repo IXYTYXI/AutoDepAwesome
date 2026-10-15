@@ -5,6 +5,7 @@
   "listen_port": 8088,
   "git_hosts": ["github.com", "gitlab.com"],
   "git_askpass": null,
+  "git_proxy_url": null,
   "git_timeout": 120,
   "repo_size_limit_mib": 256,
   "port_start": 20000,
