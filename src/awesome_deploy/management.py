@@ -7,12 +7,14 @@ def public_operation(operation):
     if operation is None:
         return None
     retryable = operation["status"] == "recovery_required"
+    policy = (operation.get("execution") or {}).get("data_policy", "retain")
     return {
         "id": operation["id"],
         "appId": operation["app_id"],
         "releaseId": operation["target_release_id"],
         "status": operation["status"],
         "phase": operation["phase"],
+        "dataPolicy": policy if policy in ("retain", "delete") else None,
         "error": localize_error(operation.get("error"), operation["phase"]),
         "createdAt": operation["created_at"],
         "updatedAt": operation["updated_at"],
@@ -46,6 +48,8 @@ def public_application(app, base_domain):
         "status": status,
         "activeReleaseId": app["active_release_id"],
         "retainedReleaseId": retained["id"] if retained else None,
+        "dataDeleted": bool(not active and not app.get("active_release_id") and retained
+                            and (retained.get("execution") or {}).get("data_deleted") is True),
         "commit": (release.get("snapshot") or {}).get("commit") if release else None,
         "ref": release["input"]["ref"] if release else None,
         "url": f"https://{app['subdomain']}.{base_domain}" if status == "online" and app["subdomain"] else None,

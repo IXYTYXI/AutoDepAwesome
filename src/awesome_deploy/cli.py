@@ -161,14 +161,20 @@ def main(argv=None):
                 create_app(settings), host="127.0.0.1", port=settings.listen_port, proxy_headers=False
             )
         elif args.command == "secret-set":
-            from .secrets_store import SecretStore
+            from .deployment_secrets import DeploymentSecrets
             from .source import validate_repository
+            from .store import Store
 
             repository = validate_repository(args.repository, settings)
             if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,5}[a-z0-9])?", args.subdomain):
                 raise DeployError("INVALID_SUBDOMAIN", "域名前缀格式无效。")
             value = getpass.getpass("秘密配置值（输入不回显）：")
-            version = SecretStore(settings).set(repository, args.subdomain, args.name, value)
+            # Lock acquisition only needs the protected filesystem. Constructing
+            # Store is deliberately deferred until the worker lock is held.
+            configuration = DeploymentSecrets(settings, None)
+            with configuration._worker_lock():
+                with Store(settings).secret_write_scope(repository, args.subdomain):
+                    version = configuration.secrets.set(repository, args.subdomain, args.name, value)
             print(json.dumps({"name": args.name, "version": version}, ensure_ascii=False))
         elif args.command == "schema":
             from .manifest import schema_document

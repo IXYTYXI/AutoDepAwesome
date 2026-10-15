@@ -213,10 +213,10 @@ function appIdentityLabel(app) {
 function updateAppHelp() {
   const app=allApps.find(item=>item.id===$('appId').value);
   if(app?.domainBound===false) {
-    $('app-picker-help').textContent=`当前未绑定域名${app.lastSubdomain ? '；上次使用：'+app.lastSubdomain : ''}。保留此应用选择以沿用数据，请填写空闲前缀，并与自己的 awesome.yaml 保持一致。`;
+    $('app-picker-help').textContent=`当前未绑定域名${app.lastSubdomain ? '；上次使用：'+app.lastSubdomain : ''}。继续部署此应用；已保留的数据会沿用，已清除的数据不会恢复。请填写空闲前缀，并与自己的 awesome.yaml 保持一致。`;
   } else if(app) {
     $('app-picker-help').textContent='更新此应用会沿用仓库和当前域名前缀；请与 awesome.yaml 保持一致。';
-  } else $('app-picker-help').textContent='选择已有应用以沿用数据与部署记录；未绑定域名的应用需填写空闲前缀。';
+  } else $('app-picker-help').textContent='选择已有应用以沿用应用身份与部署记录；未绑定域名的应用需填写空闲前缀。';
 }
 function selectedAppLabel() {
   const app=allApps.find(item=>item.id===$('appId').value);

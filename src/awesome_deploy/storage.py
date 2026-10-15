@@ -1,4 +1,4 @@
-"""Application-owned local volumes. This module never deletes persisted data."""
+"""Application-owned local volumes with explicit, identity-checked data removal."""
 
 import hashlib
 import json
@@ -77,6 +77,51 @@ class ManagedStorage:
         if expected is not None and record != expected:
             raise DeployError("STORAGE_IDENTITY", "Persisted volume was replaced")
         return record
+
+    def _verify_removal(self, app_id, service, spec, expected, *, timeout):
+        name, _ = self.identity(app_id, service, spec)
+        if (
+            not isinstance(expected, dict)
+            or set(expected) != {"name", "created_at", "instance"}
+            or expected.get("name") != name
+            or not isinstance(expected.get("created_at"), str)
+            or not expected["created_at"].strip()
+            or not isinstance(expected.get("instance"), str)
+            or not re.fullmatch(r"[0-9a-f]{32}", expected["instance"])
+        ):
+            raise DeployError("STORAGE_IDENTITY", "Persisted volume identity is required for removal")
+        try:
+            self.ensure(app_id, service, spec, expected, create=False, timeout=timeout)
+        except DeployError as error:
+            if error.code == "STORAGE_MISSING":
+                return False
+            raise
+        references = self.docker(
+            ["ps", "-a", "--filter", f"volume={name}", "--format", "{{.ID}}"], timeout=timeout
+        ).split()
+        if references:
+            raise DeployError("STORAGE_IN_USE", "A container still references the controlled volume")
+        # Recheck after querying references so a replaced instance is never accepted
+        # merely because the original inspection happened earlier in this call.
+        self.ensure(app_id, service, spec, expected, create=False, timeout=timeout)
+        return True
+
+    def verify_removal(self, app_id, service, spec, expected, *, timeout=120) -> None:
+        """Check an explicit deletion plan without mutation; missing originals are safe."""
+        self._verify_removal(app_id, service, spec, expected, timeout=timeout)
+
+    def remove(self, app_id, service, spec, expected, *, timeout=120) -> None:
+        """Remove only the recorded, unused managed volume; callers hold the worker lock."""
+        if not self._verify_removal(app_id, service, spec, expected, timeout=timeout):
+            return
+        name = expected["name"]
+        # Docker also rejects references acquired after our check; never force removal.
+        self.docker(["volume", "rm", name], timeout=timeout)
+        remaining = self.docker(
+            ["volume", "ls", "--filter", f"name=^{name}$", "--format", "{{.Name}}"], timeout=timeout
+        ).split()
+        if remaining:
+            raise DeployError("STORAGE_DELETE_FAILED", "Controlled volume removal was not confirmed")
 
     def validate_mounts(self, job, service, row, *, timeout=120):
         spec = job["snapshot"]["manifest"]["services"][service].get("storage")

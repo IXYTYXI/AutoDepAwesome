@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Awesome · 应用管理</title>
-  <link rel="stylesheet" href="/assets/app.css?v=0.4.0"><link rel="stylesheet" href="/assets/manage.css?v=0.4.0"><script src="/assets/manage.js?v=0.4.0" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=0.4.0"><link rel="stylesheet" href="/assets/manage.css?v=0.7.0"><script src="/assets/manage.js?v=0.7.0" defer></script>
 </head>
 <body><main>
   <header><span class="brand"><span class="brand-mark" aria-hidden="true">A</span> AWESOME / DEPLOY</span><nav class="console-nav" aria-label="控制台导航"><a href="/">部署控制台</a><a href="/manage" aria-current="page">应用管理</a></nav></header>
@@ -24,7 +24,7 @@
     <div id="deployment-list" class="management-list deployment-list" tabindex="0" role="region" aria-label="部署队列，可上下滚动" aria-describedby="deployment-count"><p class="empty">正在读取部署队列…</p></div>
   </section>
   <section class="panel management-panel retained-panel" aria-labelledby="retained-title">
-    <div class="section-head"><div><h2 id="retained-title">已下线与未部署应用</h2><p id="retained-count" class="section-description">应用数据和部署历史保留，重新部署时需使用可用域名。</p></div></div>
+    <div class="section-head"><div><h2 id="retained-title">已下线与未部署应用</h2><p id="retained-count" class="section-description">部署历史保留；数据处理结果见各应用，重新部署时需使用可用域名。</p></div></div>
     <div id="retained-apps" class="management-list retained-list" tabindex="0" role="region" aria-label="已下线与未部署应用，可上下滚动" aria-describedby="retained-count"><p class="empty">正在读取保留记录…</p></div>
   </section>
   <footer><span class="footer-dot" aria-hidden="true"></span>下线会关闭公开访问并停止服务；只有平台完成验证后，才显示下线已确认。</footer>
@@ -32,8 +32,19 @@
 <dialog id="offline-dialog" class="offline-dialog" aria-labelledby="offline-title" aria-describedby="offline-description offline-target">
   <span class="dialog-icon" aria-hidden="true">Ⅱ</span><h2 id="offline-title">确认下线应用</h2>
   <p id="offline-target" class="offline-target"></p>
-  <p id="offline-description">下线后将停止服务并关闭公开访问。数据和部署记录保留。</p>
-  <p class="hint">下线完成后释放域名和运行端口，其他应用可重新使用。数据和历史仍属于此应用；再次部署时请选择空闲前缀。</p>
+  <p id="offline-description">下线后将停止服务并关闭公开访问。请选择数据处理方式。</p>
+  <fieldset id="offline-data-options" class="offline-data-options">
+    <legend>下线后的数据</legend>
+    <label class="data-policy-card" for="offline-retain"><input id="offline-retain" type="radio" name="offlineDataPolicy" value="retain" checked><span><strong>保留数据</strong><small>保留业务文件、数据库及平台保存的密码、API Key 和密钥，供后续部署继续使用。</small></span></label>
+    <label class="data-policy-card data-policy-delete" for="offline-delete"><input id="offline-delete" type="radio" name="offlineDataPolicy" value="delete"><span><strong>删除数据</strong><small>不可恢复。清除业务文件、数据库，以及平台保存的密码、API Key 和该应用的密钥。再次部署需重新设置密码，适用的托管密钥由平台重新生成。</small></span></label>
+  </fieldset>
+  <p id="offline-policy-lock" class="hint" role="status"></p>
+  <div id="offline-delete-fields" class="offline-delete-fields" hidden>
+    <label id="offline-delete-label" for="offline-delete-confirmation">输入目标确认文字</label>
+    <input id="offline-delete-confirmation" type="text" autocomplete="off" spellcheck="false" aria-describedby="offline-delete-help" maxlength="256">
+    <p id="offline-delete-help" class="hint">请准确输入上方文字，确认永久清除该应用的数据和平台保存的凭据。</p>
+  </div>
+  <p class="hint">下线完成后释放域名和运行端口，其他应用可重新使用。仅清除平台受控数据，外部数据库不会自动删除。源码、部署历史和构建缓存不受此选项影响；再次部署时请选择空闲前缀。</p>
   <p id="offline-error" class="management-error" role="alert"></p>
   <div class="dialog-actions"><button id="offline-cancel" class="secondary" type="button" autofocus>取消</button><button id="offline-confirm" class="offline-button" type="button">确认下线</button></div>
 </dialog>

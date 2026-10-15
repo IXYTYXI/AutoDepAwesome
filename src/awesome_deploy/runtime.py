@@ -64,6 +64,16 @@ class DeploymentBackend:
         )
         return result.stdout
 
+    def inventory_offline_data(self, metadata):
+        from .offline_data import OfflineDataDeletion
+
+        return OfflineDataDeletion(self.settings, self._docker).inventory(metadata)
+
+    def delete_offline_data(self, plan, checkpoint):
+        from .offline_data import OfflineDataDeletion
+
+        OfflineDataDeletion(self.settings, self._docker).delete(plan, checkpoint)
+
     def _check_socket(self):
         host = self.settings.docker_host
         if sys.platform != "linux":

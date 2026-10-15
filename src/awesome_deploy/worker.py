@@ -95,7 +95,22 @@ class Worker:
         try:
             operation = self.store.claim_offline(operation["id"])
             job = self.store.get(operation["target_release_id"])
-            self.backend.offline(job, lambda delta: self.store.checkpoint_offline(operation["id"], delta))
+            def checkpoint(delta):
+                return self.store.checkpoint_offline(operation["id"], delta)
+
+            delete_data = operation["execution"].get("data_policy", "retain") == "delete"
+            if delete_data and "deletion_plan" not in operation["execution"]:
+                checkpoint({"phase": "offline_delete_preflight"})
+                plan = self.backend.inventory_offline_data(operation["execution"]["deletion_metadata"])
+                operation = checkpoint({"deletion_plan": plan})
+            if delete_data and operation["execution"]["deletion_plan"].get("metadata") != operation["execution"]["deletion_metadata"]:
+                raise DeployError("OFFLINE_DATA_CONFLICT", "Deletion plan differs from accepted application scope")
+            # Once runtime cleanup was durably confirmed, a partial data purge
+            # must never replay container logic expecting those volumes to exist.
+            if not delete_data or not operation["execution"].get("cleanup_confirmed"):
+                self.backend.offline(job, checkpoint)
+            if delete_data:
+                self.backend.delete_offline_data(operation["execution"]["deletion_plan"], checkpoint)
             self.store.finish_offline(operation["id"])
         except Exception as error:
             failure = error.as_dict() if isinstance(error, DeployError) else {

@@ -6,7 +6,7 @@ import os
 import re
 import stat
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from .config import Settings
@@ -16,6 +16,9 @@ _NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}\Z")
 _VERSION = re.compile(r"[0-9a-f]{32}\Z")
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+_SECRET_FILE = re.compile(r"(?:current\.json|[0-9a-f]{32}\.json|\.current-[0-9a-f]{32})\Z")
+_DIRECTORY_IDENTITY = {"dev", "ino", "mode", "uid", "gid"}
+_FILE_IDENTITY = _DIRECTORY_IDENTITY | {"nlink", "size", "mtime_ns", "ctime_ns"}
 
 
 class SecretStore:
@@ -134,6 +137,211 @@ class SecretStore:
             return "missing"
         except OSError:
             return "unavailable"
+
+    @staticmethod
+    def _delete_conflict():
+        return DeployError("SECRET_DELETE_CONFLICT", "秘密配置清理范围或文件状态发生变化，已停止清理，请检查后重试。")
+
+    @staticmethod
+    def _scope_name(repository, subdomain):
+        if (not isinstance(repository, str) or not repository or len(repository) > 4096 or "\0" in repository
+                or not isinstance(subdomain, str)
+                or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,5}[a-z0-9])?", subdomain)):
+            raise ValueError("invalid secret scope")
+        return hashlib.sha256((repository + "\0" + subdomain).encode()).hexdigest()
+
+    @classmethod
+    def _deletion_identity(cls, info, *, directory):
+        cls._check_private(info, directory=directory)
+        if not directory and info.st_nlink != 1:
+            raise OSError("linked secret file")
+        fields = _DIRECTORY_IDENTITY if directory else _FILE_IDENTITY
+        return {key: getattr(info, "st_" + key) for key in sorted(fields)}
+
+    @contextmanager
+    def _deletion_scope(self, repository, subdomain):
+        """Open only checked directory descriptors; never create a missing path."""
+        scope_name = self._scope_name(repository, subdomain)
+        with ExitStack() as stack:
+            try:
+                state = stack.enter_context(self._open_state_directory())
+            except FileNotFoundError:
+                yield None, None
+                return
+            try:
+                root = self._open_child_directory(state, self.root.name, create=False)
+            except FileNotFoundError:
+                yield None, None
+                return
+            stack.callback(os.close, root)
+            self._check_private(os.fstat(root), directory=True)
+            try:
+                scope = self._open_child_directory(root, scope_name, create=False)
+            except FileNotFoundError:
+                yield root, None
+                return
+            stack.callback(os.close, scope)
+            self._check_private(os.fstat(scope), directory=True)
+            yield root, scope
+
+    def _scope_inventory(self, scope):
+        items = {}
+        names = sorted(os.listdir(scope))
+        for name in names:
+            if not _NAME.fullmatch(name):
+                raise ValueError("unknown scope entry")
+            descriptor = self._open_child_directory(scope, name, create=False)
+            try:
+                identity = self._deletion_identity(os.fstat(descriptor), directory=True)
+                filenames = sorted(os.listdir(descriptor))
+                files = {}
+                for filename in filenames:
+                    if not _SECRET_FILE.fullmatch(filename):
+                        raise ValueError("unknown secret entry")
+                    files[filename] = self._deletion_identity(
+                        os.stat(filename, dir_fd=descriptor, follow_symlinks=False), directory=False
+                    )
+                if (filenames != sorted(os.listdir(descriptor))
+                        or identity != self._deletion_identity(
+                            os.stat(name, dir_fd=scope, follow_symlinks=False), directory=True)):
+                    raise OSError("secret directory changed")
+                items[name] = {"identity": identity, "files": files}
+            finally:
+                os.close(descriptor)
+        if names != sorted(os.listdir(scope)):
+            raise OSError("secret scope changed")
+        return items
+
+    def inventory_scope(self, repository, subdomain):
+        """Snapshot metadata only. Caller must prove ownership and hold worker.lock.
+
+        Every rotation, current pointer and abandoned temporary pointer is included.
+        The returned plan is an immutable deletion journal, never a secret backup.
+        """
+        try:
+            with self._deletion_scope(repository, subdomain) as (root, scope):
+                plan = {"version": 1, "repository": repository, "subdomain": subdomain,
+                        "root": None, "scope": None, "items": {}}
+                if scope is not None:
+                    plan["root"] = self._deletion_identity(os.fstat(root), directory=True)
+                    plan["scope"] = self._deletion_identity(os.fstat(scope), directory=True)
+                    plan["items"] = self._scope_inventory(scope)
+                    current = os.stat(self._scope_name(repository, subdomain), dir_fd=root, follow_symlinks=False)
+                    if plan["scope"] != self._deletion_identity(current, directory=True):
+                        raise OSError("secret scope changed")
+                return plan
+        except (OSError, ValueError, TypeError):
+            raise self._delete_conflict() from None
+
+    def _validate_deletion_plan(self, plan):
+        if (not isinstance(plan, dict)
+                or set(plan) != {"version", "repository", "subdomain", "root", "scope", "items"}
+                or type(plan["version"]) is not int or plan["version"] != 1
+                or not isinstance(plan["items"], dict)):
+            raise ValueError("invalid deletion plan")
+        self._scope_name(plan["repository"], plan["subdomain"])
+
+        def metadata(value, *, directory):
+            fields = _DIRECTORY_IDENTITY if directory else _FILE_IDENTITY
+            mode = stat.S_IFDIR | 0o700 if directory else stat.S_IFREG | 0o600
+            if (not isinstance(value, dict) or set(value) != fields
+                    or any(type(item) is not int for item in value.values())
+                    or value["mode"] != mode or value["uid"] != os.getuid()
+                    or value["ino"] <= 0 or value["dev"] < 0 or value["gid"] < 0
+                    or not directory and (value["nlink"] != 1 or value["size"] < 0)):
+                raise ValueError("invalid planned metadata")
+
+        if plan["scope"] is None:
+            if plan["root"] is not None or plan["items"]:
+                raise ValueError("invalid absent scope")
+            return
+        metadata(plan["root"], directory=True)
+        metadata(plan["scope"], directory=True)
+        for name, item in plan["items"].items():
+            if (not isinstance(name, str) or not _NAME.fullmatch(name) or not isinstance(item, dict)
+                    or set(item) != {"identity", "files"} or not isinstance(item["files"], dict)):
+                raise ValueError("invalid planned directory")
+            metadata(item["identity"], directory=True)
+            for filename, identity in item["files"].items():
+                if not isinstance(filename, str) or not _SECRET_FILE.fullmatch(filename):
+                    raise ValueError("invalid planned filename")
+                metadata(identity, directory=False)
+
+    @staticmethod
+    def _check_deletion_subset(actual, plan):
+        if actual["scope"] is None:
+            return
+        if (actual["root"] != plan["root"] or actual["scope"] != plan["scope"]
+                or actual["items"].keys() - plan["items"].keys()):
+            raise ValueError("secret scope replaced or extended")
+        for name, current in actual["items"].items():
+            expected = plan["items"][name]
+            if (current["identity"] != expected["identity"] or current["files"].keys() - expected["files"].keys()
+                    or any(identity != expected["files"][filename] for filename, identity in current["files"].items())):
+                raise ValueError("secret directory replaced or extended")
+
+    def verify_deletion(self, plan):
+        """Accept only the original tree or a deletion-only subset, without reading values."""
+        try:
+            self._validate_deletion_plan(plan)
+            self._check_deletion_subset(self.inventory_scope(plan["repository"], plan["subdomain"]), plan)
+        except (OSError, ValueError, TypeError, KeyError):
+            raise self._delete_conflict() from None
+
+    def delete_scope(self, plan):
+        """Resume an authorized immutable plan under worker.lock; never follow links."""
+        self.verify_deletion(plan)
+        try:
+            with self._deletion_scope(plan["repository"], plan["subdomain"]) as (root, scope):
+                if scope is None:
+                    # A prior attempt may have removed the scope before its final
+                    # directory fsync failed. Confirm durability on that replay too.
+                    if root is not None:
+                        os.fsync(root)
+                    return
+                scope_name = self._scope_name(plan["repository"], plan["subdomain"])
+                actual = {"root": self._deletion_identity(os.fstat(root), directory=True),
+                          "scope": self._deletion_identity(os.fstat(scope), directory=True),
+                          "items": self._scope_inventory(scope)}
+                self._check_deletion_subset(actual, plan)
+                for name in sorted(actual["items"]):
+                    expected = plan["items"][name]
+                    descriptor = self._open_child_directory(scope, name, create=False)
+                    try:
+                        if self._deletion_identity(os.fstat(descriptor), directory=True) != expected["identity"]:
+                            raise OSError("secret directory replaced")
+                        for filename in sorted(os.listdir(descriptor)):
+                            identity = self._deletion_identity(
+                                os.stat(filename, dir_fd=descriptor, follow_symlinks=False), directory=False
+                            )
+                            if identity != expected["files"].get(filename):
+                                raise OSError("secret file replaced or added")
+                            # Confirm the pinned directories still occupy their planned paths.
+                            for parent, child, wanted in ((root, scope_name, plan["scope"]),
+                                                          (scope, name, expected["identity"])):
+                                current = os.stat(child, dir_fd=parent, follow_symlinks=False)
+                                if self._deletion_identity(current, directory=True) != wanted:
+                                    raise OSError("secret directory replaced")
+                            os.unlink(filename, dir_fd=descriptor)
+                            os.fsync(descriptor)
+                        if os.listdir(descriptor):
+                            raise OSError("secret directory has new contents")
+                        current = os.stat(name, dir_fd=scope, follow_symlinks=False)
+                        if self._deletion_identity(current, directory=True) != expected["identity"]:
+                            raise OSError("secret directory replaced")
+                        os.rmdir(name, dir_fd=scope)
+                        os.fsync(scope)
+                    finally:
+                        os.close(descriptor)
+                if os.listdir(scope):
+                    raise OSError("secret scope has new contents")
+                current = os.stat(scope_name, dir_fd=root, follow_symlinks=False)
+                if self._deletion_identity(current, directory=True) != plan["scope"]:
+                    raise OSError("secret scope replaced")
+                os.rmdir(scope_name, dir_fd=root)
+                os.fsync(root)
+        except (OSError, ValueError, TypeError, KeyError):
+            raise self._delete_conflict() from None
 
     @staticmethod
     def _raise_creation_conflict(state: str) -> None:

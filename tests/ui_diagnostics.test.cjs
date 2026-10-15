@@ -202,6 +202,7 @@ test('unbound application selection retains its identity but requires a new doma
   assert.equal(h.get('repository').value,released.repository);
   assert.equal(h.get('subdomain').value,'');
   assert.ok(h.get('app-picker-help').textContent.includes('当前未绑定域名'));
+  assert.ok(h.get('app-picker-help').textContent.includes('已清除的数据不会恢复'));
   assert.ok(h.get('app-picker-help').textContent.includes('alpha'));
   assert.ok(h.get('app-picker-help').textContent.includes('空闲前缀'));
   assert.ok(h.get('app-picker-help').textContent.includes('awesome.yaml'));
