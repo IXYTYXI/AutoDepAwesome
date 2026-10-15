@@ -130,7 +130,7 @@ routes:
 | --- | --- |
 | 服务 | 1–16 个 `kind: web`；每项须有容器端口、健康检查，并在 `image` 与 `build` 中二选一 |
 | 配置 | 字符串 `env`、`secretRefs`、数组 `command`/`entrypoint`、绝对 `workingDir`；不做变量插值；运行时环境值须为单行 |
-| 构建 | `context` 相对仓库；`dockerfile` 相对 context；可指定 `target`、非秘密 `args`；禁止大小写不敏感的 `BUILDKIT_*` / `BUILDX_*` 保留参数；最终使用 `--network=none` |
+| 构建 | `context` 相对仓库；`dockerfile` 相对 context；可指定 `target`、非秘密 `args`；禁止大小写不敏感的 `BUILDKIT_*` / `BUILDX_*` 保留参数；最终使用 `--network=none`，保留正常构建缓存 |
 | Dockerfile | 支持显式 FROM、RUN、COPY、ENV、WORKDIR、USER、EXPOSE、LABEL、CMD、ENTRYPOINT、ARG、STOPSIGNAL；基础镜像先固定 digest |
 | Dockerfile 限制 | 不支持续行、heredoc、自定义 frontend/parser、动态 FROM、RUN flags/mounts、ADD、VOLUME、ONBUILD；COPY flags 仅允许引用之前命名阶段的 `--from=` |
 | 依赖 | `dependsOn: {api: healthy}` 或 `started`；拒绝缺失依赖和循环依赖 |
@@ -145,6 +145,10 @@ routes:
 禁词采用保守的子串匹配，API 提交和 manifest 校验使用相同规则。例如 `mishit` 包含 `shit`，即使长度及字符合法也会被拒绝；目前没有正常词例外名单。
 
 `--network=none` 意味着 Dockerfile 的 RUN 中不能访问 npm/pip/apt 等外网；请使用已经包含依赖的基础镜像或仓库内已有构建产物。镜像的 `VOLUME` 声明或 ONBUILD 仍会被拒绝；持久卷必须通过 `service.storage` 显式申请。internal 依赖网络是双向网络，不是单向应用防火墙；容器共享主机内核，不能当作运行任意敌对代码的虚拟机隔离边界。
+
+源码构建使用正常缓存。平台将完成基础镜像固定后的构建 context 保存为内容寻址目录：最终目录名包含协议版本，以及文件内容、相对路径、类型、权限、所有者和扩展属性的完整 SHA-256 摘要，不包含修改时间、任务 ID 或绝对路径。相同输入跨任务复用本地源同步状态；字节或元数据变化使用新的同步状态，构建前重新校验目录完整性。Dockerfile、`.dockerignore` 和多阶段构建语义保持不变；摘要包含忽略文件，因此只改忽略文件也可能重新同步 context，但 Docker 仍按实际构建输入判断步骤缓存。
+
+此目录名方案隔离的是 BuildKit 的本地源同步状态，不能消除旧的错误构建结果。首次从 0.6.3 恢复缓存时，管理员必须切换到具有全新 state volume 的独立受控 builder，禁止复用或导入旧 builder 缓存，并验证冷构建与重复缓存构建的文件权限和应用健康状态；旧 builder 停用保留供调查。不能用一次 `--no-cache` 或仅重命名 builder 代替此迁移。已有任务保存的镜像 ID 继续用于恢复，不重新构建；尚未构建的旧冻结 context 仅复制到同任务目录下的新名称，保留原文件、权限和路径。平台不新增 `--pull`、不修改客户 Dockerfile，也不清理业务镜像或卷。
 
 ### 持久存储（0.2.0）
 
