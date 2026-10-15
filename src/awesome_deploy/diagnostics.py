@@ -256,6 +256,38 @@ _register("DIAGNOSIS_NOT_AVAILABLE", "当前部署无需失败分析", "只有�
 ERROR_CODES = frozenset(_CATALOG)
 
 
+_HEALTH_REASONS = {
+    "HEALTH_CONTAINER_EXITED": (
+        "服务容器未运行", "健康检查时，候选服务容器未运行，可能已退出或尚未成功启动。",
+        ("请运维核对受保护的启动日志，检查入口文件读取权限、启动命令及必需配置。",
+         "确认非 root 用户能读取程序文件并写入声明的持久目录；不要改为 root 或关闭只读隔离。")),
+    "HEALTH_OOM_KILLED": (
+        "服务因内存不足被终止", "健康检查时，容器已停止，运行环境报告进程因内存不足被终止。",
+        ("检查应用启动时的内存使用，并在平台配额内核对 services 中的 memoryMiB。",
+         "降低应用内存占用或由运维确认可用配额后调整配置，不要关闭资源限制。")),
+    "HEALTH_HTTP_STATUS": (
+        "健康检查返回非成功状态", "健康检查收到 HTTP 响应，但状态码不在平台接受的 200–399 范围内。",
+        ("确认 healthcheck.path 对应可访问的健康接口，并检查该接口所需依赖是否就绪。",
+         "请运维核对健康接口返回状态；响应正文及业务日志不会在这里展示。")),
+    "HEALTH_CONNECTION_FAILED": (
+        "无法连接服务健康接口", "健康检查未能建立或保持到候选服务的连接。",
+        ("确认服务已启动、监听 0.0.0.0，且实际端口与 services 中的 port 一致。",
+         "请运维核对候选服务与受控端口转发状态，不要改用宿主网络或关闭隔离。")),
+    "HEALTH_TIMEOUT": (
+        "健康检查超时", "健康检查执行超时，或开始检查前已耗尽总等待时间。",
+        ("核对服务启动耗时、健康接口或检查命令是否阻塞，以及依赖服务是否就绪。",
+         "确认原因后再调整 healthcheck 的启动宽限和超时；不要仅扩大超时掩盖启动失败。")),
+    "HEALTH_EXEC_FAILED": (
+        "健康检查命令未成功", "容器内的健康检查命令未成功执行。",
+        ("检查 healthcheck.command 的程序是否存在、非 root 用户是否可执行，以及返回码是否为零。",
+         "命令必须在既有容器隔离条件下运行；详细输出请运维在受保护环境核对。")),
+    "HEALTH_CHECK_ERROR": (
+        "健康检查器无法确认状态", "健康检查器未能可靠确认候选容器或探针结果。",
+        ("请运维核对 Docker 检查器、容器归属、探针协议和平台运行状态。",
+         "当前证据不足以判断应用退出原因；不要关闭身份核验或直接删除未知归属资源。")),
+}
+
+
 _MANIFEST_REASONS = {
     "MANIFEST_MISSING": (
         "缺少部署配置文件", "仓库根目录未找到 awesome.yaml 普通文件。",
@@ -393,9 +425,10 @@ def localize_error(error: dict | None, phase: str = "") -> dict | None:
         code = "DEPLOYMENT_FAILED"
     entry = _CATALOG.get(code, _CATALOG["DEPLOYMENT_FAILED"])
     reason = error.get("reason")
-    known_reason = code == "INVALID_MANIFEST" and isinstance(reason, str) and reason in _MANIFEST_REASONS
+    reasons = {"INVALID_MANIFEST": _MANIFEST_REASONS, "HEALTH_FAILED": _HEALTH_REASONS}.get(code, {})
+    known_reason = isinstance(reason, str) and reason in reasons
     if known_reason:
-        entry = _MANIFEST_REASONS[reason]
+        entry = reasons[reason]
     elif code == "INVALID_MANIFEST" and isinstance(error.get("message"), str):
         entry = _MANIFEST_DETAILS.get(error["message"], entry)
     title, message, steps = entry

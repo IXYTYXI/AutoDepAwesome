@@ -293,6 +293,13 @@ class GitSource:
                     with archive.extractfile(item) as reader, path.open("xb") as writer:
                         shutil.copyfileobj(reader, writer, length=64 * 1024)
                     path.chmod(0o755 if item.mode & 0o111 else 0o644)
+                # Worker umask keeps state private, but must not make copied source
+                # directories unreadable to the application's nonroot runtime UID.
+                # Include implicit parents; never chmod the private export root.
+                directory = path if item.isdir() else path.parent
+                while directory != target:
+                    directory.chmod(0o755)
+                    directory = directory.parent
 
     @staticmethod
     def _check_build_paths(source: Path, manifest: dict):

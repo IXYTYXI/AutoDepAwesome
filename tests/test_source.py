@@ -1,4 +1,7 @@
 from pathlib import Path
+import os
+import shutil
+import stat
 import subprocess
 import tarfile
 import io
@@ -54,6 +57,64 @@ class FakeRunner:
 
 def job(**execution):
     return {"id": "job-1", "input": {"repository": "https://github.com/example/demo", "ref": "main", "subdomain": "demo"}, "execution": execution}
+
+
+def test_extract_normalizes_internal_directories_under_private_worker_umask(tmp_path):
+    from awesome_deploy.source import GitSource
+
+    state = tmp_path / "state"
+    sources = state / "sources"
+    target = sources / "job-1.partial"
+    state.mkdir(mode=0o700)
+    sources.mkdir(mode=0o700)
+    target.mkdir(mode=0o700)
+    private_modes = {path: stat.S_IMODE(path.stat().st_mode) for path in (tmp_path, state, sources, target)}
+    archive_path = tmp_path / "source.tar"
+    files = {
+        "src/nested/app.py": (b"print('unchanged source')\n", 0o644),
+        "implicit/parents/run.sh": (b"#!/bin/sh\nexit 0\n", 0o755),
+        "README.md": (b"unchanged root file\n", 0o644),
+    }
+    with tarfile.open(archive_path, "w") as archive:
+        for name in ("src", "src/nested", "empty/child"):
+            item = tarfile.TarInfo(name)
+            item.type, item.mode = tarfile.DIRTYPE, 0o755
+            archive.addfile(item)
+        for name, (content, mode) in files.items():
+            item = tarfile.TarInfo(name)
+            item.size, item.mode = len(content), mode
+            archive.addfile(item, io.BytesIO(content))
+    previous_umask = os.umask(0o077)
+    try:
+        GitSource(Settings(state_dir=state))._extract(archive_path, target)
+        copied = tmp_path / "build-context"
+        shutil.copytree(target, copied)
+    finally:
+        os.umask(previous_umask)
+    for base in (target, copied):
+        for name in ("src", "src/nested", "implicit", "implicit/parents", "empty", "empty/child"):
+            assert stat.S_IMODE((base / name).stat().st_mode) == 0o755, name
+        for name, (content, mode) in files.items():
+            assert (base / name).read_bytes() == content
+            assert stat.S_IMODE((base / name).stat().st_mode) == mode
+        assert stat.S_IMODE(base.stat().st_mode) == 0o700
+    assert {path: stat.S_IMODE(path.stat().st_mode) for path in private_modes} == private_modes
+
+
+def test_prepare_retains_private_state_and_source_root_under_worker_umask(tmp_path):
+    from awesome_deploy.source import GitSource
+
+    state = tmp_path / "state"
+    previous_umask = os.umask(0o077)
+    try:
+        snapshot = GitSource(Settings(state_dir=state), runner=FakeRunner()).prepare(job(), lambda patch: None)
+    finally:
+        os.umask(previous_umask)
+    source = Path(snapshot["source_dir"])
+    for path in (state, state / "git", state / "git" / "job-1", state / "sources", source):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o700, path
+    assert stat.S_IMODE((source / "backend").stat().st_mode) == 0o755
+    assert (source / "backend" / "Dockerfile").read_text() == "FROM scratch\n"
 
 
 def test_source_module_available():

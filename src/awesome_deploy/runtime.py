@@ -1148,8 +1148,11 @@ class DeploymentBackend:
         service = job["snapshot"]["manifest"]["services"][name]
         health = service["healthcheck"]
         failures, grace = 0, time.monotonic() + health["startPeriodSeconds"]
+        reason = "HEALTH_TIMEOUT"
         while time.monotonic() < deadline:
             success = False
+            probe = "inspect"
+            reason = "HEALTH_CHECK_ERROR"
             try:
                 row = json.loads(
                     self._docker(
@@ -1157,17 +1160,22 @@ class DeploymentBackend:
                         timeout=min(health["timeoutSeconds"], max(0.01, deadline - time.monotonic())),
                     )
                 )[0]
-                if not self._owned(row.get("Config", {}).get("Labels"), job) or not row.get("State", {}).get(
-                    "Running"
-                ):
-                    raise DeployError("HEALTH_FAILED", f"Service {name} is not running")
-                if health["type"] == "exec":
+                if not self._owned(row.get("Config", {}).get("Labels"), job):
+                    raise ValueError("Health check container ownership could not be verified")
+                state = row.get("State", {})
+                if state.get("Running") is False:
+                    reason = "HEALTH_OOM_KILLED" if state.get("OOMKilled") is True else "HEALTH_CONTAINER_EXITED"
+                elif state.get("Running") is not True:
+                    raise ValueError("Health check container state is invalid")
+                elif health["type"] == "exec":
+                    probe = "exec"
                     self._docker(
                         ["container", "exec", self._container(job, name), *health["command"]],
                         timeout=min(health["timeoutSeconds"], max(0.01, deadline - time.monotonic())),
                     )
                     success = True
                 else:
+                    probe = "http"
                     status = http_status(
                         "127.0.0.1",
                         job["execution"]["ports"][name],
@@ -1178,8 +1186,20 @@ class DeploymentBackend:
                         },
                     )
                     success = 200 <= status < 400
-            except (OSError, http.client.HTTPException, DeployError):
-                success = False
+                    reason = "HEALTH_HTTP_STATUS"
+            except TimeoutError:
+                reason = "HEALTH_TIMEOUT"
+            except DeployError as exc:
+                if exc.code == "COMMAND_TIMEOUT":
+                    reason = "HEALTH_TIMEOUT"
+                elif probe == "exec" and exc.code == "COMMAND_FAILED":
+                    reason = "HEALTH_EXEC_FAILED"
+            except OSError:
+                if probe == "http":
+                    reason = "HEALTH_CONNECTION_FAILED"
+            except (http.client.HTTPException, ValueError, TypeError, IndexError, KeyError, AttributeError):
+                # Keep only a fixed category, never Docker output, HTTP bodies or exception text.
+                reason = "HEALTH_CHECK_ERROR"
             if success:
                 return
             if time.monotonic() >= grace:
@@ -1187,7 +1207,8 @@ class DeploymentBackend:
                 if failures >= health["retries"]:
                     break
             time.sleep(min(health["intervalSeconds"], max(0, deadline - time.monotonic())))
-        raise DeployError("HEALTH_FAILED", f"Service {name} failed candidate health checks")
+        raise DeployError("HEALTH_FAILED", f"Service {name} failed candidate health checks",
+                          f"services.{name}.healthcheck", reason=reason)
 
     def health(self, job):
         deadline = time.monotonic() + self.settings.health_timeout
