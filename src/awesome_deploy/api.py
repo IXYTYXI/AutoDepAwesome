@@ -3,6 +3,7 @@
 import asyncio
 import re
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -48,6 +49,8 @@ class AnalysisRequest(BaseModel):
 class OfflineRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expectedReleaseId: StrictStr
+    dataPolicy: Literal["retain", "delete"] = "retain"
+    deleteConfirmation: StrictStr | None = None
 
 
 class SecretConfigurationRequest(BaseModel):
@@ -173,7 +176,7 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
             if code.startswith("AI_")
             else 409
             if code in {"DIAGNOSIS_NOT_AVAILABLE", "OFFLINE_RELEASE_CHANGED", "OFFLINE_STATE",
-                        "SECRET_CONFIGURATION_NOT_AVAILABLE", "SECRET_ALREADY_CONFIGURED", "SECRET_UNAVAILABLE"}
+                        "SECRET_CONFIGURATION_NOT_AVAILABLE", "SECRET_ALREADY_CONFIGURED", "SECRET_UNAVAILABLE", "STORAGE_IN_USE"}
             else 404
             if code == "NOT_FOUND"
             else 409
@@ -252,7 +255,8 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
             },
             "baseDomain": settings.base_domain,
             "aiAdvice": {"configured": app.state.advice.configured},
-            "applicationManagement": {"offline": True, "retainsData": True},
+            "applicationManagement": {"offline": True, "retainsData": True,
+                                      "dataPolicies": ["retain", "delete"], "deletesStoredSecrets": True},
         }
 
     @app.get("/api/v1/openapi.json", dependencies=[Depends(authenticated)])
@@ -347,7 +351,10 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
             raise DeployError("INVALID_APP_ID", "应用编号格式错误。", "appId")
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", body.expectedReleaseId):
             raise DeployError("OFFLINE_STATE", "下线目标版本格式错误。")
-        return public_operation(store.enqueue_offline(app_id, body.expectedReleaseId, key))
+        return public_operation(store.enqueue_offline(
+            app_id, body.expectedReleaseId, key,
+            data_policy=body.dataPolicy, delete_confirmation=body.deleteConfirmation,
+        ))
 
     @app.get("/api/v1/offline-operations/{operation_id}", dependencies=[Depends(authenticated)])
     def offline_operation(operation_id: str):

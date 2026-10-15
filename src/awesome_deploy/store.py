@@ -10,6 +10,7 @@ import time
 import uuid
 
 from .errors import DeployError
+from .storage import ManagedStorage
 
 
 def _json(value):
@@ -191,6 +192,39 @@ class Store:
         with self._connection() as db:
             return self._get(db, job_id)
 
+    @staticmethod
+    def _data_cleared(job):
+        state = job.get("execution") or {}
+        return (state.get("data_deleted") is True
+                and isinstance(state.get("data_reset_operation"), str)
+                and bool(state["data_reset_operation"]))
+
+    @staticmethod
+    def _secret_scope_identity(repository, subdomain):
+        if (not isinstance(repository, str) or not repository or len(repository) > 4096 or "\0" in repository
+                or not isinstance(subdomain, str)
+                or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,5}[a-z0-9])?", subdomain)):
+            raise DeployError("OFFLINE_DATA_CONFLICT", "Cannot verify the historical data scope.")
+        return repository, subdomain
+
+    @staticmethod
+    def _check_secret_delete_gate(db, repository, subdomain):
+        for row in db.execute("SELECT execution FROM offline_operations WHERE status IN ('queued','running','recovery_required')"):
+            state = json.loads(row["execution"])
+            if state.get("data_policy") == "delete" and any(
+                scope.get("repository") == repository and scope.get("subdomain") == subdomain
+                for scope in state["deletion_metadata"]["scopes"]
+            ):
+                raise DeployError("SECRET_CONFIGURATION_BUSY", "This secret scope has a pending data deletion.")
+
+    @contextmanager
+    def secret_write_scope(self, repository, subdomain):
+        """Serialize CLI secret writes with delete admission; caller also holds worker.lock."""
+        self._secret_scope_identity(repository, subdomain)
+        with self._connection(write=True) as db:
+            self._check_secret_delete_gate(db, repository, subdomain)
+            yield
+
     @contextmanager
     def secret_configuration_scope(self, job_id, *, write=False):
         """Authorize a new secret writer independently of old-version reuse rules.
@@ -205,7 +239,7 @@ class Store:
             job = self._get(db, job_id)
             if (job["status"] != "failed" or not isinstance(job.get("error"), dict)
                     or job["error"].get("code") != "SECRET_NOT_FOUND"
-                    or not isinstance(job.get("input"), dict)):
+                    or not isinstance(job.get("input"), dict) or self._data_cleared(job)):
                 raise DeployError("SECRET_CONFIGURATION_NOT_AVAILABLE", "该任务不能补充秘密配置。")
             can_generate = self._authorize_secret_configuration(db, job)
             yield job, can_generate
@@ -215,6 +249,7 @@ class Store:
         repository, subdomain = payload.get("repository"), payload.get("subdomain")
         if not isinstance(repository, str) or not isinstance(subdomain, str):
             raise DeployError("SECRET_CONFIGURATION_NOT_AVAILABLE", "该任务不能补充秘密配置。")
+        self._check_secret_delete_gate(db, repository, subdomain)
         conflict = DeployError("SECRET_SCOPE_CONFLICT", "该配置空间不属于所选应用。")
         busy = DeployError("SECRET_CONFIGURATION_BUSY", "相关部署或恢复工作尚未结束。")
         selected, assigned = payload.get("appId"), job.get("app_id")
@@ -236,14 +271,22 @@ class Store:
         if occupied and occupied["id"] != owner:
             raise conflict
         relevant_ids = set()
+        reset_owner, generation_data = False, False
         for row in db.execute("SELECT * FROM jobs"):
             other = self._job(row)
+            if self._data_cleared(other):
+                reset_owner = reset_owner or owner is not None and other.get("app_id") == owner
+                continue
             data = other.get("input")
             if not isinstance(data, dict):
                 raise DeployError("SECRET_CONFIGURATION_NOT_AVAILABLE", "无法核验配置空间的历史归属。")
             identities = {value for value in (other.get("app_id"), data.get("appId")) if isinstance(value, str) and value}
             same_scope = data.get("repository") == repository and data.get("subdomain") == subdomain
             same_owner = owner is not None and owner in identities
+            if (same_owner or same_scope) and (other["status"] == "succeeded"
+                                              or (other.get("execution") or {}).get("storage_volumes")
+                                              or self._storage_may_exist(other)):
+                generation_data = True
             if same_scope:
                 relevant_ids.add(other["id"])
                 # Failed jobs and deleted applications still establish ownership.
@@ -268,7 +311,7 @@ class Store:
         for row in db.execute("SELECT * FROM offline_operations WHERE status IN ('queued','running','recovery_required')"):
             if row["app_id"] == owner or row["target_release_id"] in relevant_ids:
                 raise busy
-        return owner is None
+        return (owner is None or reset_owner) and not active_release and not generation_data
 
     def enqueue(self, payload, idempotency_key):
         encoded = _json(payload)
@@ -346,6 +389,12 @@ class Store:
             WHERE operations.status IN ('queued','running','recovery_required')
             AND (apps.id=? OR apps.subdomain=?) LIMIT 1""", (app_id, subdomain)).fetchone():
             raise DeployError("APP_OFFLINE_BUSY", "Application offline operation must finish first.")
+        for row in db.execute("SELECT execution FROM offline_operations WHERE status IN ('queued','running','recovery_required')"):
+            state = json.loads(row["execution"])
+            if state.get("data_policy") == "delete" and any(
+                scope.get("subdomain") == subdomain for scope in state["deletion_metadata"]["scopes"]
+            ):
+                raise DeployError("APP_OFFLINE_BUSY", "A historical application scope is being deleted.")
 
     def _offline_block_reason(self, db, app, *, ignore_operation=None):
         if not app["active_release_id"]:
@@ -366,21 +415,112 @@ class Store:
             return "APP_BUSY"
         return None
 
-    def enqueue_offline(self, app_id, expected_release_id, idempotency_key):
+    @staticmethod
+    def _storage_may_exist(job):
+        state = job.get("execution") or {}
+        manifest = (job.get("snapshot") or {}).get("manifest") or state.get("previous_manifest") or {}
+        declarations = any(service.get("storage") for service in manifest.get("services", {}).values())
+        if not declarations:
+            return False
+        early = {"queued", "source", "prepared", "freeze", "frozen", "reserved", "build", "built", "storage_handoff"}
+        return (job["status"] == "succeeded" or job["phase"] not in early
+                or any(state.get(key) for key in ("networks", "network_identities", "started", "port_forwards", "publish_intent")))
+
+    def _deletion_metadata(self, db, app):
+        """Freeze confirmed ownership and recorded volume instances, never inferred paths."""
+        conflict = DeployError("OFFLINE_DATA_CONFLICT", "Historical application data cannot be safely isolated.")
+        jobs = [self._job(row) for row in db.execute("SELECT * FROM jobs ORDER BY created_at,id")]
+        jobs = [job for job in jobs if not self._data_cleared(job)]
+        owned = [job for job in jobs if job["app_id"] == app["id"]]
+        scopes = set()
+        volumes = {}
+        for job in owned:
+            data = job["input"]
+            scope = self._secret_scope_identity(data.get("repository"), data.get("subdomain"))
+            scopes.add(scope)
+            snapshot = job.get("snapshot") or {}
+            manifest = snapshot.get("manifest") or job["execution"].get("previous_manifest") or {}
+            if (snapshot.get("repository", scope[0]) != scope[0]
+                    or manifest.get("app", {}).get("subdomain", scope[1]) != scope[1]
+                    and snapshot.get("manifest")):
+                raise conflict
+            services = manifest.get("services") or {}
+            records = job["execution"].get("storage_volumes", {})
+            if not isinstance(records, dict) or set(records) - set(services):
+                raise conflict
+            for service, config in services.items():
+                spec = config.get("storage")
+                if not spec:
+                    if service in records:
+                        raise conflict
+                    continue
+                try:
+                    name, _ = ManagedStorage.identity(app["id"], service, spec)
+                except DeployError:
+                    raise conflict from None
+                expected = records.get(service)
+                if expected is None:
+                    if self._storage_may_exist(job):
+                        raise conflict
+                    continue
+                if (not isinstance(expected, dict) or set(expected) != {"name", "created_at", "instance"}
+                        or expected["name"] != name or not isinstance(expected["created_at"], str)
+                        or not expected["created_at"].strip() or not isinstance(expected["instance"], str)
+                        or not re.fullmatch(r"[0-9a-f]{32}", expected["instance"])):
+                    raise conflict
+                volume = {"service": service, "spec": spec, "expected": expected}
+                if name in volumes and volumes[name] != volume:
+                    raise conflict
+                volumes[name] = volume
+        if not owned or app["active_release_id"] not in {job["id"] for job in owned}:
+            raise conflict
+        selected = {job["id"] for job in owned}
+        domains = {domain for _, domain in scopes}
+        for job in jobs:
+            data = job["input"]
+            same_scope = (data.get("repository"), data.get("subdomain")) in scopes
+            if (job["status"] in {"queued", "running", "recovery_required"}
+                    and (same_scope or data.get("subdomain") in domains)):
+                raise DeployError("APP_BUSY", "Historical data scope has unfinished deployment work.")
+            if not same_scope or job["id"] in selected:
+                continue
+            if job["app_id"] is not None:
+                raise conflict
+            if job["status"] == "failed":
+                if (any(job["execution"].get(key) for key in ("ports", "storage_volumes", "networks", "port_forwards"))
+                        or db.execute("SELECT 1 FROM reservations WHERE job_id=?", (job["id"],)).fetchone()):
+                    raise conflict
+                selected.add(job["id"])
+        for _, domain in scopes:
+            self._check_offline_gate(db, app["id"], domain)
+        return {"app_id": app["id"], "job_ids": sorted(selected),
+                "scopes": [{"repository": repository, "subdomain": domain} for repository, domain in sorted(scopes)],
+                "volumes": [volumes[name] for name in sorted(volumes)]}
+
+    def enqueue_offline(self, app_id, expected_release_id, idempotency_key, *, data_policy="retain",
+                        delete_confirmation=None):
         if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 200:
             raise DeployError("INVALID_IDEMPOTENCY_KEY", "Provide an idempotency key of 1–200 characters.")
+        if data_policy not in ("retain", "delete"):
+            raise DeployError("OFFLINE_DATA_POLICY", "Choose retain or delete for application data.")
         with self._connection(write=True) as db:
             row = db.execute("SELECT * FROM offline_operations WHERE idempotency_key=?", (idempotency_key,)).fetchone()
             existing = self._offline(row) if row else None
             if existing:
-                if existing["app_id"] != app_id or existing["target_release_id"] != expected_release_id:
+                if (existing["app_id"] != app_id or existing["target_release_id"] != expected_release_id
+                        or existing["execution"].get("data_policy", "retain") != data_policy):
                     raise DeployError("IDEMPOTENCY_CONFLICT", "This key already belongs to a different request.")
+                if (data_policy == "delete"
+                        and delete_confirmation != "删除 " + self._get(db, expected_release_id)["input"]["subdomain"]):
+                    raise DeployError("OFFLINE_DELETE_CONFIRMATION", "Type the exact application deletion confirmation.")
                 if existing["status"] != "recovery_required":
                     return existing
             row = db.execute("SELECT * FROM apps WHERE id=?", (app_id,)).fetchone()
             if row is None:
                 raise DeployError("NOT_FOUND", "Application was not found.")
             app = dict(row)
+            if data_policy == "delete" and delete_confirmation != "删除 " + str(app["subdomain"]):
+                raise DeployError("OFFLINE_DELETE_CONFIRMATION", "Type the exact application deletion confirmation.")
             if not expected_release_id or app["active_release_id"] != expected_release_id:
                 raise DeployError("OFFLINE_RELEASE_CHANGED", "The active release changed; refresh before taking it offline.")
             reason = self._offline_block_reason(db, app, ignore_operation=existing["id"] if existing else None)
@@ -393,10 +533,13 @@ class Store:
                            (now, existing["id"]))
                 return self._get_offline(db, existing["id"])
             operation_id = uuid.uuid4().hex
+            state = {"data_policy": data_policy}
+            if data_policy == "delete":
+                state["deletion_metadata"] = self._deletion_metadata(db, app)
             db.execute("""INSERT INTO offline_operations
-                (id,idempotency_key,app_id,target_release_id,status,phase,created_at,updated_at)
-                VALUES (?,?,?,?,'queued','offline_queued',?,?)""",
-                (operation_id, idempotency_key, app_id, expected_release_id, now, now))
+                (id,idempotency_key,app_id,target_release_id,status,phase,execution,created_at,updated_at)
+                VALUES (?,?,?,?,'queued','offline_queued',?,?,?)""",
+                (operation_id, idempotency_key, app_id, expected_release_id, _json(state), now, now))
             return self._get_offline(db, operation_id)
 
     def next_offline(self):
@@ -426,6 +569,12 @@ class Store:
             if operation["status"] != "running":
                 raise DeployError("OFFLINE_STATE", "Only a running offline operation may checkpoint.")
             patch = dict(execution)
+            for key in ("data_policy", "deletion_metadata"):
+                if key in patch and patch[key] != operation["execution"].get(key, "retain" if key == "data_policy" else None):
+                    raise DeployError("OFFLINE_STATE", "The confirmed deletion plan cannot change.")
+            if ("deletion_plan" in operation["execution"] and "deletion_plan" in patch
+                    and patch["deletion_plan"] != operation["execution"]["deletion_plan"]):
+                raise DeployError("OFFLINE_STATE", "The frozen data inventory cannot change.")
             phase = patch.pop("phase", operation["phase"])
             state = {**operation["execution"], **patch}
             db.execute("UPDATE offline_operations SET phase=?,execution=?,updated_at=? WHERE id=?",
@@ -449,12 +598,29 @@ class Store:
             if operation["status"] != "running" or not all(operation["execution"].get(key) is True for key in
                     ("gateway_deactivated", "containers_stopped", "cleanup_confirmed")):
                 raise DeployError("OFFLINE_STATE", "Offline completion requires confirmed route and runtime cleanup.")
+            deleting = operation["execution"].get("data_policy", "retain") == "delete"
+            if deleting and operation["execution"].get("data_deleted") is not True:
+                raise DeployError("OFFLINE_STATE", "Data deletion must be confirmed before releasing the application.")
             app = db.execute("SELECT * FROM apps WHERE id=?", (operation["app_id"],)).fetchone()
             if app is None or app["active_release_id"] != operation["target_release_id"]:
                 raise DeployError("OFFLINE_RELEASE_CHANGED", "The active release changed before offline completion.")
             job = self._get(db, operation["target_release_id"])
             now = time.time()
             state = {**job["execution"], "resources_released": True, "offline_operation": operation_id}
+            if deleting:
+                metadata = operation["execution"]["deletion_metadata"]
+                if metadata["app_id"] != app["id"] or job["id"] not in metadata["job_ids"]:
+                    raise DeployError("OFFLINE_DATA_CONFLICT", "The frozen deletion ownership changed.")
+                scopes = {(scope["repository"], scope["subdomain"]) for scope in metadata["scopes"]}
+                for job_id in metadata["job_ids"]:
+                    historical = self._get(db, job_id)
+                    if (historical["app_id"] not in (None, app["id"])
+                            or historical["app_id"] is None and historical["status"] != "failed"
+                            or (historical["input"].get("repository"), historical["input"].get("subdomain")) not in scopes):
+                        raise DeployError("OFFLINE_DATA_CONFLICT", "The frozen deletion ownership changed.")
+                    cleared = {**historical["execution"], "data_deleted": True, "data_reset_operation": operation_id}
+                    db.execute("UPDATE jobs SET execution=?,updated_at=? WHERE id=?", (_json(cleared), now, job_id))
+                state.update(data_deleted=True, data_reset_operation=operation_id)
             db.execute("UPDATE apps SET active_release_id=NULL,subdomain=NULL,updated_at=? WHERE id=?", (now, app["id"]))
             db.execute("DELETE FROM reservations WHERE job_id=?", (job["id"],))
             db.execute("UPDATE jobs SET execution=?,updated_at=? WHERE id=?", (_json(state), now, job["id"]))
@@ -647,6 +813,8 @@ class Store:
             return self._get(db, job_id)
 
     def _app_context(self, db, job, create=False):
+        if self._data_cleared(job):
+            raise DeployError("JOB_STATE", "A data-cleared historical deployment cannot be reused.")
         payload = job["input"]
         app_id = job["app_id"] or payload.get("appId")
         self._check_offline_gate(db, app_id, payload.get("subdomain"))
@@ -703,7 +871,7 @@ class Store:
                     state["previous_manifest"] = previous["snapshot"]["manifest"]
                 else:
                     retained = self._retained_release(db, app["id"])
-                    if retained:
+                    if retained and not self._data_cleared(retained):
                         state["previous_manifest"] = retained["snapshot"]["manifest"]
                         state["storage_volumes"] = retained["execution"].get("storage_volumes", {})
                 db.execute(
@@ -773,7 +941,7 @@ class Store:
                 state["previous_manifest"] = self._get(db, app["active_release_id"])["snapshot"]["manifest"]
             else:
                 retained = self._retained_release(db, app["id"])
-                if retained:
+                if retained and not self._data_cleared(retained):
                     state["previous_manifest"] = retained["snapshot"]["manifest"]
                     state["storage_volumes"] = retained["execution"].get("storage_volumes", {})
             db.execute(
@@ -794,6 +962,8 @@ class Store:
         shared, proven = False, set()
         for row in db.execute("SELECT * FROM jobs WHERE app_id IS NOT NULL AND id<>?", (job["id"],)):
             previous = self._job(row)
+            if self._data_cleared(previous):
+                continue
             if (previous["input"].get("repository") != job["input"]["repository"]
                     or previous["input"].get("subdomain") != job["input"]["subdomain"]):
                 continue

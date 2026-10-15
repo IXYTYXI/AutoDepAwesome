@@ -24,7 +24,7 @@ function all(node){return [node,...node.children.flatMap(all)];}
 const online={id:'app-one',repository:'https://github.com/team/demo.git',subdomain:'demo',status:'online',activeReleaseId:'release-one',retainedReleaseId:null,commit:'123abc',ref:'main',url:'https://demo.example.test',updatedAt:1791855000.25,canOffline:true};
 const job={id:'job-one',appId:online.id,subdomain:'demo',repository:online.repository,ref:'main',status:'running',phase:'build',createdAt:1791855000.25};
 const empty={apps:[],deployments:[],offlineOperations:[]};
-function harness({data=empty,script='manage.js',search=''}={}) {
+function harness({data=empty,script='manage.js',search='',sessionStore=new Map()}={}) {
   const elements=new Map(),calls=[],timers=[];let key=0;
   const document={activeElement:null,listeners:{},addEventListener(name,handler){this.listeners[name]=handler;}};
   const get=id=>{if(!elements.has(id)){const element=new Element(id);element.ownerDocument=document;elements.set(id,element);}return elements.get(id);};
@@ -32,6 +32,7 @@ function harness({data=empty,script='manage.js',search=''}={}) {
   get('app-picker').append(get('app-search'),get('app-menu'));
   get('app-menu').append(get('app-options'));
   const context=vm.createContext({document,URL,URLSearchParams,location:{search},console,
+    sessionStorage:{getItem:key=>sessionStore.get(key) ?? null,setItem:(key,value)=>sessionStore.set(key,value),removeItem:key=>sessionStore.delete(key)},
     crypto:{randomUUID:()=>`key-${++key}`},
     setTimeout:(callback,delay)=>{timers.push({callback,delay});return timers.length;},clearTimeout:()=>{},
     fetch:async(url,options={})=>{calls.push({url,options});return {ok:true,status:200,json:async()=>url.endsWith('/management') ? data : url.endsWith('/capabilities') ? {aiAdvice:{configured:false}} : url==='/api/v1/deployments/job-one' ? job : {items:[]}};},
@@ -49,7 +50,7 @@ test('management page has its own navigation, named scroll windows and confirmat
   assert.match(html,/href="\/"[^>]*>部署控制台/);
   assert.match(html,/href="\/manage"[^>]*aria-current="page"/);
   assert.match(html,/<dialog[^>]+id="offline-dialog"/);
-  assert.match(html,/下线后将停止服务并关闭公开访问。数据和部署记录保留。/);
+  assert.match(html,/下线后将停止服务并关闭公开访问/);
   assert.match(html,/下线完成后释放域名和运行端口/);
   assert.doesNotMatch(html,/域名前缀(?:继续)?保留/);
   assert.doesNotMatch(html,/<select\b/);
@@ -110,7 +111,7 @@ test('offline duplicate clicks are blocked and a failed request retries with the
   await h.run('submitOffline()');
   assert.equal(posts.length,2);
   assert.equal(posts[0].options.headers['Idempotency-Key'],posts[1].options.headers['Idempotency-Key']);
-  assert.deepEqual(JSON.parse(posts[1].options.body),{expectedReleaseId:'release-one'});
+  assert.deepEqual(JSON.parse(posts[1].options.body),{expectedReleaseId:'release-one',dataPolicy:'retain'});
   assert.equal(h.get('offline-dialog').open,false);
   assert.ok(!h.get('management-notice').textContent.includes('下线成功'));
   assert.ok(all(h.get('online-apps')).some(node=>node.textContent.includes('下线排队中')));
@@ -195,7 +196,7 @@ test('recovery retry requires the server retry key and reuses it for the origina
   };
   await h.run('submitOffline()');
   assert.equal(posts[0].headers['Idempotency-Key'],'original-retry-key');
-  assert.deepEqual(JSON.parse(posts[0].body),{expectedReleaseId:'release-one'});
+  assert.deepEqual(JSON.parse(posts[0].body),{expectedReleaseId:'release-one',dataPolicy:'retain'});
   h.context.unavailable={...data,apps:[{...data.apps[0],operation:{...operation,retryKey:null}}],offlineOperations:[{...operation,retryKey:null}]};h.run('renderManagement(unavailable)');
   assert.ok(!all(h.get('online-apps')).some(node=>node.tagName==='button' && node.textContent==='重试下线'));
 });
@@ -242,4 +243,184 @@ test('deployment deep link selects the requested job without creating a deployme
   assert.ok(h.calls.some(call=>call.url==='/api/v1/deployments/job-one'));
   assert.ok(!h.calls.some(call=>call.options.method==='POST'));
   assert.equal(h.run('selectedJob'),'job-one');
+});
+
+function selectPolicy(h,policy) {
+  h.get('offline-retain').checked=policy==='retain';h.get('offline-delete').checked=policy==='delete';
+  const control=h.get(policy==='delete' ? 'offline-delete' : 'offline-retain');
+  assert.equal(typeof control.listeners.change,'function','Data policy controls must handle changes');control.listeners.change();
+}
+function enterDeletion(h,value) {
+  const input=h.get('offline-delete-confirmation');input.value=value;
+  assert.equal(typeof input.listeners.input,'function','Deletion confirmation must validate user input');input.listeners.input();
+}
+function acceptPosts(h,data,policy='retain') {
+  const posts=[];h.context.fetch=async(url,options={})=>{
+    if(options.method!=='POST')return {ok:true,json:async()=>data};
+    posts.push(options);return {ok:true,status:202,json:async()=>({id:'op-one',appId:online.id,releaseId:'release-one',status:'queued',dataPolicy:policy})};
+  };return posts;
+}
+
+test('data policy has accessible radio cards and a bounded scrollable confirmation dialog',()=>{
+  const html=fs.readFileSync(path.join(staticRoot,'manage.html'),'utf8'),css=fs.readFileSync(path.join(staticRoot,'manage.css'),'utf8');
+  assert.match(html,/<fieldset[^>]+id="offline-data-options"/);
+  assert.match(html,/<input[^>]+id="offline-retain"[^>]+type="radio"[^>]+checked/);
+  assert.match(html,/<input[^>]+id="offline-delete"[^>]+type="radio"/);
+  assert.match(html,/<label[^>]+for="offline-delete-confirmation"/);
+  assert.match(html,/不可恢复/);assert.match(html,/业务文件/);assert.match(html,/数据库/);
+  assert.match(html,/API Key/);assert.match(html,/该应用的密钥/);assert.match(html,/外部数据库不会自动删除/);assert.match(html,/源码、部署历史和构建缓存/);
+  assert.match(css,/\.offline-dialog\s*\{[^}]*max-height:/);
+  assert.match(css,/\.offline-dialog\s*\{[^}]*overflow-y:auto/);
+});
+
+test('a fresh offline request defaults to retaining data with no deletion confirmation',async()=>{
+  const data={...empty,apps:[online]},h=harness({data});await settle();h.run("openOfflineDialog('app-one')");
+  assert.equal(h.get('offline-retain').checked,true);assert.equal(h.get('offline-delete').checked,false);
+  assert.equal(h.get('offline-delete-fields').hidden,true);
+  assert.equal(h.context.document.activeElement,h.get('offline-cancel'));
+  const posts=acceptPosts(h,data);await h.run('submitOffline()');
+  assert.deepEqual(JSON.parse(posts[0].body),{expectedReleaseId:'release-one',dataPolicy:'retain'});
+});
+
+test('deleting data requires the exact current target phrase before any mutation',async()=>{
+  const data={...empty,apps:[online]},h=harness({data});await settle();h.run("openOfflineDialog('app-one')");selectPolicy(h,'delete');
+  const posts=acceptPosts(h,data,'delete');
+  assert.equal(h.get('offline-delete-fields').hidden,false);
+  assert.ok(h.get('offline-delete-label').textContent.includes('删除 demo'));
+  for(const value of ['', '删除 other', '删除 demo ']) {
+    enterDeletion(h,value);assert.equal(h.get('offline-confirm').disabled,true);await h.run('submitOffline()');
+  }
+  assert.equal(posts.length,0);enterDeletion(h,'删除 demo');assert.equal(h.get('offline-confirm').disabled,false);
+  await h.run('submitOffline()');
+  assert.deepEqual(JSON.parse(posts[0].body),{expectedReleaseId:'release-one',dataPolicy:'delete',deleteConfirmation:'删除 demo'});
+});
+
+test('uncertain delete requests retain their policy body and key across close and page reload',async()=>{
+  const data={...empty,apps:[online]},sessionStore=new Map(),h=harness({data,sessionStore});await settle();
+  h.run("openOfflineDialog('app-one')");selectPolicy(h,'delete');enterDeletion(h,'删除 demo');let first;
+  h.context.fetch=async(url,options={})=>{first=options;throw new Error('lost response');};
+  await h.run('submitOffline()');assert.ok(h.get('offline-error').textContent.includes('网络'));
+  assert.equal(h.get('offline-retain').disabled,true);assert.equal(h.get('offline-delete').disabled,true);
+  selectPolicy(h,'retain');assert.equal(h.get('offline-delete').checked,true);
+  h.run('closeOfflineDialog()');h.run("openOfflineDialog('app-one')");assert.equal(h.get('offline-delete').checked,true);
+  const reloaded=harness({data,sessionStore});await settle();reloaded.context.crypto.randomUUID=()=> 'must-not-create-another-key';
+  reloaded.run("openOfflineDialog('app-one')");assert.equal(reloaded.get('offline-delete').checked,true);
+  assert.equal(reloaded.get('offline-retain').disabled,true);
+  const posts=acceptPosts(reloaded,data,'delete');await reloaded.run('submitOffline()');
+  assert.equal(posts.length,1);assert.equal(posts[0].headers['Idempotency-Key'],first.headers['Idempotency-Key']);
+  assert.equal(posts[0].body,first.body);
+});
+
+test('deletion retry restores server policy and key and confirms the last domain after release',async()=>{
+  const operation={id:'old-op',appId:online.id,releaseId:'release-one',status:'recovery_required',retryable:true,retryKey:'server-delete-key',dataPolicy:'delete'};
+  const data={...empty,apps:[{...online,subdomain:null,lastSubdomain:'demo',domainBound:false,status:'attention',canOffline:false,activeReleaseId:null,operation}],offlineOperations:[operation]};
+  const h=harness({data});await settle();h.run("openOfflineDialog('app-one',true)");
+  assert.equal(h.get('offline-delete').checked,true);assert.equal(h.get('offline-retain').disabled,true);
+  const posts=acceptPosts(h,data,'delete');await h.run('submitOffline()');assert.equal(posts.length,0);
+  selectPolicy(h,'retain');assert.equal(h.get('offline-delete').checked,true);
+  enterDeletion(h,'删除 demo');await h.run('submitOffline()');
+  assert.equal(posts[0].headers['Idempotency-Key'],'server-delete-key');
+  assert.deepEqual(JSON.parse(posts[0].body),{expectedReleaseId:'release-one',dataPolicy:'delete',deleteConfirmation:'删除 demo'});
+});
+
+test('a changed domain cannot receive an already confirmed destructive request',async()=>{
+  const data={...empty,apps:[online]},h=harness({data});await settle();h.run("openOfflineDialog('app-one')");selectPolicy(h,'delete');enterDeletion(h,'删除 demo');
+  h.context.changed={...empty,apps:[{...online,subdomain:'other'}]};h.run('renderManagement(changed)');
+  const posts=acceptPosts(h,data,'delete');await h.run('submitOffline()');assert.equal(posts.length,0);
+  assert.match(h.get('offline-error').textContent,/变化/);
+});
+
+test('completed deletion and retention have distinct application data status without losing history',async()=>{
+  const done={...online,status:'offline',subdomain:null,lastSubdomain:'demo',domainBound:false,canOffline:false,activeReleaseId:null};
+  for(const deleted of [true,false]) {
+    const app={...done,dataDeleted:deleted,operation:{id:'done',appId:online.id,releaseId:'release-one',status:'succeeded',dataPolicy:deleted ? 'delete' : 'retain'}};
+    const h=harness({data:{...empty,apps:[app]}});await settle();const content=all(h.get('retained-apps')).map(node=>node.textContent).join('\n');
+    assert.match(content,deleted ? /数据已清除/ : /数据已保留/);assert.match(content,/部署历史保留/);
+    if(deleted){assert.doesNotMatch(content,/数据(?:和部署历史)?保留/);assert.match(content,/上次下线/);assert.match(content,/后续部署可能产生新数据/);}
+    assert.doesNotMatch(h.get('retained-count').textContent,/数据和部署历史保留/);
+  }
+  const h=harness({data:{...empty,apps:[{...done,dataDeleted:true}]}});await settle();
+  assert.ok(all(h.get('retained-apps')).some(node=>node.textContent.includes('数据已清除')));
+});
+
+test('pending deletion and partial failure never claim data was retained or fully cleared',async()=>{
+  for(const status of ['queued','running','recovery_required']) {
+    const operation={id:'op',appId:online.id,releaseId:'release-one',status,dataPolicy:'delete'};
+    const h=harness({data:{...empty,apps:[{...online,status:'attention',canOffline:false,dataDeleted:false,operation}]}});await settle();
+    const content=all(h.get('online-apps')).map(node=>node.textContent).join('\n');
+    assert.match(content,/删除数据/);assert.doesNotMatch(content,/数据已清除|数据已保留/);
+  }
+});
+
+test('a mismatched operation policy does not falsely confirm the destructive request',async()=>{
+  const data={...empty,apps:[online]},h=harness({data});await settle();h.run("openOfflineDialog('app-one')");selectPolicy(h,'delete');enterDeletion(h,'删除 demo');
+  acceptPosts(h,data,'retain');await h.run('submitOffline()');
+  assert.equal(h.get('offline-dialog').open,true);assert.match(h.get('offline-error').textContent,/未能确认/);
+  assert.equal(h.get('management-notice').textContent,'');
+});
+
+test('accepted offline requests restore focus to an enabled control',async()=>{
+  const data={...empty,apps:[online]},h=harness({data});await settle();h.run("openOfflineDialog('app-one')");
+  acceptPosts(h,data);await h.run('submitOffline()');
+  assert.equal(h.context.document.activeElement,h.get('management-refresh'));
+});
+
+test('unknown data policies are neither retryable nor described as retained',async()=>{
+  const operation={id:'op',appId:online.id,releaseId:'release-one',status:'succeeded',dataPolicy:'unexpected'};
+  const data={...empty,apps:[{...online,status:'offline',activeReleaseId:null,operation,dataDeleted:false}]};
+  const h=harness({data});await settle();const content=all(h.get('retained-apps')).map(node=>node.textContent).join('\n');
+  assert.doesNotMatch(content,/数据已保留|数据已清除/);assert.match(content,/未确认/);
+  h.context.badOperation={...operation,status:'recovery_required',retryable:true,retryKey:'server-key'};
+  assert.equal(h.run('retryAllowed(badOperation)'),false);
+});
+
+test('an explicitly rejected delete can switch to retain only after fresh state proves no operation exists',async()=>{
+  const data={...empty,apps:[online]},sessionStore=new Map(),h=harness({data,sessionStore});await settle();
+  h.run("openOfflineDialog('app-one')");selectPolicy(h,'delete');enterDeletion(h,'删除 demo');
+  const requests=[];
+  h.context.fetch=async(url,options={})=>{
+    requests.push({url,options});
+    if(options.method!=='POST')return {ok:true,json:async()=>data};
+    const posts=requests.filter(item=>item.options.method==='POST');
+    if(posts.length===1)return {ok:false,status:409,json:async()=>({error:{code:'OFFLINE_DATA_CONFLICT',message:'数据归属冲突。'}})};
+    return {ok:true,status:202,json:async()=>({id:'retained-op',appId:online.id,releaseId:'release-one',status:'queued',dataPolicy:'retain'})};
+  };
+  await h.run('submitOffline()');
+  assert.equal(requests[1]?.url,'/api/v1/management');
+  assert.equal(h.get('offline-retain').disabled,false);
+  assert.equal(sessionStore.size,0);
+  selectPolicy(h,'retain');await h.run('submitOffline()');
+  const posts=requests.filter(item=>item.options.method==='POST');
+  assert.equal(posts.length,2);
+  assert.notEqual(posts[0].options.headers['Idempotency-Key'],posts[1].options.headers['Idempotency-Key']);
+  assert.deepEqual(JSON.parse(posts[1].options.body),{expectedReleaseId:'release-one',dataPolicy:'retain'});
+});
+
+test('explicit rejection keeps intent locked if the verification read fails or a prior operation exists',async()=>{
+  for(const exists of [false,true]) {
+    const data={...empty,apps:[online]},h=harness({data});await settle();
+    h.run("openOfflineDialog('app-one')");selectPolicy(h,'delete');enterDeletion(h,'删除 demo');
+    const operation={id:'prior',appId:online.id,releaseId:'release-one',status:'recovery_required',dataPolicy:'retain',retryable:true,retryKey:'original-server-key'};
+    h.context.fetch=async(url,options={})=>{
+      if(options.method==='POST')return {ok:false,status:409,json:async()=>({error:{code:'APP_BUSY',message:'应用正忙。'}})};
+      if(!exists)throw new Error('verification unavailable');
+      return {ok:true,json:async()=>({...data,apps:[{...online,status:'attention',canOffline:false,operation}],offlineOperations:[operation]})};
+    };
+    await h.run('submitOffline()');
+    assert.equal(h.get('offline-retain').disabled,true);
+    if(exists) {
+      assert.equal(h.get('offline-retain').checked,true);
+      const posts=acceptPosts(h,data,'retain');await h.run('submitOffline()');
+      assert.equal(posts[0].headers['Idempotency-Key'],'original-server-key');
+      assert.deepEqual(JSON.parse(posts[0].body),{expectedReleaseId:'release-one',dataPolicy:'retain'});
+    } else assert.equal(h.get('offline-delete').checked,true);
+  }
+});
+
+test('idempotency conflicts never unlock an uncertain data policy',async()=>{
+  const data={...empty,apps:[online]},h=harness({data});await settle();
+  h.run("openOfflineDialog('app-one')");selectPolicy(h,'delete');enterDeletion(h,'删除 demo');
+  h.context.fetch=async()=>({ok:false,status:409,json:async()=>({error:{code:'IDEMPOTENCY_CONFLICT',message:'请求身份冲突。'}})});
+  await h.run('submitOffline()');assert.equal(h.get('offline-retain').disabled,true);
+  selectPolicy(h,'retain');assert.equal(h.get('offline-delete').checked,true);
 });

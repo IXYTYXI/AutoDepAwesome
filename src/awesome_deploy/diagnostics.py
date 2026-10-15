@@ -20,6 +20,8 @@ PHASE_LABELS = {
     "deactivate": "关闭访问入口", "offline": "下线应用", "stop": "停止服务",
     "offline_queued": "等待下线", "offline_deactivate": "关闭访问入口",
     "offline_stop": "停止服务", "offline_cleanup": "清理运行资源", "offline_complete": "已下线",
+    "offline_delete_preflight": "核验数据清除范围", "offline_delete_data": "清除业务持久数据",
+    "offline_delete_secrets": "清除应用密码和密钥",
 }
 
 
@@ -42,9 +44,25 @@ _register("OFFLINE_RELEASE_CHANGED", "上线版本已变化", "页面中的版�
           "刷新应用管理页面，核对当前应用及版本后重新操作。")
 _register("OFFLINE_STATE", "下线状态不符合要求", "当前应用或下线任务状态不允许执行该操作。",
           "刷新管理页面并核对应用状态；已下线的应用无需重复下线。")
-_register("OFFLINE_FAILED GATEWAY_DEACTIVATE_FAILED", "下线尚未完成", "尚未确认访问入口和运行资源全部下线，操作需要处理。数据和部署记录仍保留。",
+_register("OFFLINE_FAILED GATEWAY_DEACTIVATE_FAILED", "下线尚未完成", "尚未确认下线操作全部完成。如果选择删除数据，可能已有部分数据被清除；部署历史仍保留。",
           "查看管理页面的失败阶段，排查网关或运行资源状态。",
           "确认原因后使用原任务的重试下线按钮继续；不要删除持久卷或手工跳过资源确认。")
+_register("OFFLINE_DATA_POLICY", "数据处理选项无效", "下线的数据处理方式不在允许范围内。",
+          "刷新管理页面，选择保留数据或删除数据后重新确认。")
+_register("OFFLINE_DELETE_CONFIRMATION", "删除确认文字不匹配", "尚未收到与目标应用一致的删除确认文字。",
+          "核对目标应用，准确输入弹窗显示的确认文字；不需要清除数据时选择保留数据。")
+_register("OFFLINE_DATA_CONFLICT", "无法确认数据清除归属", "该应用的数据或配置归属存在冲突，平台拒绝继续清除。",
+          "请运维核对原应用、持久存储和秘密配置的归属，不能清除其他应用的资源。",
+          "刷新管理页面确认是否已有下线操作；已有操作须按原任务及原策略处理。")
+_register("SECRET_DELETE_CONFLICT", "应用配置清除尚未确认", "待清除的密码或密钥配置与已核验记录不一致，可能已完成部分清理。",
+          "请运维核对原任务的配置归属和受保护文件状态；不要覆盖配置或扩大删除范围。",
+          "确认原因后按原任务重试，保留部署历史用于核验。")
+_register("STORAGE_IN_USE", "持久存储仍被使用", "目标存储仍有运行资源引用，平台未确认可以安全删除。",
+          "请运维核对引用该存储的容器归属及停止状态，不要强行删除其他应用的容器。",
+          "确认引用已按原任务解除后，再重试原下线操作。")
+_register("STORAGE_DELETE_FAILED OFFLINE_DATA_DELETE_FAILED", "数据清除尚未完成", "业务数据或应用配置的清除未全部确认，可能已有部分内容被删除。",
+          "请运维核对原下线任务及剩余资源；不要把当前状态视为数据完整保留或全部清除。",
+          "排除原因后使用原任务、原删除策略继续，不能改用新任务绕过核验。")
 _register("INVALID_REPOSITORY", "仓库地址不符合要求", "仓库地址必须是允许访问的 HTTPS Git 仓库地址。",
           "使用 https://github.com/所有者/仓库 或平台允许的 GitLab 仓库地址。",
           "地址不要包含令牌、账号密码、查询参数、端口或分支路径；私有仓库凭证由运维配置。")

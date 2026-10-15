@@ -1,0 +1,118 @@
+"""Frozen, resumable deletion of one application's recorded volumes and secrets.
+
+The worker owns its process lock throughout; the Store gates every affected scope.
+Plans contain ownership/file metadata only and never secret values.
+"""
+
+import copy
+import re
+
+from .errors import DeployError
+from .secrets_store import SecretStore
+from .storage import ManagedStorage
+
+
+class OfflineDataDeletion:
+    def __init__(self, settings, docker):
+        self.secrets = SecretStore(settings)
+        self.storage = ManagedStorage(docker)
+        self.docker = docker
+
+    @staticmethod
+    def _scopes(scopes):
+        if not isinstance(scopes, list) or any(
+            not isinstance(scope, dict) or set(scope) != {"repository", "subdomain"}
+            or not all(isinstance(value, str) and value for value in scope.values())
+            for scope in scopes
+        ):
+            raise DeployError("OFFLINE_DATA_CONFLICT", "Invalid data deletion scope")
+        identities = {(scope["repository"], scope["subdomain"]) for scope in scopes}
+        if len(identities) != len(scopes):
+            raise DeployError("OFFLINE_DATA_CONFLICT", "Duplicate data deletion scope")
+        return identities
+
+    def _metadata(self, metadata):
+        if (
+            not isinstance(metadata, dict)
+            or set(metadata) != {"app_id", "job_ids", "scopes", "volumes"}
+            or not isinstance(metadata["job_ids"], list)
+            or not all(isinstance(value, str) and value for value in metadata["job_ids"])
+            or not isinstance(metadata["volumes"], list)
+            or any(not isinstance(volume, dict) or set(volume) != {"service", "spec", "expected"}
+                   for volume in metadata["volumes"])
+        ):
+            raise DeployError("OFFLINE_DATA_CONFLICT", "Invalid data deletion metadata")
+        return self._scopes(metadata["scopes"])
+
+    def _check_volumes(self, metadata, *, unused):
+        app_id = metadata["app_id"]
+        if not isinstance(app_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", app_id):
+            raise DeployError("OFFLINE_DATA_CONFLICT", "Invalid application data identity")
+        expected_names = set()
+        for volume in metadata["volumes"]:
+            expected = volume["expected"]
+            name, _ = self.storage.identity(app_id, volume["service"], volume["spec"])
+            if (
+                not isinstance(expected, dict)
+                or set(expected) != {"name", "created_at", "instance"}
+                or expected["name"] != name
+                or not isinstance(expected["created_at"], str)
+                or not expected["created_at"].strip()
+                or not isinstance(expected["instance"], str)
+                or not re.fullmatch(r"[0-9a-f]{32}", expected["instance"])
+                or name in expected_names
+            ):
+                raise DeployError("STORAGE_IDENTITY", "Invalid recorded volume identity")
+            expected_names.add(name)
+            if unused:
+                self.storage.verify_removal(app_id, **volume)
+            else:
+                try:
+                    self.storage.ensure(app_id, **volume, create=False)
+                except DeployError as error:
+                    if error.code != "STORAGE_MISSING":
+                        raise
+        found = self.docker([
+            "volume", "ls", "--filter", f"label=awesome.app={app_id}", "--format", "{{.Name}}",
+        ], timeout=120).split()
+        if set(found) - expected_names:
+            raise DeployError("OFFLINE_DATA_CONFLICT", "Unrecorded application volumes require review")
+
+    def inventory(self, metadata):
+        self._metadata(metadata)
+        self._check_volumes(metadata, unused=False)
+        return {
+            "version": 1,
+            "metadata": copy.deepcopy(metadata),
+            "secrets": [self.secrets.inventory_scope(**scope) for scope in metadata["scopes"]],
+        }
+
+    def delete(self, plan, checkpoint):
+        if (
+            not isinstance(plan, dict) or set(plan) != {"version", "metadata", "secrets"}
+            or type(plan["version"]) is not int or plan["version"] != 1
+            or not isinstance(plan["secrets"], list)
+        ):
+            raise DeployError("OFFLINE_DATA_CONFLICT", "Unsupported data deletion plan")
+        metadata = plan["metadata"]
+        expected_scopes = self._metadata(metadata)
+        actual_scopes = self._scopes([
+            {"repository": scope.get("repository"), "subdomain": scope.get("subdomain")}
+            if isinstance(scope, dict) else {} for scope in plan["secrets"]
+        ])
+        if expected_scopes != actual_scopes:
+            raise DeployError("OFFLINE_DATA_CONFLICT", "Data deletion plan scope changed")
+        # Validate every target before deleting any target. Retries use the same
+        # identities and accept only missing originals, never new replacements.
+        self._check_volumes(metadata, unused=True)
+        for scope in plan["secrets"]:
+            self.secrets.verify_deletion(scope)
+        checkpoint({"phase": "offline_delete_data", "data_delete_intent": True})
+        for volume in metadata["volumes"]:
+            self.storage.remove(metadata["app_id"], **volume)
+        checkpoint({"volumes_deleted": True, "phase": "offline_delete_secrets"})
+        for scope in plan["secrets"]:
+            self.secrets.delete_scope(scope)
+        # A completed deletion is durable before the Store releases the name and
+        # ports and marks historical inputs unavailable for configuration replay.
+        checkpoint({"secrets_deleted": True, "data_deleted": True})
