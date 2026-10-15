@@ -13,7 +13,7 @@ import time
 from urllib.parse import urlsplit
 
 from .auth import initialize_credentials
-from .config import Settings, validate_ai_settings
+from .config import Settings, validate_ai_settings, validate_git_proxy_settings
 from .errors import DeployError
 
 
@@ -64,6 +64,7 @@ def load_settings(path: Path | None) -> Settings:
         values["auth_file"] = values["state_dir"] / "admin.json"
     try:
         settings = Settings(**values)
+        validate_git_proxy_settings(settings)
         validate_ai_settings(settings)
         from .egress import policy
 

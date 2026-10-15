@@ -13,7 +13,7 @@ import tarfile
 import time
 from urllib.parse import urlsplit
 
-from .config import Settings
+from .config import Settings, validate_git_proxy_settings
 from .errors import DeployError
 from .manifest import MAX_MANIFEST_BYTES, load_manifest
 
@@ -122,6 +122,10 @@ class GitSource:
     repository URLs can never opt into a different transport or local file access.
     """
     def __init__(self, settings: Settings, runner=None):
+        try:
+            validate_git_proxy_settings(settings)
+        except ValueError as exc:
+            raise DeployError("INVALID_CONFIG", "Git 代理配置无效。") from exc
         self.settings = settings
         self.runner = runner or _bounded_run
         self.lock_fd = None
@@ -142,12 +146,25 @@ class GitSource:
             "core.hooksPath": "/dev/null", "core.attributesFile": "/dev/null", "core.askPass": env["GIT_ASKPASS"],
             "credential.helper": "", "protocol.allow": "never", "protocol.https.allow": "always",
             "protocol.file.allow": "never", "http.followRedirects": "false", "fetch.recurseSubmodules": "false",
+            "http.sslVerify": "true",
             "submodule.recurse": "false", "transfer.fsckObjects": "true", "fetch.fsckObjects": "true",
             "core.protectNTFS": "true", "core.protectHFS": "true",
         }
         command = ["git"]
         for key, value in options.items():
             command.extend(["-c", f"{key}={value}"])
+        # Only platform-owned network commands receive the operator transport setting.
+        # HTTPS-proxy TLS verification retains libcurl's default; Git has no proxySSLVerify setting.
+        command_index = 0
+        if args and args[0] == "--git-dir":
+            command_index = 2
+        elif args and args[0].startswith("--git-dir="):
+            command_index = 1
+        if self.settings.git_proxy_url is not None and args[command_index:command_index + 1] in (
+            ["fetch"], ["ls-remote"],
+        ):
+            env["AWESOME_DEPLOY_GIT_PROXY_URL"] = self.settings.git_proxy_url
+            command.append("--config-env=http.proxy=AWESOME_DEPLOY_GIT_PROXY_URL")
         command.extend(args)
         try:
             result = self.runner(command, cwd=git_dir.parent, env=env, timeout=self.settings.git_timeout,

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import ipaddress
 from pathlib import Path
 import re
 from urllib.parse import urlsplit
@@ -12,6 +13,7 @@ class Settings:
     listen_port: int = 8088
     git_hosts: tuple[str, ...] = ("github.com", "gitlab.com")
     git_askpass: str | None = None
+    git_proxy_url: str | None = None
     git_timeout: int = 120
     port_start: int = 20000
     port_end: int = 29999
@@ -56,6 +58,29 @@ class Settings:
     @property
     def database_path(self) -> Path:
         return self.state_dir / "platform.sqlite3"
+
+
+def validate_git_proxy_settings(settings: Settings) -> None:
+    """Accept only explicit, unauthenticated operator proxy endpoints."""
+    value = settings.git_proxy_url
+    if value is None:
+        return
+    if not isinstance(value, str) or len(value) > 2048:
+        raise ValueError("Git proxy URL")
+    match = re.fullmatch(r"(?:https?|socks5h)://(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+):([0-9]{1,5})/?", value)
+    if not match or not 1 <= int(match[2]) <= 65535:
+        raise ValueError("Git proxy URL")
+    host = match[1]
+    if host.startswith("[") or re.fullmatch(r"[0-9.]+", host):
+        try:
+            ipaddress.ip_address(host.strip("[]"))
+        except ValueError:
+            raise ValueError("Git proxy host") from None
+    elif len(host) > 253 or any(
+        not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+        for label in host.split(".")
+    ):
+        raise ValueError("Git proxy host")
 
 
 def validate_ai_settings(settings: Settings) -> None:
