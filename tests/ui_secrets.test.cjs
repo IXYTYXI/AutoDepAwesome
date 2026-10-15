@@ -22,8 +22,8 @@ const tick=()=>new Promise(setImmediate);
 const response=(data,ok=true)=>({ok,json:async()=>data});
 const job={id:'failed-one',repository:'https://github.com/team/project.git',ref:'codex/project',subdomain:'demo',appId:null,commit:'a'.repeat(40),status:'failed',phase:'freeze',error:{code:'SECRET_NOT_FOUND',title:'缺少可用的秘密配置',message:'请配置所需秘密。',steps:['补齐配置后继续。']}};
 const requirements=(id=job.id)=>({jobId:id,repository:job.repository,subdomain:job.subdomain,canGenerate:true,items:[
-  {name:'password',uses:[{service:'web',environmentVariable:'BOOTSTRAP_PASSWORD'}],state:'missing'},
-  {name:'master',uses:[{service:'web',environmentVariable:'MASTER_KEY'}],state:'missing'},
+  {name:'password',managed:false,uses:[{service:'web',environmentVariable:'BOOTSTRAP_PASSWORD'}],state:'missing'},
+  {name:'MASTER_KEY',managed:true,uses:[{service:'web',environmentVariable:'MASTER_KEY'}],state:'missing'},
 ]});
 async function harness(){
   let next=0;const elements=new Map();const calls=[];const copied=[];
@@ -35,7 +35,7 @@ async function harness(){
   const h={calls,copied,get};
   h.handler=async url=>response(url.endsWith('capabilities') ? {aiAdvice:{configured:true}} : {items:[]});
   const context=vm.createContext({document,Uint8Array,TextEncoder,
-    crypto:{randomUUID:()=>`key-${++next}`,getRandomValues:bytes=>{for(let i=0;i<bytes.length;i++)bytes[i]=i;return bytes;}},
+    crypto:{randomUUID:()=>`key-${++next}`,getRandomValues(){throw new Error('Managed keys must only be generated on the server');}},
     navigator:{clipboard:{writeText:async value=>copied.push(value)}},
     localStorage:{setItem(){throw new Error('Secret must not enter storage');}},
     sessionStorage:{setItem(){throw new Error('Secret must not enter storage');}},
@@ -55,10 +55,10 @@ function secretRouter(data,extra=()=>response({items:[]})){
 
 test('missing fields are actionable; configured and unavailable values are never inputs',async()=>{
   const h=await harness();const data=requirements();
-  data.items.push({name:'api-token',uses:[{service:'web',environmentVariable:'OPENAI_API_KEY'}],state:'configured'},
-    {name:'old-key',uses:[{service:'web',environmentVariable:'OLD_KEY'}],state:'unavailable'});
+  data.items.push({name:'api-token',managed:false,uses:[{service:'web',environmentVariable:'OPENAI_API_KEY'}],state:'configured'},
+    {name:'old-key',managed:false,uses:[{service:'web',environmentVariable:'OLD_KEY'}],state:'unavailable'});
   h.handler=secretRouter(data);await h.show();
-  assert.equal(h.input('password')?.type,'password');assert.equal(h.input('master')?.type,'password');
+  assert.equal(h.input('password')?.type,'password');assert.equal(h.input('MASTER_KEY'),undefined);
   assert.equal(h.input('api-token'),undefined);assert.equal(h.input('old-key'),undefined);
   assert.ok(h.nodes().some(node=>node.textContent.includes('部署服务器')));
   assert.ok(h.nodes().some(node=>node.textContent.includes('恢复原值')));
@@ -66,17 +66,21 @@ test('missing fields are actionable; configured and unavailable values are never
   assert.equal(h.calls.filter(call=>call.options.method==='POST').length,0);
 });
 
-test('generation is explicit, cryptographic, revealable and copyable; provider keys have no generator',async()=>{
-  const h=await harness();const data=requirements();data.items.push({name:'provider',uses:[{service:'web',environmentVariable:'OPENAI_API_KEY'}],state:'missing'});
+test('login password is user entered while managed keys have no fields, generation or retention confirmation',async()=>{
+  const h=await harness();const data=requirements();data.items.push({name:'provider',managed:false,uses:[{service:'web',environmentVariable:'OPENAI_API_KEY'}],state:'missing'});
   h.handler=secretRouter(data);await h.show();
-  assert.equal(h.input('password')?.value,'');
-  const generate=h.nodes().filter(node=>node.tagName==='button' && node.textContent==='生成随机值');
-  assert.equal(generate.length,2);await generate[0].listeners.click();
-  assert.match(h.input('password').value,/^[0-9a-f]{64}$/);
+  assert.equal(h.input('password')?.value,'');assert.equal(h.input('MASTER_KEY'),undefined);
+  assert.equal(h.input('provider')?.type,'password');
+  assert.ok(h.nodes().some(node=>node.textContent==='登录密码'));
+  assert.ok(h.nodes().some(node=>node.textContent.includes('首次登录')));
+  assert.ok(h.nodes().some(node=>node.textContent.includes('由平台自动生成并保存')));
+  assert.equal(h.nodes().some(node=>node.type==='checkbox'),false);
+  assert.equal(h.nodes().some(node=>node.textContent==='生成随机值' || node.textContent==='复制'),false);
   const row=h.input('password').parentElement.parentElement;
   await all(row).find(node=>node.textContent==='显示').listeners.click();assert.equal(h.input('password').type,'text');
-  await all(row).find(node=>node.textContent==='复制').listeners.click();assert.deepEqual(h.copied,[h.input('password').value]);
+  await all(row).find(node=>node.textContent==='隐藏').listeners.click();assert.equal(h.input('password').type,'password');
   assert.ok(h.nodes().some(node=>node.textContent.includes('外部 API Key')));
+  assert.equal(h.calls.filter(call=>call.options.method==='POST').length,0);
 });
 
 test('same-task refresh, AI and capabilities retain the same draft input nodes',async()=>{
@@ -110,14 +114,14 @@ test('save precedes a fresh deployment with the failed task identity and clears 
     if(url==='/api/v1/deployments/new-job')return response({...job,id:'new-job',status:'queued',error:null});
     return response({items:[]});
   });await h.show(original);
-  const password=h.input('password'),master=h.input('master');assert.ok(password);password.value='private-password';master.value='private-master';
+  const password=h.input('password');assert.ok(password);password.value='private-password';
   h.get('repository').value='https://github.com/other/wrong.git';h.get('ref').value='wrong';
   await h.button('保存并继续部署').listeners.click();
   const writes=h.calls.filter(call=>call.options.method==='POST');assert.equal(writes.length,2);
   assert.ok(writes[0].url.endsWith('/secrets'));
-  assert.deepEqual(JSON.parse(writes[0].options.body),{values:{password:'private-password',master:'private-master'}});
+  assert.deepEqual(JSON.parse(writes[0].options.body),{values:{password:'private-password'}});
   assert.deepEqual(JSON.parse(writes[1].options.body),{repository:job.repository,ref:job.ref,subdomain:job.subdomain,appId:'original-app'});
-  assert.equal(password.value,'');assert.equal(master.value,'');
+  assert.equal(password.value,'');assert.equal(h.input('MASTER_KEY'),undefined);
 });
 
 test('a failed deployment submission retries the same key without saving or generating again',async()=>{
@@ -126,7 +130,7 @@ test('a failed deployment submission retries the same key without saving or gene
     if(url.endsWith('/secrets'))return response({...requirements(),items:requirements().items.map(item=>({...item,state:'configured'}))});
     if(url==='/api/v1/deployments' && options.method==='POST'){attempts++;return response({error:{message:'暂时不能提交。'}},false);}
     return response({items:[]});
-  });await h.show();assert.ok(h.input('password'));h.input('password').value='password';h.input('master').value='master';
+  });await h.show();assert.ok(h.input('password'));h.input('password').value='password';
   await h.button('保存并继续部署').listeners.click();assert.equal(attempts,1);
   assert.ok(h.nodes().some(node=>node.textContent.includes('已保存')));
   await h.button('继续部署').listeners.click();assert.equal(attempts,2);
@@ -145,7 +149,7 @@ test('a lost continuation response retains its request identity after leaving an
     if(url==='/api/v1/deployments' && options.method==='POST')throw new Error('Response lost after acceptance');
     return response({items:[]});
   };
-  await h.show();h.input('password').value='password';h.input('master').value='master';
+  await h.show();h.input('password').value='password';
   await h.button('保存并继续部署').listeners.click();
   await h.show({...job,id:'other',error:null});await h.show();
   assert.equal(h.input('password'),undefined);
@@ -176,7 +180,7 @@ test('GET failure is visible and retryable; saving failure never starts a deploy
   const h=await harness();h.handler=async()=>response({error:{message:'配置空间不可访问。'}},false);await h.show();
   assert.ok(h.nodes().some(node=>node.textContent.includes('配置空间不可访问')));assert.ok(h.button('重试读取配置'));
   h.handler=secretRouter(requirements(),()=>response({error:{message:'配置暂时无法保存。'}},false));
-  await h.button('重试读取配置').listeners.click();assert.ok(h.input('password'));h.input('password').value='password';h.input('master').value='master';
+  await h.button('重试读取配置').listeners.click();assert.ok(h.input('password'));h.input('password').value='password';
   await h.button('保存并继续部署').listeners.click();
   assert.equal(h.calls.filter(call=>call.url==='/api/v1/deployments' && call.options.method==='POST').length,0);
   assert.ok(h.nodes().some(node=>node.textContent.includes('无法保存')));
@@ -185,7 +189,7 @@ test('GET failure is visible and retryable; saving failure never starts a deploy
 test('late save after navigating away cannot submit or overwrite the new task',async()=>{
   const h=await harness();let finish;
   h.handler=secretRouter(requirements(),()=>new Promise(resolve=>{finish=resolve;}));await h.show();
-  assert.ok(h.input('password'));h.input('password').value='password';h.input('master').value='master';
+  assert.ok(h.input('password'));h.input('password').value='password';
   const pending=h.button('保存并继续部署').listeners.click();await tick();
   await h.show({...job,id:'other',error:null});finish(response({...requirements(),items:[]}));await pending;
   assert.equal(h.calls.filter(call=>call.url==='/api/v1/deployments' && call.options.method==='POST').length,0);
@@ -196,29 +200,36 @@ test('partial saving refreshes state, clears only saved fields and keeps unsaved
   const h=await harness();let saved=false;
   h.handler=(url,options)=>{
     if(url.endsWith('/secrets') && options.method==='POST'){saved=true;return response({error:{message:'第二项保存失败。'}},false);}
-    const data=requirements();if(saved)data.items[0].state='configured';return response(data);
+    const data=requirements();data.items.push({name:'provider',managed:false,uses:[{service:'web',environmentVariable:'OPENAI_API_KEY'}],state:'missing'});
+    if(saved){data.items[0].state='configured';data.items[1].state='configured';}return response(data);
   };
-  await h.show();const first=h.input('password'),second=h.input('master');assert.ok(first);first.value='first';second.value='second';
+  await h.show();const first=h.input('password'),second=h.input('provider');assert.ok(first);first.value='first';second.value='second';
   await h.button('保存并继续部署').listeners.click();
-  assert.equal(first.value,'');assert.equal(h.input('password'),undefined);assert.equal(h.input('master'),second);assert.equal(second.value,'second');
+  assert.equal(first.value,'');assert.equal(h.input('password'),undefined);assert.equal(h.input('provider'),second);assert.equal(second.value,'second');
+  assert.equal(h.input('MASTER_KEY'),undefined);
+  assert.ok(h.nodes().some(node=>node.textContent.includes('平台保管')));
   assert.equal(h.calls.filter(call=>call.url==='/api/v1/deployments').length,0);
 });
 
-test('generation disappears if refreshed scope permissions no longer allow it',async()=>{
+test('missing managed keys block saving when refreshed scope no longer allows generation',async()=>{
   const h=await harness();let saved=false;
   h.handler=(url,options)=>{
     if(options.method==='POST'){saved=true;return response({error:{message:'请刷新状态。'}},false);}
     return response({...requirements(),canGenerate:!saved});
   };
-  await h.show();assert.ok(h.input('password'));h.input('password').value='password';h.input('master').value='master';
+  await h.show();h.input('password').value='password';
   await h.button('保存并继续部署').listeners.click();
-  assert.equal(h.nodes().filter(node=>node.tagName==='button' && node.textContent==='生成随机值' && !node.hidden).length,0);
+  assert.equal(h.button('保存并继续部署').disabled,true);
+  assert.equal(h.input('MASTER_KEY'),undefined);
+  assert.ok(h.nodes().some(node=>node.textContent.includes('恢复原配置')));
+  await h.button('保存并继续部署').listeners.click();
+  assert.equal(h.calls.filter(call=>call.options.method==='POST').length,1);
 });
 
-test('empty or multiline configuration cannot be submitted',async()=>{
+test('empty or multiline user configuration cannot be submitted',async()=>{
   const h=await harness();h.handler=secretRouter(requirements());await h.show();assert.ok(h.input('password'));
-  h.input('password').value='password';h.input('master').value='';await h.button('保存并继续部署').listeners.click();
-  h.input('master').value='line\nbreak';await h.button('保存并继续部署').listeners.click();
+  h.input('password').value='';await h.button('保存并继续部署').listeners.click();
+  h.input('password').value='line\nbreak';await h.button('保存并继续部署').listeners.click();
   assert.equal(h.calls.filter(call=>call.options.method==='POST').length,0);
 });
 
@@ -226,7 +237,7 @@ test('the left deployment form cannot race a pending configuration save',async()
   const h=await harness();let finish;
   h.context.FormData=class { *[Symbol.iterator](){yield ['repository',job.repository];yield ['ref',job.ref];yield ['subdomain',job.subdomain];} };
   h.handler=secretRouter(requirements(),(url,options)=>url.endsWith('/secrets') ? new Promise(resolve=>{finish=resolve;}) : response({...job,id:'unexpected'}));
-  await h.show();assert.ok(h.input('password'));h.input('password').value='password';h.input('master').value='master';
+  await h.show();assert.ok(h.input('password'));h.input('password').value='password';
   const pending=h.button('保存并继续部署').listeners.click();await tick();
   await h.get('deploy-form').listeners.submit({preventDefault(){}});
   assert.equal(h.calls.filter(call=>call.options.method==='POST').length,1);
@@ -242,16 +253,31 @@ test('failure from the left deployment form does not destroy a configuration dra
   assert.equal(h.button('保存并继续部署').disabled,false);
 });
 
-test('generated values require a retention confirmation which resets on editing or regeneration',async()=>{
-  const h=await harness();h.handler=secretRouter(requirements());await h.show();
-  const generate=h.nodes().find(node=>node.tagName==='button' && node.textContent==='生成随机值');assert.ok(generate);
-  await generate.listeners.click();h.input('master').value='manual-master';
-  const acknowledgement=h.nodes().find(node=>node.tagName==='input' && node.type==='checkbox');assert.ok(acknowledgement);
+test('only missing managed configuration saves an empty values object before continuation',async()=>{
+  const h=await harness();const data=requirements();data.items[0].state='configured';
+  h.handler=secretRouter(data,(url,options)=>{
+    if(url.endsWith('/secrets'))return response({...data,items:data.items.map(item=>({...item,state:'configured'}))});
+    if(url==='/api/v1/deployments' && options.method==='POST')return response({error:{message:'暂时不能提交。'}},false);
+    return response({items:[]});
+  });
+  await h.show();assert.equal(h.nodes().filter(node=>node.tagName==='input').length,0);
+  assert.equal(h.button('保存并继续部署').disabled,false);
+  await h.button('保存并继续部署').listeners.click();
+  const writes=h.calls.filter(call=>call.options.method==='POST');assert.equal(writes.length,2);
+  assert.ok(writes[0].url.endsWith('/secrets'));assert.deepEqual(JSON.parse(writes[0].options.body),{values:{}});
+  assert.ok(h.nodes().some(node=>node.textContent.includes('平台保管')));
+  await h.button('继续部署').listeners.click();
+  assert.equal(h.calls.filter(call=>call.url.endsWith('/secrets') && call.options.method==='POST').length,1);
+});
+
+test('unavailable managed keys require restoration without any replacement input or submission',async()=>{
+  const h=await harness();const data=requirements();data.items[1].state='unavailable';
+  h.handler=secretRouter(data);await h.show();h.input('password').value='password';
+  assert.equal(h.input('MASTER_KEY'),undefined);
+  assert.ok(h.nodes().some(node=>node.textContent.includes('恢复原配置')));
   assert.equal(h.button('保存并继续部署').disabled,true);
-  await h.button('保存并继续部署').listeners.click();assert.equal(h.calls.filter(call=>call.options.method==='POST').length,0);
-  acknowledgement.checked=true;acknowledgement.listeners.change();assert.equal(h.button('保存并继续部署').disabled,false);
-  h.input('password').value+='edited';h.input('password').listeners.input();assert.equal(acknowledgement.checked,false);assert.equal(h.button('保存并继续部署').disabled,true);
-  acknowledgement.checked=true;acknowledgement.listeners.change();await generate.listeners.click();assert.equal(acknowledgement.checked,false);
+  await h.button('保存并继续部署').listeners.click();
+  assert.equal(h.calls.filter(call=>call.options.method==='POST').length,0);
 });
 
 test('opening diagnostic advice stays open across analysis and capability updates',async()=>{
