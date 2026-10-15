@@ -31,3 +31,19 @@ this platform repair. Temporary diagnostic containers, images and volumes are
 removed after verification. Git does not track directory permission modes; this
 normalization supplies traversable source directories inside the image while
 keeping host-side deployment state private.
+
+## Follow-up from the actual platform build
+
+The first live retry after 0.6.2 still exited during import. Capturing its startup
+before cleanup and inspecting its image showed `vendor/jose` at 0700 even though
+both exported source and frozen build context were 0755. An isolated run of the
+actual `DeploymentBackend.freeze` and `build` methods reproduced that stale
+output. Building the very same context and arguments with `--no-cache` produced
+0755 directories and the readable 0644 dependency file.
+
+Version 0.6.3 therefore explicitly disables build-layer reuse for source builds.
+Base images remain pinned and may be available locally; no `--pull`, network
+access, source mutation or cache deletion is added. Dockerfile steps run again,
+so builds can take longer. Existing deployed images and image-only services are
+unaffected. Both platform issues must be validated through the normal worker
+queue before declaring this application successfully deployed.

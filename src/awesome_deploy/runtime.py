@@ -430,6 +430,7 @@ class DeploymentBackend:
                         "--builder",
                         self.settings.builder_name,
                         "--network=none",
+                        "--no-cache",
                         *options,
                         "--load",
                         "--provenance=false",

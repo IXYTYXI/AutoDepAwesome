@@ -130,7 +130,7 @@ routes:
 | --- | --- |
 | 服务 | 1–16 个 `kind: web`；每项须有容器端口、健康检查，并在 `image` 与 `build` 中二选一 |
 | 配置 | 字符串 `env`、`secretRefs`、数组 `command`/`entrypoint`、绝对 `workingDir`；不做变量插值；运行时环境值须为单行 |
-| 构建 | `context` 相对仓库；`dockerfile` 相对 context；可指定 `target`、非秘密 `args`；禁止大小写不敏感的 `BUILDKIT_*` / `BUILDX_*` 保留参数；最终使用 `--network=none` |
+| 构建 | `context` 相对仓库；`dockerfile` 相对 context；可指定 `target`、非秘密 `args`；禁止大小写不敏感的 `BUILDKIT_*` / `BUILDX_*` 保留参数；最终使用 `--network=none --no-cache` |
 | Dockerfile | 支持显式 FROM、RUN、COPY、ENV、WORKDIR、USER、EXPOSE、LABEL、CMD、ENTRYPOINT、ARG、STOPSIGNAL；基础镜像先固定 digest |
 | Dockerfile 限制 | 不支持续行、heredoc、自定义 frontend/parser、动态 FROM、RUN flags/mounts、ADD、VOLUME、ONBUILD；COPY flags 仅允许引用之前命名阶段的 `--from=` |
 | 依赖 | `dependsOn: {api: healthy}` 或 `started`；拒绝缺失依赖和循环依赖 |
@@ -145,6 +145,8 @@ routes:
 禁词采用保守的子串匹配，API 提交和 manifest 校验使用相同规则。例如 `mishit` 包含 `shit`，即使长度及字符合法也会被拒绝；目前没有正常词例外名单。
 
 `--network=none` 意味着 Dockerfile 的 RUN 中不能访问 npm/pip/apt 等外网；请使用已经包含依赖的基础镜像或仓库内已有构建产物。镜像的 `VOLUME` 声明或 ONBUILD 仍会被拒绝；持久卷必须通过 `service.storage` 显式申请。internal 依赖网络是双向网络，不是单向应用防火墙；容器共享主机内核，不能当作运行任意敌对代码的虚拟机隔离边界。
+
+源码构建使用 `--no-cache`，避免复用仍带有旧源码目录权限的构建层。已固定摘要的基础镜像仍可从本地读取；平台不强制重新拉取基础镜像，不删除其他构建缓存。Dockerfile 步骤会重新执行，因此构建时间可能增加。直接使用已固定镜像的服务不受影响。
 
 ### 持久存储（0.2.0）
 
