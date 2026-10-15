@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import re
+import secrets
 import sqlite3
 import stat
 
@@ -52,7 +53,9 @@ class DeploymentSecrets:
         return {
             "jobId": job["id"], "repository": repository, "subdomain": subdomain,
             "canGenerate": can_generate,
-            "items": [{"name": name, "uses": uses[name], "state": self.secrets.inspect(repository, subdomain, name)}
+            "items": [{"name": name, "uses": uses[name], "state": self.secrets.inspect(repository, subdomain, name),
+                       "managed": name == "MASTER_KEY"
+                       and all(use["environmentVariable"] == "MASTER_KEY" for use in uses[name])}
                       for name in sorted(uses)],
         }
 
@@ -99,7 +102,7 @@ class DeploymentSecrets:
             raise DeployError("SECRET_UNAVAILABLE", "无法安全保存配置，请刷新状态后重试。") from None
 
     def _save(self, job_id, values):
-        if not isinstance(values, dict) or not values or len(values) > 2048:
+        if not isinstance(values, dict) or len(values) > 2048:
             raise DeployError("INVALID_REQUEST", "请提供需要补充的配置。")
         for name, value in values.items():
             if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", name):
@@ -111,6 +114,25 @@ class DeploymentSecrets:
                 states = {item["name"]: item["state"] for item in metadata["items"]}
                 if set(values) - states.keys():
                     raise DeployError("INVALID_REQUEST", "只能补充该固定快照声明的配置。")
+                managed = {item["name"] for item in metadata["items"] if item["managed"]}
+                if managed.intersection(values):
+                    raise DeployError("SECRET_MANAGED_INPUT", "平台管理的配置不接受客户端提交值。")
+                generate = []
+                for name in sorted(managed):
+                    if states[name] == "unavailable" or (states[name] == "missing" and not can_generate):
+                        raise DeployError("SECRET_UNAVAILABLE", "原有平台密钥需要恢复，不能生成替代值。")
+                    if states[name] == "missing":
+                        generate.append(name)
+                if generate:
+                    if "unavailable" in states.values():
+                        raise DeployError("SECRET_UNAVAILABLE", "请先恢复不可用的配置，再补充缺少的值。")
+                    required = {name for name, state in states.items() if state == "missing" and name not in managed}
+                    if required - values.keys():
+                        raise DeployError("INVALID_REQUEST", "请先补齐所有需要手动填写的配置。")
+                elif not values:
+                    if all(state == "configured" for state in states.values()):
+                        return metadata
+                    raise DeployError("INVALID_REQUEST", "请提供需要补充的配置。")
                 # Validate the complete batch before the first filesystem write.
                 for name in values:
                     if states[name] == "configured":
@@ -119,4 +141,9 @@ class DeploymentSecrets:
                         raise DeployError("SECRET_UNAVAILABLE", "现有配置状态异常，不能自动修复。")
                 for name, value in sorted(values.items()):
                     self.secrets.create_missing(metadata["repository"], metadata["subdomain"], name, value)
+                # A failed user-value write must not leave a newly generated master key behind.
+                # A published key is always reused on retries, including a lost success response.
+                for name in generate:
+                    self.secrets.create_missing(metadata["repository"], metadata["subdomain"], name,
+                                                secrets.token_hex(32))
                 return self._describe(job, can_generate)

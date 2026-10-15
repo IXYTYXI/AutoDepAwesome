@@ -78,9 +78,9 @@ def test_metadata_lists_deduplicated_references_and_never_resolves_values(setup,
     assert response.json() == {
         "jobId": job["id"], "repository": REPO, "subdomain": "demo", "canGenerate": True,
         "items": [
-            {"name": "APP_PASSWORD", "uses": [{"service": "web", "environmentVariable": "PASSWORD"}], "state": "missing"},
+            {"name": "APP_PASSWORD", "uses": [{"service": "web", "environmentVariable": "PASSWORD"}], "state": "missing", "managed": False},
             {"name": "MODEL_KEY", "uses": [{"service": "web", "environmentVariable": "OTHER_TOKEN"},
-                                             {"service": "web", "environmentVariable": "TOKEN"}], "state": "configured"},
+                                             {"service": "web", "environmentVariable": "TOKEN"}], "state": "configured", "managed": False},
         ],
     }
     assert VALUE not in response.text and str(settings.state_dir) not in response.text

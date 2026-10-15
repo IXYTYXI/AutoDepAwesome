@@ -41,72 +41,51 @@ function clearSecretEditor() {
   if(secretEditor)for(const field of secretEditor.fields.values())field.input.value='';
   secretEditor=null;
 }
-function generatedSecretsNeedConfirmation(editor) {return Array.from(editor.fields.values()).some(field=>field.input.generated) && !editor.acknowledgement.checked;}
+function secretConfigurationBlocked(editor) {return editor.items.some(item=>item.state==='unavailable' || item.managed && item.state==='missing' && !editor.canGenerate);}
 function secretControls(editor) {
-  const unavailable=editor.items.some(item=>item.state==='unavailable');
   const missing=editor.items.some(item=>item.state==='missing');
   editor.submit.textContent=editor.busy ? '正在处理…' : missing ? '保存并继续部署' : '继续部署';
-  editor.acknowledgementRow.hidden=!Array.from(editor.fields.values()).some(field=>field.input.generated);
-  editor.acknowledgement.disabled=editor.busy || editor.loading;
-  editor.submit.disabled=deploymentSubmitting || editor.busy || editor.loading || !editor.loaded || unavailable || generatedSecretsNeedConfirmation(editor);
+  editor.submit.disabled=deploymentSubmitting || editor.busy || editor.loading || !editor.loaded || secretConfigurationBlocked(editor);
   editor.retry.disabled=editor.busy || editor.loading;
   for(const field of editor.fields.values()) {
     field.input.disabled=editor.busy || editor.loading;
     for(const button of field.buttons)button.disabled=editor.busy || editor.loading;
-    if(field.generate)field.generate.hidden=!editor.canGenerate;
   }
 }
 function secretField(editor,item) {
   const row=text('div','','secret-field');
-  const label=text('label',item.name);const input=text('input','');
+  const loginPassword=item.uses.length>0 && item.uses.every(use=>use.environmentVariable==='BOOTSTRAP_PASSWORD');
+  const label=text('label',loginPassword ? '登录密码' : item.name);const input=text('input','');
   input.id=`secret-${editor.jobId}-${item.name}`;label.setAttribute('for',input.id);
   input.type='password';input.autocomplete='new-password';input.spellcheck=false;input.maxLength=16384;
   input.setAttribute('data-secret-name',item.name);
-  input.addEventListener('input',()=>{if(input.generated){editor.acknowledgement.checked=false;secretControls(editor);}});
   const control=text('div','','secret-input');control.append(input);
   row.append(label,text('small',item.uses.map(use=>`${use.service} · ${use.environmentVariable}`).join('；')),control);
+  if(loginPassword)row.append(text('small','设置你自己的登录密码，应用首次登录时使用。'));
   const actions=text('div','','secret-actions');const buttons=[];
   const addButton=(label,callback)=>{const button=text('button',label,'secondary');button.type='button';button.addEventListener('click',callback);actions.append(button);buttons.push(button);return button;};
   const reveal=addButton('显示',()=>{input.type=input.type==='password' ? 'text' : 'password';reveal.textContent=input.type==='password' ? '显示' : '隐藏';});
-  addButton('复制',async()=>{
-    if(!input.value){editor.message.textContent='请先填写或生成该配置。';return;}
-    try {
-      if(!globalThis.navigator?.clipboard?.writeText)throw new Error('unavailable');
-      await navigator.clipboard.writeText(input.value);
-      if(secretEditorActive(editor))editor.message.textContent='已复制，请妥善保存；提交后页面不会再显示已保存的值。';
-    } catch {if(secretEditorActive(editor))editor.message.textContent='无法访问剪贴板，请点击显示后手动复制。';}
-  });
-  const randomUses=new Set(['BOOTSTRAP_PASSWORD','MASTER_KEY']);
-  let generate;
-  if(item.uses.length && item.uses.every(use=>randomUses.has(use.environmentVariable))) {
-    generate=addButton('生成随机值',()=>{
-      if(!secretEditorActive(editor) || !editor.canGenerate)return;
-      try {
-        const bytes=crypto.getRandomValues(new Uint8Array(32));
-        input.value=Array.from(bytes,value=>value.toString(16).padStart(2,'0')).join('');
-        input.generated=true;editor.acknowledgement.checked=false;secretControls(editor);
-        editor.message.textContent='已生成 64 位十六进制随机值。请按项目要求确认并保存需要留存的密码或密钥。';
-      } catch {editor.message.textContent='当前浏览器不能安全生成随机值，请手动填写项目所需的值。';}
-    });
-  }
-  row.append(actions);return {row,input,buttons,generate};
+  row.append(actions);return {row,input,buttons};
 }
 function renderSecretRequirements(editor,data) {
   if(data.jobId!==editor.jobId || data.repository!==editor.payload.repository || data.subdomain!==editor.payload.subdomain
-    || !Array.isArray(data.items) || data.items.some(item=>typeof item.name!=='string' || !Array.isArray(item.uses)
+    || !Array.isArray(data.items) || data.items.some(item=>typeof item.name!=='string' || typeof item.managed!=='boolean' || !Array.isArray(item.uses)
       || !['missing','configured','unavailable'].includes(item.state))
     || new Set(data.items.map(item=>item.name)).size!==data.items.length)throw new Error('配置状态与当前部署不一致，请重新读取。');
   editor.canGenerate=data.canGenerate===true;editor.items=data.items;editor.loaded=true;
-  const needed=new Set(data.items.filter(item=>item.state==='missing').map(item=>item.name));
+  const needed=new Set(data.items.filter(item=>item.state==='missing' && !item.managed).map(item=>item.name));
   for(const [name,field] of editor.fields)if(!needed.has(name)){field.input.value='';editor.fields.delete(name);}
   editor.list.replaceChildren();
   for(const item of data.items) {
-    if(item.state==='missing') {
+    if(item.state==='missing' && !item.managed) {
       if(!editor.fields.has(item.name))editor.fields.set(item.name,secretField(editor,item));
       editor.list.append(editor.fields.get(item.name).row);
     } else {
-      const row=text('div','','secret-status');row.append(text('strong',item.name),text('span',item.state==='configured' ? '已配置' : '需要恢复','status-chip'));
-      row.append(text('small',item.state==='configured' ? '已保存在服务器，不显示或覆盖现有值。' : '已有配置不可读取，请恢复原值或联系管理员；不能用随机值替换。'));
+      const automatic=item.managed && item.state==='missing' && editor.canGenerate;
+      const status=item.state==='configured' ? (item.managed ? '平台保管' : '已配置') : automatic ? '自动配置' : '需要恢复';
+      const explanation=item.state==='configured' ? (item.managed ? '由平台保管，后续部署沿用；无需查看或复制密钥。' : '已保存在服务器，不显示或覆盖现有值。')
+        : automatic ? '由平台自动生成并保存，无需填写。' : item.managed ? '请恢复原配置，不能重新生成加密密钥，以免已有数据无法解密。' : '已有配置不可读取，请恢复原值或联系管理员；不能用随机值替换。';
+      const row=text('div','','secret-status');row.append(text('strong',item.name),text('span',status,'status-chip'),text('small',explanation));
       editor.list.append(row);
     }
   }
@@ -121,7 +100,9 @@ async function loadSecretRequirements(editor,{preserveMessage=false}={}) {
     const data=await api(`/api/v1/deployments/${encodeURIComponent(editor.jobId)}/secrets`);
     if(!secretEditorActive(editor))return;
     renderSecretRequirements(editor,data);
-    if(!preserveMessage)editor.message.textContent=editor.items.some(item=>item.state==='missing') ? '填写以下缺失项即可继续，无需登录服务器或创建文件。' : '配置状态已更新。';
+    if(!preserveMessage)editor.message.textContent=secretConfigurationBlocked(editor) ? '存在需要恢复的原配置，请先恢复后再继续。'
+      : editor.fields.size ? '填写以下缺失项即可继续，无需登录服务器或创建文件。'
+      : editor.items.some(item=>item.state==='missing') ? '点击保存并继续部署，平台将自动完成剩余配置。' : '配置状态已更新。';
   } catch(error) {
     if(!secretEditorActive(editor))return;
     editor.loaded=false;editor.retry.hidden=false;editor.message.textContent=`无法读取配置：${error.message}`;
@@ -131,10 +112,9 @@ async function submitDeployment(body,key) {
   return api('/api/v1/deployments',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify(body)});
 }
 async function saveSecretsAndContinue(editor) {
-  if(!secretEditorActive(editor) || deploymentSubmitting || editor.busy || editor.loading || !editor.loaded || editor.items.some(item=>item.state==='unavailable'))return;
-  if(generatedSecretsNeedConfirmation(editor)){editor.message.textContent='请先复制并保存需要留存的密码和密钥，再勾选确认继续。';return;}
+  if(!secretEditorActive(editor) || deploymentSubmitting || editor.busy || editor.loading || !editor.loaded || secretConfigurationBlocked(editor))return;
   const values=Object.create(null);
-  for(const item of editor.items)if(item.state==='missing') {
+  for(const item of editor.items)if(item.state==='missing' && !item.managed) {
     const input=editor.fields.get(item.name).input;
     if(!input.value || /[\r\n\x00]/.test(input.value) || new TextEncoder().encode(input.value).length>16384) {
       editor.message.textContent=`请填写 ${item.name}：值不能为空，须为单行且不超过 16 KiB。`;input.focus();return;
@@ -143,7 +123,7 @@ async function saveSecretsAndContinue(editor) {
   }
   deploymentSubmitting=true;$('submit').disabled=true;
   editor.busy=true;editor.message.textContent='正在安全保存配置…';secretControls(editor);
-  let saving=Object.keys(values).length>0;
+  let saving=editor.items.some(item=>item.state==='missing');
   try {
     if(saving) {
       const data=await api(`/api/v1/deployments/${encodeURIComponent(editor.jobId)}/secrets`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({values})});
@@ -174,16 +154,12 @@ function createSecretEditor(job) {
   // One failed task has one continuation, including retries after navigation or a page reload.
   editor.requestKey=`configure-${job.id}`;
   editor.append(text('h4','补齐配置，继续部署'),text('p','直接在这里填写。平台会将值私密保存在部署服务器，并按项目声明传给应用；无需另找文件位置。','hint'));
-  editor.append(text('p','生成随机值仅用于新密码或随机密钥（32 字节 / 64 位十六进制）。外部 API Key 请填写供应商提供的有效值。','hint'));
+  editor.append(text('p','平台管理的密钥会自动生成并保存。外部 API Key 请填写供应商提供的有效值。','hint'));
   editor.list=text('div','','secret-fields');editor.list.setAttribute('role','region');editor.list.setAttribute('aria-label','此部署需要的配置，可上下滚动');
-  editor.acknowledgementRow=text('label','','secret-ack');editor.acknowledgementRow.hidden=true;
-  editor.acknowledgement=text('input','');editor.acknowledgement.type='checkbox';editor.acknowledgement.checked=false;
-  editor.acknowledgement.addEventListener('change',()=>secretControls(editor));
-  editor.acknowledgementRow.append(editor.acknowledgement,text('span','我已保存需要留存的密码和密钥；提交后不再显示已保存的值。'));
   editor.message=text('p','','secret-message');editor.message.setAttribute('role','status');editor.message.setAttribute('aria-live','polite');
   editor.retry=text('button','重试读取配置','secondary');editor.retry.type='button';editor.retry.hidden=true;editor.retry.addEventListener('click',()=>loadSecretRequirements(editor));
   editor.submit=text('button','保存并继续部署','secret-submit');editor.submit.type='button';editor.submit.disabled=true;editor.submit.addEventListener('click',()=>saveSecretsAndContinue(editor));
-  editor.append(editor.list,editor.acknowledgementRow,editor.message,editor.retry,editor.submit);return editor;
+  editor.append(editor.list,editor.message,editor.retry,editor.submit);return editor;
 }
 function showDiagnosis(container, job) {
   const error=job.error;
