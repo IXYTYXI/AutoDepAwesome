@@ -6,6 +6,8 @@ with privileged workloads. No host networking, host mounts, build secrets or SSH
 """
 
 import copy
+import errno
+import hashlib
 import http.client
 import ipaddress
 import json
@@ -31,6 +33,7 @@ from .egress import EgressGuard, bridge_name, policy, validate_policy
 IMMUTABLE = re.compile(r"(?:[^\s@]+@)?sha256:[0-9a-f]{64}")
 IDENTIFIER = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 IMAGE_REF = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_./:@-]{0,511}")
+CONTEXT_NAME = re.compile(r"context-v1-([0-9a-f]{64})")
 
 
 class DeploymentBackend:
@@ -297,6 +300,119 @@ class DeploymentBackend:
             raise DeployError("UNSUPPORTED_DOCKERFILE", "Dockerfile requires FROM")
         return "\n".join(output) + "\n"
 
+    @staticmethod
+    def _context_digest(context):
+        """Identify the actual frozen tree, without timestamps or its absolute location.
+
+        Buildx uses the context basename as the local-source session shared key.
+        Including modes here avoids reusing fsutil's mutable source state after a
+        metadata-only change. Docker still computes its normal per-step cache keys.
+        """
+        digest = hashlib.sha256(b"awesome-build-context-v1\x00")
+        pending = [context]
+        try:
+            if not stat.S_ISDIR(context.lstat().st_mode):
+                raise DeployError("UNSAFE_BUILD_PATH", "Build context root must be a regular directory")
+            while pending:
+                path = pending.pop()
+                info = path.lstat()
+                directory = stat.S_ISDIR(info.st_mode)
+                if not directory and not stat.S_ISREG(info.st_mode):
+                    raise DeployError("UNSAFE_BUILD_PATH", "Build contexts require regular files and directories")
+                attributes = []
+                if hasattr(os, "listxattr"):
+                    try:
+                        names = sorted(os.listxattr(path, follow_symlinks=False))
+                    except OSError as exc:
+                        if exc.errno not in {errno.ENOTSUP, errno.EOPNOTSUPP}:
+                            raise
+                        names = []
+                    for name in names:
+                        value = os.getxattr(path, name, follow_symlinks=False)
+                        attributes.append([name, hashlib.sha256(value).hexdigest()])
+                content = None
+                if directory:
+                    pending.extend(sorted(path.iterdir(), reverse=True))
+                else:
+                    content_digest = hashlib.sha256()
+                    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                    with os.fdopen(fd, "rb") as stream:
+                        opened = os.fstat(stream.fileno())
+                        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                            raise DeployError("UNSAFE_BUILD_PATH", "Build context changed during verification")
+                        while chunk := stream.read(1024 * 1024):
+                            content_digest.update(chunk)
+                    content = content_digest.hexdigest()
+                after = path.lstat()
+                stable = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_size", "st_mtime_ns", "st_ctime_ns")
+                if any(getattr(info, key) != getattr(after, key) for key in stable):
+                    raise DeployError("UNSAFE_BUILD_PATH", "Build context changed during verification")
+                entry = [
+                    path.relative_to(context).as_posix(),
+                    "directory" if directory else "file",
+                    stat.S_IMODE(info.st_mode),
+                    info.st_uid,
+                    info.st_gid,
+                    attributes,
+                    content,
+                ]
+                digest.update(json.dumps(entry, separators=(",", ":"), ensure_ascii=True).encode("ascii") + b"\n")
+        except OSError as exc:
+            raise DeployError("UNSAFE_BUILD_PATH", "Cannot safely verify the frozen build context") from exc
+        return digest.hexdigest()
+
+    def _build_root(self, job, *, create=False):
+        self._ids(job, require_app=False)
+        base = self.storage_root / "awesome-build-contexts"
+        root = base / job["id"]
+        try:
+            for path in (self.storage_root, base, root):
+                if path.is_symlink():
+                    raise DeployError("UNSAFE_BUILD_PATH", "Build context directories must not be symlinks")
+                if create:
+                    path.mkdir(mode=0o700, exist_ok=True)
+                info = path.lstat()
+                if not stat.S_ISDIR(info.st_mode):
+                    raise DeployError("UNSAFE_BUILD_PATH", "Build context directories must be regular directories")
+                if path != self.storage_root and (info.st_uid != os.getuid() or info.st_mode & 0o022):
+                    raise DeployError("UNSAFE_BUILD_PATH", "Build context directories require exclusive worker ownership")
+        except OSError as exc:
+            raise DeployError("UNSAFE_BUILD_PATH", "Cannot access the controlled build context directory") from exc
+        return root
+
+    def _publish_context(self, staging, root):
+        fingerprint = self._context_digest(staging)
+        target = root / f"context-v1-{fingerprint}"
+        if target.exists() or target.is_symlink():
+            if self._context_digest(target) != fingerprint:
+                raise DeployError("UNSAFE_BUILD_PATH", "Existing frozen build context failed integrity verification")
+        else:
+            staging.rename(target)
+        return target
+
+    def _build_context(self, job, service):
+        root = self._build_root(job)
+        context = Path(job["snapshot"]["build_contexts"][service])
+        match = CONTEXT_NAME.fullmatch(context.name)
+        if context.parent != root or not (match or context.name == service):
+            raise DeployError("UNSAFE_BUILD_PATH", "Frozen build context must remain within its own job directory")
+        fingerprint = self._context_digest(context)
+        if match:
+            if match[1] != fingerprint:
+                raise DeployError("UNSAFE_BUILD_PATH", "Frozen build context failed integrity verification")
+            return context
+        # Old snapshots retain their exact files/modes and original path. Copy into
+        # the new source-key namespace; never silently reinterpret a frozen image.
+        staging = Path(tempfile.mkdtemp(prefix=".context-", dir=root))
+        try:
+            shutil.copytree(context, staging, dirs_exist_ok=True)
+            if self._context_digest(staging) != fingerprint:
+                raise DeployError("UNSAFE_BUILD_PATH", "Frozen build context changed while copying")
+            return self._publish_context(staging, root)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+
     def freeze(self, snapshot, job, checkpoint):
         info = self.preflight()
         self._ids(job, require_app=False)
@@ -331,20 +447,18 @@ class DeploymentBackend:
             if not dockerfile.is_file() or dockerfile.stat().st_size > 262144:
                 raise DeployError("DOCKERFILE_MISSING", "A bounded regular Dockerfile is required")
             pinned_text = self._dockerfile(dockerfile.read_text(), pins, checkpoint)
-            staging = self.storage_root / "awesome-build-contexts" / job["id"] / name
             # SourceManager rejects escaping links. Recheck the copied context independently.
-            for path in context.rglob("*"):
-                if path.is_symlink() or not (path.is_file() or path.is_dir()):
-                    raise DeployError(
-                        "UNSAFE_BUILD_PATH", "Build contexts may contain only regular files and directories"
-                    )
-            if staging.exists():
-                shutil.rmtree(staging)
-            staging.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            shutil.copytree(context, staging, ignore=shutil.ignore_patterns(".git"))
-            staged_file = staging / build["dockerfile"]
-            staged_file.write_text(pinned_text)
-            frozen["build_contexts"][name] = str(staging)
+            self._context_digest(context)
+            root = self._build_root(job, create=True)
+            staging = Path(tempfile.mkdtemp(prefix=".context-", dir=root))
+            try:
+                shutil.copytree(context, staging, ignore=shutil.ignore_patterns(".git"), dirs_exist_ok=True)
+                staged_file = staging / build["dockerfile"]
+                staged_file.write_text(pinned_text)
+                frozen["build_contexts"][name] = str(self._publish_context(staging, root))
+            finally:
+                if staging.exists():
+                    shutil.rmtree(staging)
         checkpoint(
             {
                 "frozen_images": pins,
@@ -414,7 +528,7 @@ class DeploymentBackend:
                 if not checked_builder:
                     self._builder()
                     checked_builder = True
-                context = Path(snapshot["build_contexts"][name])
+                context = self._build_context(job, name)
                 iid = context.parent / f"{name}.iid"
                 iid.unlink(missing_ok=True)
                 tag = f"awesome/{job['id'].lower()}-{name}:candidate"
@@ -430,7 +544,6 @@ class DeploymentBackend:
                         "--builder",
                         self.settings.builder_name,
                         "--network=none",
-                        "--no-cache",
                         *options,
                         "--load",
                         "--provenance=false",

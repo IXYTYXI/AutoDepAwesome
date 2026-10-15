@@ -362,8 +362,9 @@ def test_freeze_accepts_unreserved_new_job_without_app_id(tmp_path):
 def test_build_passes_approved_target_and_literal_args(tmp_path):
     engine = backend(tmp_path)
     record = job(tmp_path)
-    context = tmp_path / "context"
-    context.mkdir()
+    context = engine.storage_root / "awesome-build-contexts" / record["id"] / "web"
+    context.mkdir(parents=True)
+    (context / "Dockerfile").write_text("FROM scratch\n")
     svc = record["snapshot"]["manifest"]["services"]["web"]
     svc.pop("image")
     svc["build"] = {
@@ -385,7 +386,8 @@ def test_build_passes_approved_target_and_literal_args(tmp_path):
     engine._docker = docker
     assert engine.build(record, lambda _: None) == {"web": DIGEST}
     args = next(args for args in engine.calls if args[:2] == ["buildx", "build"])
-    assert "--no-cache" in args
+    assert "--no-cache" not in args
+    assert "--network=none" in args
     assert "--pull" not in args
     assert args[args.index("--target") + 1] == "production"
     assert args[args.index("--build-arg") + 1] == "MODE=literal$(x)"
