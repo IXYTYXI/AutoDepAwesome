@@ -257,7 +257,7 @@ API/worker 输出进入 journald。Docker 应用容器使用 local 日志驱动�
 Docker 的自动重启策略与主机进程管理器不宜同时管理同一容器；本平台使用 worker 这一处恢复入口，保留 `--restart=no`，详见 [Docker 重启策略说明](https://docs.docker.com/engine/containers/start-containers-automatically/)。Nginx 的配置重载会启动新 worker 并让旧 worker 完成旧连接，因此验证必须允许切换窗口，详见 [Nginx 控制说明](https://nginx.org/en/docs/control.html)。
 
 
-## 9. 持久卷更新、备份与容量（0.2.0）
+## 9. 传统 local 持久卷更新、备份与容量（0.2.0）
 
 每个声明 `storage: {name: images, mountPath: /data}` 的服务使用唯一受控 local 卷。派生卷名、随机实例标识和创建时间保存在任务 execution 的 `storage_volumes`；归属由 `awesome.managed`、`awesome.app`、`awesome.service`、`awesome.storage` 与 `awesome.storage-instance` labels 共同确定。卷不使用 job label，跨版本复用；容器、网络和镜像退役不删除卷。不得对专用 daemon 执行 `docker volume prune`，也不得把旧容器删除与数据卷删除混为一谈。
 
@@ -267,6 +267,10 @@ Docker 的自动重启策略与主机进程管理器不宜同时管理同一容�
 
 备份建议：记录当前成功版本 ID、commit、卷名和 labels；停止 worker，再停止使用该卷的应用并确认退出，使用受审查的备份工具只读导出卷内容，连同所需版本元数据和受保护的配置/秘密做离机备份。恢复演练使用独立测试环境和新卷，逐项验证图片字节及元数据。生产卷若缺失或身份不符，平台会拒绝自动启动，恢复不能只改 execution 的创建时间来绕过校验；需要运维审查完整的容器、卷与状态迁移方案。没有通用一键灾备命令。
 
-自动应用回滚不会撤销卷写入或回滚存储格式/schema，故破坏性数据迁移须先备份并另行安排维护。卷与镜像、构建缓存共同使用专用有界 Docker 文件系统；平台不提供逐卷硬配额。除应用自身上传/总量限制外，持续监控可用字节、inode 和备份新鲜度，低容量时暂停新部署及上传，避免把持久化理解为无限容量或备份替代品。
+自动应用回滚不会撤销卷写入或回滚存储格式/schema，故破坏性数据迁移须先备份并另行安排维护。卷与镜像、构建缓存共同使用专用有界 Docker 文件系统；local 后端不提供逐卷硬配额；0.8.0 可选独立 XFS 后端的安装与验收见 [存储硬配额说明](STORAGE-QUOTA.md)。除应用自身上传/总量限制外，持续监控可用字节、inode 和备份新鲜度，低容量时暂停新部署及上传，避免把持久化理解为无限容量或备份替代品。
 
 至少验收：上传后停止/恢复容器图片仍在；更新版本后字节一致；健康失败先停候选再恢复旧版；在交接意图写入后、旧版停止后、候选启动后、候选清理后分别中断 worker；未确认交接转人工恢复时维护扫描不启动旧实例；卷丢失/名称冲突/driver/options/labels/随机实例标识/CreatedAt 变化均不得创建空卷或继续运行；不同应用不能访问彼此的卷。测试应用结束时先确认数据可删除，再由管理员精确处理目标卷，勿使用批量 prune。
+
+## 10. 可选 XFS 存储硬配额（0.8.0）
+
+新增字段、root helper 安装、双维预算、巡检 timer、未决操作恢复、迁移限制及验收矩阵统一维护在 [STORAGE-QUOTA.md](STORAGE-QUOTA.md)。默认未启用；不能仅更改后端设置就把既有 named volume 当作受配额保护的数据。真实 Linux/XFS 验收与 DEC-QUOTA-001 确认尚未完成。

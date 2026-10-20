@@ -463,12 +463,20 @@ class Store:
                     if self._storage_may_exist(job):
                         raise conflict
                     continue
-                if (not isinstance(expected, dict) or set(expected) != {"name", "created_at", "instance"}
-                        or expected["name"] != name or not isinstance(expected["created_at"], str)
-                        or not expected["created_at"].strip() or not isinstance(expected["instance"], str)
-                        or not re.fullmatch(r"[0-9a-f]{32}", expected["instance"])):
+                if ManagedStorage.is_quota(expected):
+                    try:
+                        ManagedStorage(None).validate_reference(app["id"], service, spec, expected)
+                    except DeployError:
+                        raise conflict from None
+                elif (not isinstance(expected, dict) or set(expected) != {"name", "created_at", "instance"}
+                      or expected["name"] != name or not isinstance(expected["created_at"], str)
+                      or not expected["created_at"].strip() or not isinstance(expected["instance"], str)
+                      or not re.fullmatch(r"[0-9a-f]{32}", expected["instance"])):
                     raise conflict
-                volume = {"service": service, "spec": spec, "expected": expected}
+                # Historical requested limits are not storage identity or an
+                # authority to shrink the current helper-managed allocation.
+                stable_spec = {key: spec[key] for key in ("name", "mountPath")}
+                volume = {"service": service, "spec": stable_spec, "expected": expected}
                 if name in volumes and volumes[name] != volume:
                     raise conflict
                 volumes[name] = volume

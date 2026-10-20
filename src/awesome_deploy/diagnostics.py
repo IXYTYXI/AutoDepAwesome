@@ -271,6 +271,53 @@ _register("AI_RESPONSE_INVALID", "AI 返回内容不可用", "AI 接口返回的
 _register("DIAGNOSIS_NOT_AVAILABLE", "当前部署无需失败分析", "只有已失败或需要恢复处理的部署才能进行失败分析。",
           "等待运行中的部署结束，或从历史列表选择失败的部署。")
 
+_register("STORAGE_START_UNCONFIRMED", "存储写入者启动状态未确认",
+          "平台无法确认容器启动结果，已保留写入者登记以防止错误释放存储。",
+          "核对容器的完整身份和实际运行状态，确认停止后再执行清理或恢复。")
+_register("QUOTA_LEDGER_CORRUPT QUOTA_LEDGER_MISSING", "存储权威账本需要恢复",
+          "存储账本缺失或完整性检查失败，平台已拒绝重新分配额度。",
+          "保留现场并从一致备份核对恢复；不要删除初始化标记、清空账本或重新编号。")
+_register("QUOTA_POOL_BLOCKED", "存储池处于持续阻断状态",
+          "之前确认的池级异常尚未由管理员解除，新的存储写入入口已关闭。",
+          "修复并核验原始异常后显式解除全池阻断，再逐项检查存储和写入者状态。")
+_register("QUOTA_NOT_ENABLED QUOTA_BACKEND_REQUIRED", "存储硬配额尚未启用",
+          "当前运行环境未启用并验证 XFS 存储硬配额，不能以普通卷替代。",
+          "请运维核对存储后端、受限执行器和目标机验收结果，不要移除额度字段绕过要求。")
+_register("QUOTA_MIGRATION_REQUIRED STORAGE_MIGRATION_REQUIRED", "持久数据需要迁移",
+          "现有数据仍使用旧存储后端，尚未迁入受硬配额保护的目录。",
+          "请运维按停写、备份、复制核验和重建容器流程迁移，保留原始数据及恢复记录。")
+_register("QUOTA_UNAVAILABLE QUOTA_PROTOCOL QUOTA_RESPONSE_LIMIT", "配额查询暂不可用",
+          "无法完成可信的配额查询；这不代表内核配额已经关闭。",
+          "请运维检查存储执行器和查询结果；未知状态禁止新建、扩容和启动，但不能直接当作已确认失效。")
+_register("QUOTA_BUDGET_EXCEEDED QUOTA_POOL_RESERVE QUOTA_PROJECT_EXHAUSTED", "存储额度不足",
+          "服务、应用或数据池的可分配额度或保留空间不足。",
+          "请运维核对字节和 inode 两维预算；保留数据与未完成操作仍占额度，不要按当前低使用量重复分配。")
+_register("QUOTA_PENDING QUOTA_DELETE_PENDING", "存储操作尚未确认",
+          "存储创建、扩容或删除仍需对账，相关额度继续保留。",
+          "请运维用原操作标识重试并核对实际配额与剩余数据，不要因超时释放额度或重新分配身份。")
+_register("QUOTA_EXPANSION_REQUIRED QUOTA_SHRINK_FORBIDDEN", "存储额度需要显式调整",
+          "普通部署不修改有效额度；扩容需要独立操作，自动缩容被禁止。",
+          "请运维先核对当前额度及版本号，再执行显式扩容；业务版本回滚沿用当前额度。")
+_register("QUOTA_BLOCKED QUOTA_NOT_ENFORCED QUOTA_DIRECTORY_MISMATCH QUOTA_LIMIT_MISMATCH "
+          "QUOTA_MAPPING_MISMATCH QUOTA_POOL_MISMATCH QUOTA_PROJECT_MISMATCH",
+          "存储配额校验未通过", "数据池、目录、映射或双硬限与受控记录不符，相关写入应保持隔离。",
+          "请运维核对并停止受影响写入者，修复后重新核验并显式解除阻断；不要关闭保护或创建空目录替代。")
+_register("QUOTA_REFERENCE_MISMATCH QUOTA_REFERENCE_MISSING QUOTA_IDENTITY_INVALID",
+          "持久存储身份无法确认", "配额账本中的稳定身份缺失或与部署记录不一致。",
+          "请运维保留数据和账本，核对存储标识与代次；不要通过重建同名目录恢复。")
+_register("QUOTA_WRITERS_ACTIVE QUOTA_WRITER_MISMATCH", "持久数据仍有写入者或归属不明",
+          "无法确认所有相关写入者已停止或属于本次存储操作。",
+          "请运维核对精确容器身份并确认停止后重试；未确认前不删除数据、不释放额度。")
+_register("QUOTA_OPERATION_CONFLICT QUOTA_REVISION_CONFLICT", "存储操作版本冲突",
+          "同一操作标识或额度版本对应了不同请求。",
+          "查询当前操作结果与有效版本，复用原请求重试；需要新调整时使用新的操作标识及当前版本。")
+_register("QUOTA_CALLER_FORBIDDEN QUOTA_CONFIG_INVALID QUOTA_CONFIG_UNTRUSTED",
+          "存储执行器配置不可信", "调用身份或受限存储执行器配置不符合要求。",
+          "请运维检查固定安装路径、文件所有者、权限和映射配置，不要扩大 sudo 权限绕过检查。")
+_register("QUOTA_INVALID_REQUEST QUOTA_LIMIT_INVALID", "存储配额请求无效",
+          "请求字段、双硬限或操作标识不符合受控协议。",
+          "检查清单版本和正整数额度；不要提交宿主路径、项目编号、无限额或任意挂载参数。")
+
 ERROR_CODES = frozenset(_CATALOG)
 
 
@@ -364,6 +411,8 @@ for _english, _message, _step in (
     ("Route path must be a literal canonical URL path.", "路由路径不是规范的 URL 路径。",
      "使用以 / 开头的固定路径，移除重复斜杠、. 和 .. 路径段。"),
     ("Duplicate route path and match mode.", "路由路径与匹配方式重复。", "删除重复路由，保证相同路径和 match 组合唯一。"),
+    ("Storage hard limits must be positive integers.", "存储容量和 inode 硬限必须为正整数。",
+     "将 sizeMiB 与 maxInodes 填为不带小数点的正整数，范围须符合平台存储策略。"),
     ("Storage names cannot be shared by services.", "不同服务不能共享同一个 storage.name。",
      "为每个服务使用独立的存储名称，不要让多个服务共同写入同一持久卷。"),
     ("Existing storage cannot be removed, renamed or moved.", "已有存储不能删除、改名、移动，所属服务也不能改名。",
@@ -379,7 +428,7 @@ for _rule, _message, _step in (
      "服务的 image 与 build 必须且只能选择一个；健康检查须完整使用 http 或 exec 方案。"),
     ("additionalProperties", "部署配置包含不支持的额外字段。", "对照平台 schema 删除或修正未知字段。"),
     ("pattern", "部署配置字段格式不符合要求。", "检查域名前缀、服务名称、路径或变量名称的允许格式。"),
-    ("const", "部署配置字段不是平台支持的固定值。", "使用 schemaVersion: 1 和 kind: web，并核对其他固定字段。"),
+    ("const", "部署配置字段不是平台支持的固定值。", "按所选 schemaVersion 的 schema 核对固定字段；服务 kind 为 web，存储 mountPath 为 /data。"),
     ("enum", "部署配置字段不在允许的选项中。", "对照平台 schema 选择有效选项，例如 exact/prefix 或 started/healthy。"),
     ("minimum", "部署配置数值低于允许下限。", "按 schema 和平台资源配额调整数值。"),
     ("maximum", "部署配置数值超过允许上限。", "按 schema 和平台资源配额调整数值。"),
@@ -422,7 +471,7 @@ def _safe_path(value):
         return "services.*." + tail[0]
     if len(tail) == 2 and tail[0] in {"env", "secretRefs", "dependsOn"} and tail[1]:
         return "services.*." + tail[0] + ".*"
-    nested = {"storage": {"name", "mountPath"}, "build": {"context", "dockerfile", "target", "args"},
+    nested = {"storage": {"name", "mountPath", "sizeMiB", "maxInodes"}, "build": {"context", "dockerfile", "target", "args"},
               "resources": {"cpu", "memoryMiB"},
               "healthcheck": {"type", "path", "command", "intervalSeconds", "timeoutSeconds",
                               "retries", "startPeriodSeconds"}}

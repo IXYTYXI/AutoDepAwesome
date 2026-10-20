@@ -190,3 +190,21 @@ def test_failed_build_keeps_old_storage_service_running(setup):
     assert "stop_previous" not in calls and "stop_candidate" not in calls
     assert not store.get(second["id"])["execution"].get("storage_handoff_intent")
     assert backend.public == first["id"]
+
+
+def test_quota_prepare_failure_does_not_stop_previous(setup):
+    from awesome_deploy.errors import DeployError
+
+    first, second, backend = releases(setup)
+    _, store, calls, _, _ = setup
+
+    def prepare_storage(job, checkpoint):
+        backend.call("prepare_storage")
+        raise DeployError("QUOTA_BUDGET", "No quota capacity")
+
+    backend.prepare_storage = prepare_storage
+    worker(setup).run_once()
+    assert "prepare_storage" in calls
+    assert "stop_previous" not in calls
+    assert store.get(second["id"])["status"] == "failed"
+    assert store.active_release(first["app_id"])["id"] == first["id"]

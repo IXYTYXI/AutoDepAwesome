@@ -13,7 +13,7 @@ import time
 from urllib.parse import urlsplit
 
 from .auth import initialize_credentials
-from .config import Settings, validate_ai_settings, validate_git_proxy_settings
+from .config import Settings, validate_ai_settings, validate_git_proxy_settings, validate_storage_settings
 from .errors import DeployError
 
 
@@ -46,7 +46,7 @@ def load_settings(path: Path | None) -> Settings:
                 values[key] = (base / candidate).resolve() if not candidate.is_absolute() else candidate
     if "state_dir" not in values:
         values["state_dir"] = base / ".state"
-    for key in ("git_hosts", "gateway_command", "reserved_names", "banned_words"):
+    for key in ("git_hosts", "gateway_command", "storage_command", "reserved_names", "banned_words"):
         if key in values:
             if (
                 not isinstance(values[key], list)
@@ -66,6 +66,7 @@ def load_settings(path: Path | None) -> Settings:
         settings = Settings(**values)
         validate_git_proxy_settings(settings)
         validate_ai_settings(settings)
+        validate_storage_settings(settings)
         from .egress import policy
 
         try:
@@ -138,6 +139,25 @@ def main(argv=None):
     secret.add_argument("--name", required=True)
     schema = sub.add_parser("schema", help="输出当前支持的 JSON Schema")
     schema.add_argument("--output", type=Path)
+    schema.add_argument("--version", type=int, choices=(1, 2), default=1)
+    sub.add_parser("storage-check", help="核验 XFS 数据池并更新只读能力快照")
+    status = sub.add_parser("storage-status", help="查询存储额度、用量及未决操作")
+    status.add_argument("--app-id")
+    sub.add_parser("storage-patrol", help="独立巡检配额并停止已确认失效的写入者")
+    for name, help_text in (("storage-expand", "显式扩容，不自动缩容"),
+                            ("storage-unblock", "核验修复结果后解除存储阻断"),
+                            ("storage-retry", "重试账本中原先未决的操作（含删除）")):
+        command = sub.add_parser(name, help=help_text)
+        command.add_argument("--storage-id", required=name != "storage-unblock")
+        command.add_argument("--generation", required=name != "storage-unblock")
+        if name == "storage-unblock":
+            command.add_argument("--pool", action="store_true", help="仅解除全池阻断，随后逐项核验存储")
+        if name == "storage-expand":
+            command.add_argument("--size-mib", type=int, required=True)
+            command.add_argument("--max-inodes", type=int, required=True)
+            command.add_argument("--expected-revision", type=int, required=True)
+        if name in ("storage-expand", "storage-retry"):
+            command.add_argument("--operation-id", required=True)
     args = parser.parse_args(argv)
     try:
         settings = load_settings(args.config)
@@ -179,11 +199,13 @@ def main(argv=None):
         elif args.command == "schema":
             from .manifest import schema_document
 
-            value = json.dumps(schema_document(), ensure_ascii=False, indent=2) + "\n"
+            value = json.dumps(schema_document(args.version), ensure_ascii=False, indent=2) + "\n"
             if args.output:
                 args.output.write_text(value)
             else:
                 print(value, end="")
+        elif args.command.startswith("storage-"):
+            return _storage_command(settings, args)
         else:
             from .runtime import DeploymentBackend
 
@@ -208,6 +230,65 @@ def main(argv=None):
         return 1
     except KeyboardInterrupt:
         return 130
+    return 0
+
+
+def _storage_command(settings, args):
+    from .quota_client import QuotaClient
+    from .storage_status import begin_quota_observation, record_quota_status
+
+    if settings.storage_backend != "xfs-project":
+        raise DeployError("QUOTA_NOT_ENABLED", "请先配置并验收 XFS 硬配额后端。")
+    helper = QuotaClient(settings.storage_command)
+    request = {}
+    pool_unblock = args.command == "storage-unblock" and args.pool
+    if pool_unblock:
+        if args.storage_id or args.generation:
+            raise DeployError("QUOTA_INVALID_REQUEST", "全池解除阻断不能同时指定单个存储。")
+        request["pool"] = True
+    if args.command in ("storage-expand", "storage-unblock", "storage-retry") and not pool_unblock:
+        if (not re.fullmatch(r"[0-9a-f]{64}", args.storage_id or "")
+                or not re.fullmatch(r"[0-9a-f]{32}", args.generation or "")):
+            raise DeployError("QUOTA_INVALID_REQUEST", "必须提供完整存储标识和实例代次。")
+        request["expected"] = {
+            "backend": "xfs-project", "storage_id": args.storage_id, "generation": args.generation,
+        }
+    if args.command == "storage-expand":
+        if (not 1 <= args.size_mib <= 1073741824 or not 1 <= args.max_inodes <= 2147483647
+                or args.expected_revision < 1
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}", args.operation_id)):
+            raise DeployError("QUOTA_INVALID_REQUEST", "额度、版本和幂等操作标识无效。")
+        request.update(limits={"size_mib": args.size_mib, "max_inodes": args.max_inodes},
+                       expected_revision=args.expected_revision, operation_id=args.operation_id)
+    if args.command == "storage-retry":
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}", args.operation_id):
+            raise DeployError("QUOTA_INVALID_REQUEST", "原始操作标识无效。")
+        request["operation_id"] = args.operation_id
+    if args.command == "storage-status" and args.app_id is not None:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", args.app_id):
+            raise DeployError("QUOTA_INVALID_REQUEST", "应用标识无效。")
+        request["app_id"] = args.app_id
+    cache = args.command in ("storage-check", "storage-patrol")
+    observation = begin_quota_observation(settings) if cache else None
+    try:
+        if args.command == "storage-patrol":
+            from .runtime import DeploymentBackend
+            result = DeploymentBackend(settings).quota_patrol()
+        else:
+            operation = {"storage-check": "check", "storage-status": "inventory",
+                         "storage-expand": "expand", "storage-unblock": "unblock",
+                         "storage-retry": "retry"}[args.command]
+            result = helper.call(operation, **request)
+    except DeployError as error:
+        if cache:
+            record_quota_status(settings, error=error, observation=observation)
+        raise
+    if cache:
+        record_quota_status(settings, result, observation=observation)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.command == "storage-patrol" and any(
+            result.get(k) for k in ("pool_blocked", "blocked", "unknown", "stop_failures")):
+        return 1
     return 0
 
 

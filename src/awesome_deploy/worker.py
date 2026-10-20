@@ -204,13 +204,21 @@ class Worker:
                 previous = self.store.active_release(job["app_id"])
                 if previous is None or previous["id"] != job["execution"]["previous_release"]:
                     raise DeployError("STORAGE_HANDOFF_STATE", "Previous active release changed before handoff.")
+                job = self.store.checkpoint(job_id, execution={
+                    "storage_volumes": previous["execution"].get("storage_volumes", {}),
+                })
+                if callable(getattr(self.backend, "prepare_storage", None)):
+                    self.backend.prepare_storage(job, checkpoint)
+                    job = self.store.get(job_id)
                 job = self.store.checkpoint(job_id, phase="storage_handoff", execution={
                     "storage_handoff_intent": True,
-                    "storage_volumes": previous["execution"].get("storage_volumes", {}),
                 })
                 self.store.event(job_id, "storage_handoff", "Stopping the previous release before attaching persistent data.")
                 self.backend.stop_for_storage_handoff(previous)
                 job = self.store.checkpoint(job_id, execution={"storage_previous_stopped": True})
+            elif callable(getattr(self.backend, "prepare_storage", None)):
+                self.backend.prepare_storage(job, checkpoint)
+                job = self.store.get(job_id)
             job = self._phase(job_id, "start", "Starting the isolated candidate release.")
             self.backend.start(job, checkpoint)
             job = self._phase(job_id, "health", "Checking candidate health.")

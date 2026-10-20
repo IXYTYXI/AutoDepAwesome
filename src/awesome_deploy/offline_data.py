@@ -15,7 +15,7 @@ from .storage import ManagedStorage
 class OfflineDataDeletion:
     def __init__(self, settings, docker):
         self.secrets = SecretStore(settings)
-        self.storage = ManagedStorage(docker)
+        self.storage = ManagedStorage(docker, settings)
         self.docker = docker
 
     @staticmethod
@@ -52,6 +52,16 @@ class OfflineDataDeletion:
         for volume in metadata["volumes"]:
             expected = volume["expected"]
             name, _ = self.storage.identity(app_id, volume["service"], volume["spec"])
+            if self.storage.is_quota(expected):
+                self.storage.validate_reference(app_id, volume["service"], volume["spec"], expected)
+                if name in expected_names:
+                    raise DeployError("STORAGE_IDENTITY", "Duplicate recorded storage identity")
+                expected_names.add(name)
+                if unused:
+                    self.storage.verify_removal(app_id, **volume)
+                else:
+                    self.storage.inventory_record(app_id, **volume)
+                continue
             if (
                 not isinstance(expected, dict)
                 or set(expected) != {"name", "created_at", "instance"}
@@ -68,7 +78,7 @@ class OfflineDataDeletion:
                 self.storage.verify_removal(app_id, **volume)
             else:
                 try:
-                    self.storage.ensure(app_id, **volume, create=False)
+                    self.storage.verify_legacy(app_id, **volume)
                 except DeployError as error:
                     if error.code != "STORAGE_MISSING":
                         raise
@@ -77,6 +87,14 @@ class OfflineDataDeletion:
         ], timeout=120).split()
         if set(found) - expected_names:
             raise DeployError("OFFLINE_DATA_CONFLICT", "Unrecorded application volumes require review")
+        if self.storage.backend == "xfs-project":
+            inventory = self.storage.quota.call("inventory", app_id=app_id)
+            recorded = {volume["expected"]["storage_id"] for volume in metadata["volumes"]
+                        if self.storage.is_quota(volume["expected"])}
+            retained = {record["reference"]["storage_id"] for record in inventory["records"]
+                        if record.get("state") != "deleted"}
+            if retained - recorded:
+                raise DeployError("OFFLINE_DATA_CONFLICT", "Unrecorded retained quota storage requires review")
 
     def inventory(self, metadata):
         self._metadata(metadata)

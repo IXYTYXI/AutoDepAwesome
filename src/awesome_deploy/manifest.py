@@ -19,9 +19,11 @@ MAX_YAML_NODES = 10000
 UNSUPPORTED = frozenset({"mounts", "migration", "lifecycle", "customegress", "customEgress", "egress"})
 
 
-def schema_document() -> dict:
-    """Return an independent, machine-readable v1 schema."""
-    return json.loads(files("awesome_deploy").joinpath("schema/awesome-v1.json").read_text())
+def schema_document(version: int = 1) -> dict:
+    """Keep v1 immutable; quota fields are explicitly versioned in v2."""
+    if type(version) is not int or version not in (1, 2):
+        raise _invalid("Supported schema versions are 1 and 2.", "schemaVersion")
+    return json.loads(files("awesome_deploy").joinpath(f"schema/awesome-v{version}.json").read_text())
 
 
 def _invalid(message: str, path: str = "") -> DeployError:
@@ -92,7 +94,7 @@ def _relative_path(value: str, path: str, *, allow_dot=False) -> PurePosixPath:
 
 
 def load_manifest(text: str, settings: Settings, previous: dict | None = None) -> dict:
-    """Validate text and return a detached normalized v1 manifest.
+    """Validate text and return a detached normalized versioned manifest.
 
     Omitted resources inherit each existing service's last normalized resources,
     then fall back to 0.5 CPU and 512 MiB. Values and keys never interpolate.
@@ -102,7 +104,8 @@ def load_manifest(text: str, settings: Settings, previous: dict | None = None) -
     if not isinstance(data, dict):
         raise _invalid("Manifest root must be a mapping.")
     _unsupported(data)
-    errors = sorted(jsonschema.Draft202012Validator(schema_document()).iter_errors(data),
+    version = data.get("schemaVersion")
+    errors = sorted(jsonschema.Draft202012Validator(schema_document(version)).iter_errors(data),
                     key=lambda error: [str(p) for p in error.absolute_path])
     if errors:
         error = errors[0]
@@ -110,6 +113,12 @@ def load_manifest(text: str, settings: Settings, previous: dict | None = None) -
         # jsonschema messages can contain env literals; report only safe structure.
         raise _invalid(f"Manifest field does not satisfy the {error.validator} rule.", path)
     data = copy.deepcopy(data)
+    if version == 2 and any(service.get("storage") for service in data["services"].values()):
+        if settings.storage_backend != "xfs-project":
+            raise DeployError(
+                "QUOTA_NOT_ENABLED", "This host has not enabled XFS hard-quota storage.",
+                "services", "Enable and verify the controlled storage backend before submitting.",
+            )
     subdomain = data["app"]["subdomain"]
     if subdomain in settings.reserved_names or any(word in subdomain for word in settings.banned_words):
         raise _invalid("Subdomain is reserved or contains a prohibited word.", "app.subdomain")
@@ -120,6 +129,11 @@ def load_manifest(text: str, settings: Settings, previous: dict | None = None) -
         raise _invalid("Storage names cannot be shared by services.", "services")
     for name, service in data["services"].items():
         prefix = f"services.{name}"
+        if version == 2 and "storage" in service:
+            for field in ("sizeMiB", "maxInodes"):
+                if type(service["storage"][field]) is not int:
+                    raise _invalid("Storage hard limits must be positive integers.",
+                                   f"{prefix}.storage.{field}")
         old = previous_services.get(name, {}).get("resources", {})
         resources = {"cpu": old.get("cpu", .5), "memoryMiB": old.get("memoryMiB", 512)}
         resources.update(service.get("resources", {}))
@@ -182,5 +196,10 @@ def load_manifest(text: str, settings: Settings, previous: dict | None = None) -
 def validate_storage_transition(manifest, previous):
     """Keep existing data reachable across updates, including service rename/removal."""
     for name, service in (previous or {}).get("services", {}).items():
-        if service.get("storage") and manifest.get("services", {}).get(name, {}).get("storage") != service["storage"]:
+        old = service.get("storage")
+        current = manifest.get("services", {}).get(name, {}).get("storage")
+        if old and (
+            not isinstance(current, dict)
+            or any(current.get(key) != old.get(key) for key in ("name", "mountPath"))
+        ):
             raise _invalid("Existing storage cannot be removed, renamed or moved.", f"services.{name}.storage")

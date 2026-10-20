@@ -90,7 +90,9 @@ def advice_context(job):
             "suggested_steps": safe_error["steps"],
         },
         "platform_rules": [
-            "仓库根目录必须包含 UTF-8 的 awesome.yaml，大小不超过 256 KiB，schemaVersion 为 1。",
+            "仓库根目录必须包含 UTF-8 的 awesome.yaml，大小不超过 256 KiB，支持 schemaVersion: 1 和 2。",
+            "schemaVersion: 2 的 storage 必须声明正整数 sizeMiB 和 maxInodes，且主机启用并核验 XFS 后端；"
+            "旧版清单不可声明新字段。不能为规避硬配额而降级清单；现有额度只通过显式扩容提高，回滚不缩容。",
             "当前支持 Web 服务和受控持久存储，服务必须为 HTTP 服务；桌面应用不能直接作为 Web 服务部署。",
             "构建命令默认不能访问网络；基础镜像由平台获取并固定摘要。运行外连能力不改变构建网络限制。",
             "以下运行网络说明仅依据本次部署固定的策略，不依据当前平台开关：" + _RUNTIME_NETWORK_TEXT[runtime_network],
@@ -226,20 +228,25 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
         return FileResponse(STATIC / name)
 
     @app.get("/api/v1/schema", dependencies=[Depends(authenticated)])
-    def schema():
-        return schema_document()
+    def schema(version: int = 1):
+        return schema_document(version)
 
     @app.get("/api/v1/capabilities", dependencies=[Depends(authenticated)])
     def capabilities():
+        from .storage_status import quota_capability
+
         runtime_mode = getattr(settings, "runtime_network", "internal")
         public_egress = runtime_mode == "public-https-v1"
         return {
             "schemaVersion": 1,
+            "schemaVersions": [1, 2],
             "serviceKinds": ["web"],
             "approval": False,
             "codeReview": False,
             "persistentStorage": True,
-            "storage": {"driver": "local", "mountPath": "/data", "perService": 1, "updates": "recreate"},
+            "storage": {"driver": settings.storage_backend, "mountPath": "/data",
+                        "perService": 1, "updates": "recreate"},
+            "storageHardQuota": quota_capability(settings),
             "workers": False,
             "customEgress": False,
             "buildNetwork": settings.build_network,

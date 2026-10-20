@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically check Awesome storage quota enforcement
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=60s
+AccuracySec=1s
+Unit=awesome-storage-patrol.service
+
+[Install]
+WantedBy=timers.target

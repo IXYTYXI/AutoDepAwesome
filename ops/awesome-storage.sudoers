@@ -1,0 +1,3 @@
+# Install root:root 0440 after visudo -cf validates this file.
+# Empty argument string forbids command-line arguments. JSON is validated by the helper.
+awesome ALL=(root) NOPASSWD: /usr/local/libexec/awesome-storage ""

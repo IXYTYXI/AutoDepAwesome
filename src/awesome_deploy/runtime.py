@@ -6,6 +6,7 @@ with privileged workloads. No host networking, host mounts, build secrets or SSH
 """
 
 import copy
+from contextlib import contextmanager
 import errno
 import hashlib
 import http.client
@@ -43,6 +44,7 @@ class DeploymentBackend:
         self.port_forwarder = RootlessPortForwarder(settings)
         self.egress_guard = EgressGuard(settings)
         self.lock_fd = None
+        self.quota_guard_fd = None
         self.storage_root = None
 
     def _docker(self, args, *, timeout=120, secrets=(), check=True):
@@ -60,7 +62,7 @@ class DeploymentBackend:
             timeout=timeout,
             secrets=secrets,
             check=check,
-            pass_fds=(self.lock_fd,) if self.lock_fd is not None else (),
+            pass_fds=tuple(fd for fd in (self.lock_fd, getattr(self, "quota_guard_fd", None)) if fd is not None),
         )
         return result.stdout
 
@@ -899,11 +901,137 @@ class DeploymentBackend:
         self.port_forwarder.ensure(forward["spec"], timeout=bounded(), create=True)
         self._checkpoint_forward(job, name, forward, True, checkpoint)
 
+    def prepare_storage(self, job, checkpoint):
+        """Reserve and verify storage after build, before taking down the active release."""
+        services = job["snapshot"]["manifest"]["services"]
+        if (job["snapshot"]["manifest"].get("schemaVersion") == 2
+                and any(service.get("storage") for service in services.values())
+                and getattr(self.settings, "storage_backend", "local") != "xfs-project"):
+            raise DeployError("QUOTA_BACKEND_REQUIRED", "Version 2 storage requires the XFS quota backend")
+        storage = ManagedStorage(self._docker, self.settings)
+        if storage.backend == "xfs-project" and any(service.get("storage") for service in services.values()):
+            from .storage_status import begin_quota_observation, record_quota_status
+
+            observation = begin_quota_observation(self.settings)
+            try:
+                report = storage.quota.call("check")
+            except DeployError as error:
+                record_quota_status(self.settings, error=error, observation=observation)
+                raise
+            record_quota_status(self.settings, report, observation=observation)
+        volumes = dict(job["execution"].get("storage_volumes", {}))
+        for name, service in services.items():
+            if service.get("storage"):
+                previous = job["execution"].get("previous_manifest", {}).get("services", {}).get(name, {})
+                if previous.get("storage") and name not in volumes:
+                    raise DeployError("STORAGE_IDENTITY", "Previous storage identity is missing; operator repair is required")
+                generation = (volumes.get(name) or {}).get("generation", "new")
+                volumes[name] = storage.ensure(job["app_id"], name, service["storage"], volumes.get(name),
+                                               operation_id=f"ensure:{job['id']}:{name}:{generation}")
+                checkpoint({"storage_volumes": dict(volumes)})
+                job["execution"]["storage_volumes"] = dict(volumes)
+
+    @contextmanager
+    def _storage_guard(self, storage, job, service, row, *, timeout=120):
+        previous_fd = getattr(self, "quota_guard_fd", None)
+        with storage.guard(job, service, row, timeout=timeout) as session:
+            self.quota_guard_fd = session.fd if session is not None else previous_fd
+            try:
+                yield
+            finally:
+                self.quota_guard_fd = previous_fd
+
+    def _confirm_quota_started(self, job, service, original, *, timeout=120):
+        rows = json.loads(self._docker(["container", "inspect", original["Id"]], timeout=timeout))
+        if (not isinstance(rows, list) or len(rows) != 1 or rows[0].get("Id") != original["Id"]
+                or rows[0].get("Name", "").removeprefix("/") != self._container(job, service)
+                or not self._owned(rows[0].get("Config", {}).get("Labels"), job)
+                or rows[0].get("State", {}).get("Running") is not True
+                or rows[0].get("State", {}).get("Paused")
+                or rows[0].get("State", {}).get("Restarting")):
+            raise DeployError("STORAGE_START_UNCONFIRMED", "Quota writer start could not be confirmed")
+        source = next(mount["Source"] for mount in original["Mounts"] if mount.get("Type") == "bind")
+        ManagedStorage._validate_quota_mount(rows[0], source)
+
+    def quota_patrol(self):
+        from .storage_status import begin_quota_observation, record_quota_status
+
+        observation = begin_quota_observation(self.settings)
+        try:
+            result = self._quota_patrol()
+        except DeployError as error:
+            record_quota_status(self.settings, error=error, observation=observation)
+            raise
+        record_quota_status(self.settings, result, observation=observation)
+        return result
+
+    def _quota_patrol(self):
+        """Fence registered writers independently of the deployment/build worker lock."""
+        storage = ManagedStorage(self._docker, self.settings)
+        if storage.backend != "xfs-project":
+            raise DeployError("QUOTA_BACKEND_REQUIRED", "Quota patrol requires the XFS backend")
+        stopped, failures = [], []
+        previous_fd = getattr(self, "quota_guard_fd", None)
+        with storage.quota.session("patrol") as session:
+            self.quota_guard_fd = session.fd
+            try:
+                report = session.result
+                if not isinstance(report, dict) or not isinstance(report.get("blocked"), list):
+                    raise DeployError("QUOTA_PROTOCOL", "Invalid quota patrol response")
+                for blocked in report["blocked"]:
+                    for writer in blocked.get("writers", []):
+                        try:
+                            self._stop_registered_writer(writer)
+                            storage.retire(writer["container_id"], session=session)
+                            stopped.append(writer["container_id"])
+                        except DeployError as error:
+                            failures.append({"container_id": writer.get("container_id"), "code": error.code})
+                return {**report, "stopped": stopped, "stop_failures": failures}
+            finally:
+                self.quota_guard_fd = previous_fd
+
+    def _stop_registered_writer(self, writer):
+        identifier = writer.get("container_id", "")
+        expected_job = {"id": writer.get("release_id"), "app_id": writer.get("app_id")}
+        if (not re.fullmatch(r"[0-9a-f]{64}", str(identifier))
+                or not re.fullmatch(r"[a-z][a-z0-9-]{0,30}", str(writer.get("service", "")))
+                or writer.get("container_name") != self._container(expected_job, writer["service"])):
+            raise DeployError("STORAGE_HANDOFF_IDENTITY", "Invalid registered container identity")
+        found = self._docker(["container", "ls", "-a", "--no-trunc", "--filter", f"id={identifier}", "--format", "{{.ID}}"] ).split()
+        if not found:
+            return  # An exact successful absence query confirms there is no writer.
+        if found != [identifier]:
+            raise DeployError("STORAGE_HANDOFF_IDENTITY", "Registered container lookup was ambiguous")
+        rows = json.loads(self._docker(["container", "inspect", identifier]))
+        if (not isinstance(rows, list) or len(rows) != 1 or rows[0].get("Id") != identifier
+                or rows[0].get("Name", "").removeprefix("/") != writer["container_name"]
+                or not self._owned(rows[0].get("Config", {}).get("Labels"), expected_job)):
+            raise DeployError("STORAGE_HANDOFF_IDENTITY", "Registered container ownership changed")
+        state = rows[0].get("State", {})
+        if state.get("Running") or state.get("Paused") or state.get("Restarting"):
+            self._docker(["container", "stop", "--time", "30", identifier], timeout=45)
+        self._confirm_stopped(identifier)
+
+    def _confirm_stopped(self, identifier):
+        rows = json.loads(self._docker(["container", "inspect", identifier]))
+        if (not isinstance(rows, list) or len(rows) != 1 or rows[0].get("Id") != identifier
+                or rows[0].get("State", {}).get("Running") is not False
+                or rows[0].get("State", {}).get("Paused")
+                or rows[0].get("State", {}).get("Restarting")):
+            raise DeployError("STORAGE_HANDOFF_STATE", "Container termination could not be confirmed")
+
+    def _fence_quota_failure(self, error):
+        if (getattr(self.settings, "storage_backend", "local") == "xfs-project"
+                and (error.code.endswith("_MISMATCH") or error.code in {
+                    "QUOTA_NOT_ENFORCED", "QUOTA_BLOCKED", "STORAGE_MOUNT_CHANGED"})):
+            self.quota_patrol()
+
     def start(self, job, checkpoint):
         validate_policy(job)
         try:
             return self._start(job, checkpoint)
         except DeployError as error:
+            self._fence_quota_failure(error)
             self._stop_after_network_failure(job, error)
             raise
 
@@ -911,16 +1039,8 @@ class DeploymentBackend:
         info = self.preflight()
         network_policy = self._ensure_egress(job, info)
         services = job["snapshot"]["manifest"]["services"]
-        storage = ManagedStorage(self._docker)
-        volumes = dict(job["execution"].get("storage_volumes", {}))
-        for name, service in services.items():
-            if service.get("storage"):
-                previous = job["execution"].get("previous_manifest", {}).get("services", {}).get(name, {})
-                if previous.get("storage") and name not in volumes:
-                    raise DeployError("STORAGE_IDENTITY", "Previous storage identity is missing; operator repair is required")
-                volumes[name] = storage.ensure(job["app_id"], name, service["storage"], volumes.get(name))
-                checkpoint({"storage_volumes": dict(volumes)})
-                job["execution"]["storage_volumes"] = dict(volumes)
+        storage = ManagedStorage(self._docker, self.settings)
+        self.prepare_storage(job, checkpoint)
         networks = self._service_networks(job)
         network_identities = copy.deepcopy(job["execution"].get("network_identities", {}))
         for network in sorted({n for group in networks.values() for n in group}):
@@ -972,7 +1092,12 @@ class DeploymentBackend:
                     storage.validate_mounts(job, name, created)
                     self._validate_container_network_policy(job, name, created)
                 self._check_egress(job)
-                self._docker(["container", "start", container_name])
+                guard_row = created if service.get("storage") or network_policy is not None else {}
+                with self._storage_guard(storage, job, name, guard_row):
+                    quota = storage.is_quota(job["execution"].get("storage_volumes", {}).get(name))
+                    self._docker(["container", "start", guard_row["Id"] if quota else container_name])
+                    if quota:
+                        self._confirm_quota_started(job, name, guard_row)
                 forward = self._forward_identity(job, name)
                 self._reconcile_forward(job, name, forward, checkpoint)
                 started.add(name)
@@ -993,6 +1118,7 @@ class DeploymentBackend:
         try:
             return self._recover_active(job, checkpoint)
         except DeployError as error:
+            self._fence_quota_failure(error)
             self._stop_after_network_failure(job, error)
             raise
 
@@ -1066,7 +1192,7 @@ class DeploymentBackend:
                     "ACTIVE_CONTAINER_CHANGED",
                     "An active container no longer matches its frozen identity or isolation",
                 )
-            ManagedStorage(self._docker).validate_mounts(job, name, row, timeout=bounded())
+            ManagedStorage(self._docker, self.settings).validate_mounts(job, name, row, timeout=bounded())
             networks.update(attached)
         inspected = json.loads(self._docker(["network", "inspect", *sorted(networks)], timeout=bounded()))
         if (
@@ -1100,8 +1226,18 @@ class DeploymentBackend:
                             self._health_service(job, dependency, deadline)
                             checked.add(dependency)
                     self._check_egress(job)
-                    self._docker(["container", "start", self._container(job, name)], timeout=bounded())
+                    storage = ManagedStorage(self._docker, self.settings)
+                    with self._storage_guard(storage, job, name, row, timeout=bounded()):
+                        quota = storage.is_quota(job["execution"].get("storage_volumes", {}).get(name))
+                        self._docker(["container", "start", row["Id"] if quota else self._container(job, name)], timeout=bounded())
+                        if quota:
+                            self._confirm_quota_started(job, name, row, timeout=bounded())
                     restarted.append(name)
+                else:
+                    storage = ManagedStorage(self._docker, self.settings)
+                    with self._storage_guard(storage, job, name, row, timeout=bounded()):
+                        if storage.is_quota(job["execution"].get("storage_volumes", {}).get(name)):
+                            self._confirm_quota_started(job, name, row, timeout=bounded())
                 # Even a running container may have lost its RootlessKit mapping after restart.
                 # Reinspect after any start; never silently retarget an existing forwarding intent.
                 forward = self._forward_identity(job, name, timeout=min(5, bounded()), deadline=deadline)
@@ -1150,7 +1286,7 @@ class DeploymentBackend:
                 forward = self._validate_forward_record(job, name, forward)
                 if row["Id"] != forward["container_id"]:
                     raise DeployError("STORAGE_HANDOFF_IDENTITY", "The previous container was replaced")
-            ManagedStorage(self._docker).validate_mounts(job, name, row)
+            ManagedStorage(self._docker, self.settings).validate_mounts(job, name, row, readiness=False)
             rows.append(row)
         for row in rows:
             state = row.get("State", {})
@@ -1164,6 +1300,8 @@ class DeploymentBackend:
                     or confirmed[0].get("State", {}).get("Paused")
                     or confirmed[0].get("State", {}).get("Restarting")):
                 raise DeployError("STORAGE_HANDOFF_STATE", "Container termination could not be confirmed")
+            if any(ManagedStorage.is_quota(ref) for ref in job["execution"].get("storage_volumes", {}).values()):
+                ManagedStorage(self._docker, self.settings).retire(row["Id"])
 
     def stop_for_storage_handoff(self, previous):
         if previous.get("status") != "succeeded" or previous["execution"].get("resources_released"):
@@ -1246,11 +1384,7 @@ class DeploymentBackend:
                 env_path,
             ]
             if service.get("storage"):
-                volume = job["execution"].get("storage_volumes", {}).get(name)
-                expected, _ = ManagedStorage.identity(job["app_id"], name, service["storage"])
-                if not volume or volume.get("name") != expected:
-                    raise DeployError("STORAGE_IDENTITY", "Container creation requires its persisted volume identity")
-                args.extend(["--mount", f"type=volume,source={expected},destination=/data"])
+                args.extend(["--mount", ManagedStorage(self._docker, self.settings).mount_argument(job, name)])
             if "workingDir" in service:
                 args.extend(["--workdir", service["workingDir"]])
             if service.get("entrypoint"):
@@ -1420,6 +1554,16 @@ class DeploymentBackend:
                                 self._docker(["image", "rm", identifier])
                         else:
                             self._docker([kind, "rm", *(["-f"] if kind == "container" else []), identifier])
+                            if kind == "container" and any(
+                                ManagedStorage.is_quota(ref) for ref in job.get("execution", {}).get("storage_volumes", {}).values()
+                            ):
+                                full_id = row.get("Id", "")
+                                if not re.fullmatch(r"[0-9a-f]{64}", full_id):
+                                    raise DeployError("STORAGE_IDENTITY", "Removed quota writer identity was incomplete")
+                                remaining = self._docker(["container", "ls", "-a", "--no-trunc", "--filter", f"id={full_id}", "--format", "{{.ID}}"])
+                                if remaining.split():
+                                    raise DeployError("STORAGE_IN_USE", "Removed quota writer still exists")
+                                ManagedStorage(self._docker, self.settings).retire(full_id)
         # No arbitrary snapshot paths: only job-ID children of platform-owned directories.
         bases = [self.settings.state_dir.resolve() / name for name in ("sources", "git", "builds")]
         if self.storage_root is None and job.get("execution", {}).get("build_storage_root"):

@@ -1,0 +1,20 @@
+{
+  "pool_mount": "/srv/awesome-data",
+  "pool_root": "/srv/awesome-data/services",
+  "pool_device": null,
+  "pool_uuid": null,
+  "rootless_daemon_pid_file": "/run/user/1001/docker.pid",
+  "rootless_uid": 1001,
+  "runtime_uid": 65532,
+  "runtime_gid": 65532,
+  "expected_uid_map": [],
+  "expected_gid_map": [],
+  "global_budget_mib": null,
+  "global_budget_inodes": null,
+  "app_budget_mib": null,
+  "app_budget_inodes": null,
+  "service_budget_mib": null,
+  "service_budget_inodes": null,
+  "reserve_free_mib": null,
+  "reserve_free_inodes": null
+}

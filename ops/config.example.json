@@ -22,6 +22,8 @@
   "build_network": "none",
   "builder_name": "awesome-builder",
   "runtime_user": "65532:65532",
+  "storage_backend": "local",
+  "storage_command": ["sudo", "-n", "/usr/local/libexec/awesome-storage"],
   "runtime_network": "internal",
   "runtime_dns": ["223.5.5.5", "1.1.1.1"],
   "runtime_blocked_ips": [],

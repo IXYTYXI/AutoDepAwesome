@@ -27,6 +27,8 @@ class Settings:
     build_network: str = "none"
     builder_name: str = "awesome-builder"
     gateway_command: tuple[str, ...] = ("sudo", "-n", "/usr/local/libexec/awesome-gateway")
+    storage_backend: str = "local"
+    storage_command: tuple[str, ...] = ("sudo", "-n", "/usr/local/libexec/awesome-storage")
     runtime_user: str = "65532:65532"
     runtime_network: str = "internal"
     runtime_dns: tuple[str, ...] = ("223.5.5.5", "1.1.1.1")
@@ -58,6 +60,19 @@ class Settings:
     @property
     def database_path(self) -> Path:
         return self.state_dir / "platform.sqlite3"
+
+
+def validate_storage_settings(settings: Settings) -> None:
+    """Quota support is opt-in and uses a fixed, root-owned helper entry point."""
+    if settings.storage_backend not in ("local", "xfs-project"):
+        raise ValueError("storage backend")
+    if settings.storage_command != ("sudo", "-n", "/usr/local/libexec/awesome-storage"):
+        raise ValueError("storage helper")
+    if settings.storage_backend == "xfs-project":
+        if not isinstance(settings.runtime_user, str) or not re.fullmatch(
+            r"[1-9][0-9]{0,9}:[1-9][0-9]{0,9}", settings.runtime_user
+        ):
+            raise ValueError("quota storage requires a fixed non-root numeric UID and GID")
 
 
 def validate_git_proxy_settings(settings: Settings) -> None:
