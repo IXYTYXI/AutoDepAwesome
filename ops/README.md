@@ -20,6 +20,8 @@
 
 安装 Python 3.11+、Git、Docker CLI/daemon 所需组件、buildx、Nginx、Certbot 和 sudo；具体包管理方式由目标发行版决定。管理员在 `/opt/awesome-deploy` 创建虚拟环境，可先用 `pip install -r requirements-dev.lock` 安装当前验证过的固定版本，再用 `pip install --no-deps .` 安装项目；锁文件含测试工具，目标机仍需验证版本与架构兼容性。不要向生产源代码目录写入仓库令牌或应用秘密。
 
+平台源码统一维护于 `main`。安装或升级时，从 `main` 选择已审查的完整提交并固定 commit，或使用正式发布标签；平台包、网关及存储 helper 必须来自同一提交。记录部署提交以便核对和回退，不再依赖已归档功能分支作为安装入口。当前配置和实际验收决定哪些功能可启用。
+
 在仓库根目录按目标主机调整模板后安装；以下命令仅是由运维执行的示例：
 
 ```sh
