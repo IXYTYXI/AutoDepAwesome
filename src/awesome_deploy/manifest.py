@@ -163,6 +163,9 @@ def load_manifest(text: str, settings: Settings, previous: dict | None = None) -
         for dependency in service["dependsOn"]:
             if dependency not in data["services"]:
                 raise _invalid("Dependency references an unknown service.", prefix + ".dependsOn")
+    total_memory = sum(service["resources"]["memoryMiB"] for service in data["services"].values())
+    if total_memory > settings.max_app_memory_mib:
+        raise _invalid("Application memory allocation exceeds the configured limit.", "services")
     visited, visiting = set(), set()
 
     def visit(name):

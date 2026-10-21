@@ -83,6 +83,7 @@ def load_settings(path: Path | None) -> Settings:
             "port_start",
             "port_end",
             "max_memory_mib",
+            "max_app_memory_mib",
             "build_timeout",
             "health_timeout",
             "git_timeout",

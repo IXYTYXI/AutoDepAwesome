@@ -1071,13 +1071,25 @@ class Store:
             # ownership before every reservation, including a frozen job replay.
             self._check_secret_scope(db, app, job, snapshot)
             existing = list(db.execute("SELECT service,port FROM reservations WHERE job_id=?", (job_id,)))
-            if existing:
-                return job
             services = snapshot["manifest"]["services"]
             resources = [
                 (name, float(service["resources"]["cpu"]), int(service["resources"]["memoryMiB"]))
                 for name, service in services.items()
             ]
+            app_memory = db.execute(
+                """SELECT COALESCE(SUM(reservations.memory_mib),0)
+                   FROM reservations JOIN jobs ON jobs.id=reservations.job_id
+                   WHERE jobs.app_id=?""", (app["id"],)
+            ).fetchone()[0]
+            # Replays still enforce the current application budget, without
+            # counting this job's already reserved services a second time.
+            additional_memory = 0 if existing else sum(memory for _, _, memory in resources)
+            if app_memory + additional_memory > self.settings.max_app_memory_mib:
+                raise DeployError(
+                    "RESOURCE_QUOTA", "Active and candidate releases exceed the application memory quota."
+                )
+            if existing:
+                return job
             used = db.execute(
                 "SELECT COALESCE(SUM(cpu),0),COALESCE(SUM(memory_mib),0) FROM reservations"
             ).fetchone()

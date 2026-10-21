@@ -20,6 +20,29 @@ def test_config_relative_paths_and_unknown_fields(tmp_path):
         load_settings(f)
 
 
+def test_application_memory_limit_defaults_and_can_be_configured(tmp_path):
+    from awesome_deploy.cli import load_settings
+
+    path = tmp_path / "config.json"
+    path.write_text("{}")
+    settings = load_settings(path)
+    assert settings.max_app_memory_mib == 1024
+    assert settings.max_memory_mib == 6144
+    path.write_text('{"max_app_memory_mib": 768}')
+    assert load_settings(path).max_app_memory_mib == 768
+
+
+@pytest.mark.parametrize("value", [True, False, 0, -1, 512.5, "1024", None])
+def test_invalid_application_memory_limit_rejected(tmp_path, value):
+    from awesome_deploy.cli import load_settings
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"max_app_memory_mib": value}))
+    with pytest.raises(DeployError) as caught:
+        load_settings(path)
+    assert caught.value.code == "INVALID_CONFIG"
+
+
 @pytest.mark.parametrize(
     "config",
     [
