@@ -195,6 +195,13 @@ class IdentityStore:
             row = db.execute("SELECT * FROM auth_users WHERE id=?", (user_id,)).fetchone()
             if not self._scope(row):
                 raise DeployError("ACCESS_DENIED", "无权修改该用户。")
+            if actor_id is not None and enabled is False and row["is_admin"] and row["enabled"]:
+                remaining = db.execute("""SELECT 1 FROM auth_users WHERE app_id=? AND tenant_key=?
+                                          AND id<>? AND is_admin=1 AND enabled=1 AND eligible=1 LIMIT 1""",
+                                       (self.settings.feishu_app_id, self.settings.feishu_tenant_key,
+                                        user_id)).fetchone()
+                if remaining is None:
+                    raise DeployError("LAST_ADMIN_REQUIRED", "不能停用最后一位有效管理员，请先设置其他管理员。")
             db.execute("UPDATE auth_users SET " + ",".join(k + "=?" for k in changes)
                        + ",revision=revision+1 WHERE id=?", (*changes.values(), user_id))
             db.execute("DELETE FROM auth_sessions WHERE user_id=?", (user_id,))

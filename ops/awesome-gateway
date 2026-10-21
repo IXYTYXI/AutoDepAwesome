@@ -103,7 +103,7 @@ def validate(req):
         raise ValueError("Invalid gateway request fields")
     if req["base_domain"] != CONFIG["base_domain"]:
         raise ValueError("Platform base domain differs from root-owned gateway configuration")
-    if req["op"] not in {"ensure_https", "publish", "verify", "rollback", "verify_status", "deactivate"}:
+    if req["op"] not in {"ensure_https", "publish", "verify", "rollback", "verify_status", "deactivate", "quarantine"}:
         raise ValueError("Unknown gateway operation")
     if not isinstance(req["subdomain"], str) or not NAME.fullmatch(req["subdomain"]):
         raise ValueError("Invalid subdomain")
@@ -277,6 +277,116 @@ def completed_deactivation(state):
     return record
 
 
+def quarantine_records(state):
+    records = state.get("quarantines", {})
+    if not isinstance(records, dict):
+        raise ValueError("Invalid durable quarantine registry")
+    for release, record in records.items():
+        if (not isinstance(record, dict) or set(record) != {
+                "release", "request", "token", "completed", "displaced_release", "previous_config"}
+                or record["release"] != release or type(record["completed"]) is not bool
+                or not isinstance(record["token"], str) or not re.fullmatch(r"[0-9a-f]{64}", record["token"])
+                or (record["previous_config"] is not None and not isinstance(record["previous_config"], str))
+                or (record["displaced_release"] is not None and (
+                    not isinstance(record["displaced_release"], str)
+                    or not RELEASE.fullmatch(record["displaced_release"])))):
+            raise ValueError("Invalid durable quarantine record")
+        validate(record["request"])
+        if record["request"]["release"] != release or record["request"]["op"] != "quarantine":
+            raise ValueError("Quarantine record differs from its release")
+    return records
+
+
+def guard_quarantine(req, state, *, restore=False):
+    records = quarantine_records(state)
+    if any(not record["completed"] for record in records.values()):
+        raise ValueError("Quarantine must be confirmed before another gateway operation")
+    if req["release"] in records or (restore and req["previous_release"] in records):
+        raise ValueError("A quarantined release cannot serve traffic or restore its upstream")
+
+
+def quarantine(req):
+    """Irreversibly isolate one recorded release; never restore a previous upstream.
+
+    Unknown/different-current targets without an earlier completed quarantine are
+    deliberately rejected: route probes alone do not prove old workers drained.
+    The caller must retain reservations and arrange operator reconciliation.
+    """
+    validate(req)
+    state = read_state(req["subdomain"])
+    records = quarantine_records(state)
+    if any(not row["completed"] for release, row in records.items() if release != req["release"]):
+        raise ValueError("Another release has an unfinished quarantine")
+    record = records.get(req["release"])
+    current, pending = state["current"], state.get("pending")
+    offline = deactivation_record(state.get("deactivation"))
+    path = config_path(req["subdomain"])
+    content = path.read_text() if path.exists() else None
+    if record and not same_route(record["request"], req):
+        raise ValueError("Quarantine request differs from its durable release identity")
+    if record and record["completed"] and current:
+        # Previous completion proved every live worker was isolated, and every
+        # normal publication/rollback now rejects that release permanently.
+        # Replaying its cleanup must not replace a later unrelated healthy app.
+        if (current["release"] == req["release"]
+                or (pending and (pending["release"] != current["release"]
+                    or (pending.get("previous") or {}).get("release") == req["release"]))
+                or content not in [render(current["request"], tls=True, legacy=old) for old in (False, True)]):
+            raise ValueError("Completed quarantine conflicts with current gateway state")
+        return {"quarantined": True, "release": req["release"],
+                "domain_quarantined": False, "displaced_release": None}
+    if not record:
+        if pending and (pending["release"] != req["release"]
+                        or not same_route(pending.get("request"), req)):
+            raise ValueError("Quarantine differs from the pending publication identity")
+        target_current = current and same_route(current["request"], req)
+        target_pending = pending and same_route(pending.get("request"), req)
+        target_offline = offline and same_route(offline["request"], req)
+        if not (target_current or target_pending or target_offline):
+            raise ValueError("No exact current, pending or offline release proves quarantine ownership")
+        if current and not target_current and (
+                not target_pending or pending.get("previous") != current):
+            raise ValueError("Quarantine predecessor differs from the publication journal")
+        allowed = [render(req, tls=True, legacy=old) for old in (False, True)]
+        if current:
+            allowed.extend(render(current["request"], tls=True, legacy=old) for old in (False, True))
+        if offline:
+            allowed.extend(render_deactivated(offline["request"], offline["token"], legacy=old)
+                           for old in (False, True))
+        # A first publish can crash after writing its intent but before replacing
+        # the root-owned HTTP-only certificate preparation configuration.
+        if target_pending and not current and pending.get("previous") is None:
+            allowed.append(render(req, tls=False))
+        if content not in allowed:
+            raise ValueError("Gateway configuration differs from the quarantine release journal")
+        record = {"release": req["release"], "request": req, "token": secrets.token_hex(32),
+                  "completed": False, "previous_config": content,
+                  "displaced_release": current["release"] if current and not target_current else None}
+        records[req["release"]] = record
+        state["quarantines"] = records
+        state["pending"] = None
+        state["deactivation"] = {"release": req["release"], "request": {**req, "op": "deactivate"},
+                                 "token": record["token"], "completed": False}
+        save_state(req["subdomain"], state)
+    else:
+        expected_current = record["displaced_release"] or req["release"]
+        if (content is None or (current and current["release"] != expected_current) or pending
+                or not offline or not same_route(offline["request"], req)
+                or offline["token"] != record["token"]
+                or (record["completed"] and (current or not offline["completed"]))
+                or content not in (record["previous_config"], render_deactivated(req, record["token"]))):
+            raise ValueError("Quarantine replay differs from the durable isolation intent")
+    master, _ = nginx_process_snapshot()
+    apply_config(req["subdomain"], render_deactivated(req, record["token"]))
+    probe_deactivated(req, record["token"], master=master)
+    record["completed"], record["previous_config"] = True, None
+    state["deactivation"]["completed"] = True
+    state["current"], state["pending"] = None, None
+    save_state(req["subdomain"], state)
+    return {"quarantined": True, "release": req["release"], "domain_quarantined": True,
+            "displaced_release": record["displaced_release"]}
+
+
 def render_deactivated(req, token, *, legacy=False):
     validate(req)
     if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{64}", token):
@@ -301,6 +411,7 @@ def render_deactivated(req, token, *, legacy=False):
 def deactivate(req):
     validate(req)
     state = read_state(req["subdomain"])
+    guard_quarantine(req, state)
     current, pending = state["current"], state.get("pending")
     record = deactivation_record(state.get("deactivation"))
     if pending and pending["release"] != req["release"]:
@@ -340,6 +451,7 @@ def deactivate(req):
 def publish(req):
     validate(req)
     state = read_state(req["subdomain"])
+    guard_quarantine(req, state)
     offline = completed_deactivation(state)
     if offline and offline["release"] == req["release"]:
         raise ValueError("A deactivated release cannot be republished")
@@ -388,6 +500,7 @@ def publish(req):
 def rollback(req):
     validate(req)
     state = read_state(req["subdomain"])
+    guard_quarantine(req, state, restore=True)
     offline = completed_deactivation(state)
     if offline and offline["release"] == req["release"]:
         raise ValueError("A deactivated release cannot restore its former upstream")
@@ -786,6 +899,7 @@ def probe_routes(req):
 def verify(req):
     validate(req)
     state = read_state(req["subdomain"])
+    guard_quarantine(req, state)
     completed_deactivation(state)
     current = state["current"]
     if (
@@ -811,6 +925,7 @@ def verify(req):
 
 def ensure_https(req):
     validate(req)
+    guard_quarantine(req, read_state(req["subdomain"]))
     path = config_path(req["subdomain"])
     if not path.exists():
         apply_config(req["subdomain"], render(req, tls=False))

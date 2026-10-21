@@ -80,7 +80,8 @@ def test_all_existing_static_codes_have_fixed_chinese_advice():
     root = Path(__file__).parents[1] / "src/awesome_deploy"
     # Include literal dictionary errors and port-forward helper calls as well as DeployError.
     sources = ("api.py", "auth.py", "cli.py", "manifest.py", "runtime.py", "store.py", "source.py",
-               "worker.py", "processes.py", "gateway.py", "port_forward.py", "secrets_store.py", "storage.py", "egress.py")
+               "worker.py", "processes.py", "gateway.py", "port_forward.py", "secrets_store.py", "storage.py", "egress.py",
+               "secret_vault.py", "vault_service.py", "vault_format.py", "vault_keys.py", "vault_runtime.py", "vault_migration.py", "runtime_environment.py")
     codes = set()
     for name in sources:
         tree = ast.parse((root / name).read_text())
@@ -204,3 +205,52 @@ def test_egress_guard_errors_have_specific_chinese_actions_and_no_raw_details(co
     assert result['steps'] and '运维' in ' '.join(result['steps'])
     assert 'PRIVATE_DNS_OR_IP' not in str(result)
     assert '不要关闭' in ' '.join(result['steps'])
+
+
+@pytest.mark.parametrize("code,expected", [
+    ("LAST_ADMIN_REQUIRED", "管理员"),
+    ("SECRET_VERSION_CONFLICT", "版本"),
+    ("SECRET_KIND_CONFLICT", "类型"),
+    ("SECRET_MASTER_PROTECTED", "主密钥"),
+    ("SECRET_REVOKED", "吊销"),
+    ("SECRET_REVOCATION_STATE", "吊销"),
+    ("SECRET_REVOCATION_FAILED", "停用"),
+    ("VAULT_APP_UNREGISTERED", "登记"),
+    ("VAULT_NOT_INITIALIZED", "初始化"),
+    ("VAULT_MAINTENANCE", "维护"),
+    ("VAULT_FORMAT_DOWNGRADE", "降级"),
+    ("VAULT_FORMAT_UNSUPPORTED", "格式"),
+    ("VAULT_IDENTITY_CONFLICT", "身份"),
+    ("VAULT_KEY_UNAVAILABLE", "根密钥"),
+    ("VAULT_TRANSACTION_REQUIRED", "事务"),
+    ("SECRET_SNAPSHOT_INVALID", "固定"),
+    ("VAULT_MIGRATION_CONFLICT", "迁移"),
+    ("VAULT_RECOVERY_RECORD_REQUIRED", "恢复记录"),
+    ("VAULT_MIGRATION_BUSY", "迁移"),
+    ("VAULT_MIGRATION_REQUIRED", "迁移"),
+    ("UNSAFE_RUNTIME_ENV", "临时目录"),
+    ("UNSAFE_WORKER_LOCK", "执行锁"),
+])
+def test_vault_errors_have_specific_safe_chinese_next_steps(code, expected):
+    raw = "fixture-secret-that-must-not-escape"
+    result = diagnostics().localize_error({"code": code, "message": raw,
+                                          "suggestion": raw, "path": raw})
+    assert code in diagnostics().ERROR_CODES
+    assert result["code"] == code
+    assert expected in result["message"] or expected in result["title"]
+    assert result["steps"] and raw not in str(result)
+    assert result["title"] != "部署未完成"
+
+
+def test_vault_diagnostics_do_not_suggest_recreating_keys_or_claiming_revocation_completion():
+    module = diagnostics()
+    key_error = module.localize_error({"code": "VAULT_KEY_UNAVAILABLE"})
+    assert "原" in key_error["suggestion"]
+    assert "禁止" in " ".join(key_error["steps"])
+    revoked = module.localize_error({"code": "SECRET_REVOKED"})
+    assert "恢复" in revoked["message"]
+    incomplete = module.localize_error({"code": "SECRET_REVOCATION_FAILED"})
+    assert "尚未确认" in incomplete["message"]
+    assert "阻断" in " ".join(incomplete["steps"])
+    conflict = module.localize_error({"code": "SECRET_VERSION_CONFLICT"})
+    assert "核对" in conflict["suggestion"] and "确认" in conflict["suggestion"]

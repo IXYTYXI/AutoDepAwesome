@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Awesome · 应用管理</title>
-  <link rel="stylesheet" href="/assets/app.css?v=0.4.0"><link rel="stylesheet" href="/assets/manage.css?v=0.7.0"><link rel="stylesheet" href="/assets/auth.css?v=0.9.0"><script src="/assets/auth.js?v=0.9.0" defer></script><script src="/assets/manage.js?v=0.7.0" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=0.4.0"><link rel="stylesheet" href="/assets/manage.css?v=0.7.0"><link rel="stylesheet" href="/assets/auth.css?v=0.9.0"><script src="/assets/auth.js?v=0.9.0" defer></script><link rel="stylesheet" href="/assets/vault.css?v=0.10.0"><script src="/assets/vault.js?v=0.10.0" defer></script><script src="/assets/manage.js?v=0.10.0" defer></script>
 </head>
 <body><a class="skip-link" href="#console-main">跳到主要内容</a><main id="console-main">
   <header class="console-header"><span class="brand"><span class="brand-mark" aria-hidden="true">A</span> AWESOME / DEPLOY</span><nav class="console-nav" aria-label="控制台导航"><a href="/">部署控制台</a><a href="/manage" aria-current="page">应用管理</a></nav><div id="auth-session" class="auth-session" aria-label="当前登录账号" aria-busy="true"><div class="auth-identity"><span id="auth-name" class="auth-name">正在检查登录…</span><span id="auth-role" class="auth-role"></span></div><button id="auth-copy-id" class="secondary auth-logout" type="button" hidden>复制成员 ID</button><span id="auth-copy-status" class="sr-only" role="status" aria-live="polite"></span><button id="auth-logout" class="secondary auth-logout" type="button" hidden>退出登录</button></div></header>
@@ -48,5 +48,31 @@
   <p class="hint">下线完成后释放域名和运行端口，其他应用可重新使用。仅清除平台受控数据，外部数据库不会自动删除。源码、部署历史和构建缓存不受此选项影响；再次部署时请选择空闲前缀。</p>
   <p id="offline-error" class="management-error" role="alert"></p>
   <div class="dialog-actions"><button id="offline-cancel" class="secondary" type="button" autofocus>取消</button><button id="offline-confirm" class="offline-button" type="button">确认下线</button></div>
+</dialog>
+<dialog id="vault-dialog" class="vault-dialog" aria-labelledby="vault-title" aria-describedby="vault-description">
+  <div class="vault-header"><div><p class="eyebrow">应用配置</p><h2 id="vault-title">密钥管理</h2><p id="vault-target" class="vault-target"></p></div><button id="vault-close" class="secondary" type="button">关闭</button></div>
+  <p id="vault-description" class="vault-description">这里只显示名称、版本和状态，不提供已保存值的查看或复制。平台内吊销会阻止相关版本继续使用；外部供应商的凭证仍需在供应商处撤销。</p>
+  <p id="vault-message" class="management-notice" role="status" aria-live="polite"></p>
+  <p id="vault-error" class="management-error" role="alert" tabindex="-1"></p>
+  <div id="vault-browser">
+    <div class="vault-section-head"><h3>密钥与版本</h3><button id="vault-refresh" class="secondary" type="button">刷新状态</button></div>
+    <p id="vault-count" class="hint"></p>
+    <div id="vault-items" class="vault-scroll vault-items" tabindex="0" role="region" aria-label="密钥与版本，可上下滚动" aria-describedby="vault-count" aria-busy="false"></div>
+    <section id="vault-operation-section" class="vault-operation-section" aria-labelledby="vault-operations-title" hidden><div class="vault-section-head"><h3 id="vault-operations-title">吊销处理进度</h3><span class="hint">处理中每 3 秒更新；其余可手动刷新</span></div><p id="vault-operation-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p><div id="vault-operations" class="vault-scroll vault-operations" tabindex="0" role="region" aria-label="吊销处理进度，可上下滚动"></div></section>
+  </div>
+  <section id="vault-editor" class="vault-editor" aria-labelledby="vault-editor-title" hidden>
+    <button id="vault-back" class="secondary" type="button">返回版本列表</button>
+    <h3 id="vault-editor-title" tabindex="-1"></h3>
+    <p id="vault-editor-target" class="vault-editor-target" translate="no"></p>
+    <p id="vault-editor-description" class="vault-description"></p>
+    <div id="vault-reauth" class="vault-reauth" hidden><p>此操作需要最近 10 分钟内的登录确认。请在新标签页登录，再返回检查登录状态；不会自动提交密钥。</p><div class="vault-inline-actions"><a id="vault-reauth-link" href="/login" target="_blank" rel="noopener">在新标签页登录 ↗</a><button id="vault-reauth-check" class="secondary" type="button">重新检查登录</button></div></div>
+    <form id="vault-form" novalidate>
+      <div id="vault-value-field"><label for="vault-value">新密钥值</label><div class="vault-input-row"><input id="vault-value" name="secretValue" type="password" autocomplete="new-password" spellcheck="false" autocapitalize="off" aria-describedby="vault-value-help vault-value-error"><button id="vault-show" class="secondary" type="button" aria-controls="vault-value" aria-pressed="false">显示</button></div><p id="vault-value-help" class="hint">直接粘贴供应商提供的完整值；内容不会自动去除首尾空格。提交成功后清空输入框。</p><p id="vault-value-error" class="vault-field-error" aria-live="polite"></p></div>
+      <div id="vault-reason-field" hidden><label for="vault-reason">吊销原因</label><textarea id="vault-reason" name="revocationReason" rows="3" maxlength="500" autocomplete="off" aria-describedby="vault-reason-help vault-reason-error"></textarea><p id="vault-reason-help" class="hint">填写风险或处置原因，不要填写密钥、密码或其他敏感内容。</p><p id="vault-reason-error" class="vault-field-error" aria-live="polite"></p></div>
+      <p id="vault-form-error" class="management-error" role="alert" tabindex="-1"></p>
+      <div id="vault-conflict" class="vault-conflict" hidden><p id="vault-conflict-text"></p><button id="vault-reconfirm" class="secondary" type="button" hidden>我已核对，使用当前版本继续</button></div>
+      <div class="vault-form-actions"><button id="vault-cancel" class="secondary" type="button">取消</button><button id="vault-submit" type="submit">创建新版本</button></div>
+    </form>
+  </section>
 </dialog>
 </body></html>

@@ -19,6 +19,22 @@ class DeploymentSecrets:
     def __init__(self, settings, store):
         self.settings, self.store = settings, store
         self.secrets = SecretStore(settings)
+        self.encrypted = getattr(settings, "secret_backend", "legacy") == "encrypted"
+
+    @contextmanager
+    def _configuration_scope(self, job_id, *, write=False, actor=None):
+        arguments = {"write": write, **({"actor": actor} if actor else {})}
+        if self.encrypted:
+            arguments["include_connection"] = True
+        with self.store.secret_configuration_scope(job_id, **arguments) as values:
+            if self.encrypted:
+                yield values
+            else:
+                yield (*values, None)
+
+    def _vault(self):
+        from .secret_vault import SecretVault
+        return SecretVault(self.settings)
 
     def _requirements(self, job):
         """Only a validated, durably pinned source snapshot may supply reference names."""
@@ -48,8 +64,28 @@ class DeploymentSecrets:
         except (DeployError, ValueError, TypeError, KeyError, AttributeError, RecursionError):
             raise DeployError("SECRET_CONFIGURATION_NOT_AVAILABLE", "该任务缺少可核验的固定配置快照。") from None
 
-    def _describe(self, job, can_generate):
+    def _describe(self, job, can_generate, db=None):
         repository, subdomain, uses = self._requirements(job)
+        if self.encrypted:
+            from .vault_format import require_ready
+            require_ready(self.settings, db)
+            # No registration or legacy fallback here: missing/corrupt records require migration or recovery.
+            metadata = {item["name"]: item for item in self._vault().metadata(db, job["app_id"])}
+            items = []
+            for name in sorted(uses):
+                existing = metadata.get(name)
+                declared_master = any(use["environmentVariable"] == "MASTER_KEY" for use in uses[name])
+                if existing and declared_master and existing["kind"] != "platform_managed_master":
+                    raise DeployError("SECRET_KIND_CONFLICT", "已有运行密钥不能通过清单改为数据主密钥，请专项迁移。")
+                managed = existing["kind"] == "platform_managed_master" if existing else declared_master
+                state = "missing"
+                if existing:
+                    current = next((version for version in existing["versions"]
+                                    if version["version"] == existing["current_version"]), None)
+                    state = "configured" if current and current["status"] == "active" else "unavailable"
+                items.append({"name": name, "uses": uses[name], "state": state, "managed": managed})
+            return {"jobId": job["id"], "repository": repository, "subdomain": subdomain,
+                    "canGenerate": can_generate, "items": items}
         return {
             "jobId": job["id"], "repository": repository, "subdomain": subdomain,
             "canGenerate": can_generate,
@@ -62,8 +98,8 @@ class DeploymentSecrets:
     def describe(self, job_id, *, actor=None):
         """Read only authorized reference names, pointer metadata and file attributes."""
         try:
-            with self.store.secret_configuration_scope(job_id, **({"actor": actor} if actor else {})) as (job, can_generate):
-                return self._describe(job, can_generate)
+            with self._configuration_scope(job_id, actor=actor) as (job, can_generate, db):
+                return self._describe(job, can_generate, db)
         except DeployError:
             raise
         except Exception:
@@ -109,8 +145,8 @@ class DeploymentSecrets:
                 raise DeployError("INVALID_REQUEST", "配置引用名称不符合要求。")
             SecretStore.validate_value(value)
         with self._worker_lock():
-            with self.store.secret_configuration_scope(job_id, write=True, **({"actor": actor} if actor else {})) as (job, can_generate):
-                metadata = self._describe(job, can_generate)
+            with self._configuration_scope(job_id, write=True, actor=actor) as (job, can_generate, db):
+                metadata = self._describe(job, can_generate, db)
                 states = {item["name"]: item["state"] for item in metadata["items"]}
                 if set(values) - states.keys():
                     raise DeployError("INVALID_REQUEST", "只能补充该固定快照声明的配置。")
@@ -139,11 +175,19 @@ class DeploymentSecrets:
                         raise DeployError("SECRET_ALREADY_CONFIGURED", "已有配置不能通过此入口覆盖。")
                     if states[name] != "missing":
                         raise DeployError("SECRET_UNAVAILABLE", "现有配置状态异常，不能自动修复。")
+                vault = self._vault() if self.encrypted else None
                 for name, value in sorted(values.items()):
-                    self.secrets.create_missing(metadata["repository"], metadata["subdomain"], name, value)
+                    if vault:
+                        vault.create_missing(db, job["app_id"], name, value, actor_id=actor["id"])
+                    else:
+                        self.secrets.create_missing(metadata["repository"], metadata["subdomain"], name, value)
                 # A failed user-value write must not leave a newly generated master key behind.
                 # A published key is always reused on retries, including a lost success response.
                 for name in generate:
-                    self.secrets.create_missing(metadata["repository"], metadata["subdomain"], name,
-                                                secrets.token_hex(32))
-                return self._describe(job, can_generate)
+                    if vault:
+                        vault.create_missing(db, job["app_id"], name, secrets.token_hex(32),
+                            kind="platform_managed_master", actor_id=actor["id"])
+                    else:
+                        self.secrets.create_missing(metadata["repository"], metadata["subdomain"], name,
+                                                    secrets.token_hex(32))
+                return self._describe(job, can_generate, db)

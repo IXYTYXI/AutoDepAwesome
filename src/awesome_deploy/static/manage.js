@@ -126,6 +126,7 @@ function appRow(app) {
     const link=action('a','去部署控制台 ↗',`deploy:${app.id}`);link.href='/';actions.append(link);
   }
   if(app.permissions?.manageMembers===true || app.permissions?.assignOwner===true){const link=action('a',app.permissions.assignOwner ? '指定负责人' : '成员管理',`members:${app.id}`);link.href='/members?appId='+encodeURIComponent(app.id);actions.append(link);}
+  if(typeof window!=='undefined' && window.AwesomeVault?.canOpen(app)){const button=action('button','密钥管理',`vault:${app.id}`);button.className='secondary';button.setAttribute('aria-label',`${appName(app)}，应用 ${app.id.slice(0,8)}，密钥管理`);button.addEventListener('click',()=>window.AwesomeVault.open(app,()=>focusTarget($('online-apps'),`vault:${app.id}`) || focusTarget($('retained-apps'),`vault:${app.id}`) || $('management-refresh')));actions.append(button);}
   row.append(info,meta,state,actions);return row;
 }
 function deploymentRow(job) {
@@ -315,6 +316,6 @@ $('management-refresh').addEventListener('click',refreshManagement);
 refreshManagement();
 
 if(typeof window!=='undefined' && window.AwesomeAuth){
-  const syncPermission=()=>{const session=window.AwesomeAuth.session();$('management-deploy').hidden=!session || (session.mode==='feishu' ? session.canDeploy!==true : session.canDeploy===false);};
+  const syncPermission=()=>{const session=window.AwesomeAuth.session();$('management-deploy').hidden=!session || (session.mode==='feishu' ? session.canDeploy!==true : session.canDeploy===false);if(managementData)renderManagement(managementData);};
   window.AwesomeAuth.onChange(syncPermission);window.AwesomeAuth.ready.then(syncPermission);
 }

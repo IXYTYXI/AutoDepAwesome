@@ -64,6 +64,19 @@ class SecretConfigurationRequest(BaseModel):
     values: dict[StrictStr, StrictStr]
 
 
+class SecretRotationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    value: StrictStr
+    expected_current_version: StrictStr
+
+
+class SecretRevocationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: StrictStr
+    expected_current_version: StrictStr
+    reason: StrictStr
+
+
 class MemberRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     role: Literal["maintainer", "viewer"]
@@ -156,6 +169,10 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
     app.state.identity, app.state.access = identity, access
     app.state.advice = AdviceService(settings)
     app.state.deployment_secrets = DeploymentSecrets(settings, store)
+    app.state.vault_service = None
+    if getattr(settings, "secret_backend", "legacy") == "encrypted":
+        from .vault_service import VaultService
+        app.state.vault_service = VaultService(settings, store)
     public = urlsplit(settings.public_url)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[public.hostname or "127.0.0.1"])
     basic = HTTPBasic(auto_error=False)
@@ -202,6 +219,14 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
     def feishu_only():
         if identity is None:
             raise HTTPException(404)
+
+    def vault_enabled():
+        return identity is not None and getattr(settings, "secret_backend", "legacy") == "encrypted"
+
+    def vault_management():
+        if not vault_enabled() or app.state.vault_service is None:
+            raise HTTPException(404)
+        return app.state.vault_service
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request, error):
@@ -266,11 +291,13 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
     @app.get("/auth/session")
     def session_info(request: Request, actor=Depends(authenticated)):
         if identity is None:
-            return {"mode": "basic", "authenticated": True, "role": "admin", "canDeploy": True}
+            return {"mode": "basic", "authenticated": True, "role": "admin", "canDeploy": True,
+                    "capabilities": {"vault_enabled": False}}
         from .identity import SESSION_COOKIE, csrf_token
         return {"mode": "feishu", "authenticated": True, "userId": actor["id"],
                 "displayName": actor["name"], "role": "admin" if actor["is_admin"] else "member",
-                "canDeploy": bool(actor["can_deploy"]), "csrfToken": csrf_token(request.cookies[SESSION_COOKIE])}
+                "canDeploy": bool(actor["can_deploy"]), "csrfToken": csrf_token(request.cookies[SESSION_COOKIE]),
+                "capabilities": {"vault_enabled": vault_enabled()}}
 
     @app.post("/auth/logout", dependencies=[Depends(write_access)])
     def logout(request: Request):
@@ -325,7 +352,8 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
             if code.startswith("AI_")
             else 409
             if code in {"DIAGNOSIS_NOT_AVAILABLE", "OFFLINE_RELEASE_CHANGED", "OFFLINE_STATE",
-                        "SECRET_CONFIGURATION_NOT_AVAILABLE", "SECRET_ALREADY_CONFIGURED", "SECRET_UNAVAILABLE", "STORAGE_IN_USE"}
+                        "SECRET_CONFIGURATION_NOT_AVAILABLE", "SECRET_ALREADY_CONFIGURED", "SECRET_UNAVAILABLE",
+                        "STORAGE_IN_USE", "LAST_ADMIN_REQUIRED", "SECRET_REVOKED", "SECRET_REVOCATION_STATE"}
             else 404
             if code == "NOT_FOUND"
             else 409
@@ -369,6 +397,8 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
             assigned = db.execute("SELECT 1 FROM app_access WHERE app_id=?", (app_id,)).fetchone() is not None
         return {"viewDetails": role in {"admin", "owner", "maintainer"}, "deploy": writable,
                 "configureSecrets": writable, "offline": writable and role in {"admin", "owner"},
+                "manageSecrets": writable and vault_enabled(), "rotateSecrets": writable and vault_enabled(),
+                "revokeSecrets": writable and vault_enabled() and role in {"admin", "owner"},
                 "manageMembers": role in {"admin", "owner"} and assigned,
                 "assignOwner": role == "admin" and not assigned,
                 "manageRepositoryCredentials": role == "admin" and assigned}
@@ -421,7 +451,7 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
         if identity is None:
             authenticated(request, credentials)
         if name not in ("app.js", "app.css", "manage.js", "manage.css", "auth.js", "auth.css",
-                        "login.js", "members.js", "members.css"):
+                        "login.js", "members.js", "members.css", "vault.js", "vault.css"):
             raise HTTPException(404)
         return FileResponse(STATIC / name)
 
@@ -460,6 +490,7 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
             },
             "baseDomain": settings.base_domain,
             "aiAdvice": {"configured": app.state.advice.configured},
+            "secretVault": {"enabled": vault_enabled(), "versionManagement": vault_enabled()},
             "applicationManagement": {"offline": True, "retainsData": True,
                                       "dataPolicies": ["retain", "delete"], "deletesStoredSecrets": True},
         }
@@ -545,6 +576,23 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
         except TimeoutError:
             # AdviceService shields and coalesces the provider task across short polls.
             return JSONResponse({"status": "pending"}, status_code=202, headers={"Retry-After": "1"})
+
+    @app.get("/api/v1/apps/{app_id}/secrets")
+    def app_secrets(app_id: str, actor=Depends(authenticated)):
+        return vault_management().describe(app_id, actor=actor)
+
+    @app.post("/api/v1/apps/{app_id}/secrets/{name}/rotate")
+    def rotate_secret(app_id: str, name: str, body: SecretRotationRequest, actor=Depends(write_access)):
+        service = vault_management()
+        fresh(actor)
+        return service.rotate(app_id, name, body.value, body.expected_current_version, actor=actor)
+
+    @app.post("/api/v1/apps/{app_id}/secrets/{name}/revoke", status_code=202)
+    def revoke_secret(app_id: str, name: str, body: SecretRevocationRequest, actor=Depends(write_access)):
+        service = vault_management()
+        fresh(actor)
+        return service.public_operation(service.revoke(app_id, name, body.version,
+            body.expected_current_version, body.reason, actor=actor))
 
     @app.get("/api/v1/apps", dependencies=[Depends(authenticated)])
     def apps(actor=Depends(authenticated)):

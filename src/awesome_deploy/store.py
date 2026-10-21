@@ -19,9 +19,10 @@ def _json(value):
 
 
 class Store:
-    def __init__(self, settings, *, verified_offline_domains=None):
+    def __init__(self, settings, *, verified_offline_domains=None, allow_vault_maintenance=False):
         self.settings = settings
-        settings.state_dir.mkdir(parents=True, exist_ok=True)
+        self.allow_vault_maintenance = allow_vault_maintenance
+        settings.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         with self._connection() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
@@ -58,6 +59,16 @@ class Store:
             """)
             self._migrate_domain_bindings(db, verified_offline_domains)
             AccessStore.ensure_schema(db)
+            from .secret_vault import SecretVault
+            from .vault_runtime import VaultRuntime
+            from .vault_service import VaultService
+            from .vault_format import ensure_schema, require_ready
+            SecretVault.ensure_schema(db)
+            VaultRuntime.ensure_schema(db)
+            VaultService.ensure_schema(db)
+            ensure_schema(db)
+            if not allow_vault_maintenance:
+                require_ready(settings, db)
 
     def _migrate_domain_bindings(self, db, verified_offline_domains):
         """Relax only the old domain constraint; preserve every child table and foreign key."""
@@ -168,6 +179,9 @@ class Store:
         try:
             if write:
                 db.execute("BEGIN IMMEDIATE")
+                if not self.allow_vault_maintenance:
+                    from .vault_format import require_ready
+                    require_ready(self.settings, db)
             yield db
             if write:
                 db.commit()
@@ -228,7 +242,7 @@ class Store:
             yield
 
     @contextmanager
-    def secret_configuration_scope(self, job_id, *, write=False, actor=None):
+    def secret_configuration_scope(self, job_id, *, write=False, actor=None, include_connection=False):
         """Authorize a new secret writer independently of old-version reuse rules.
 
         The caller holds worker.lock before requesting a write transaction, and
@@ -243,7 +257,7 @@ class Store:
                 fresh = AccessStore._actor(db, actor)
                 if job.get("app_id"):
                     AccessStore._require(db, fresh, job["app_id"], "secrets")
-                    if not fresh["is_admin"]:
+                    if not fresh["is_admin"] and self.settings.secret_backend != "encrypted":
                         AccessStore.require_secret_scope(db, job["app_id"],
                             job["input"].get("repository"), job["input"].get("subdomain"))
                 elif not fresh["is_admin"] or not fresh["can_deploy"]:
@@ -255,7 +269,7 @@ class Store:
                     or not isinstance(job.get("input"), dict) or self._data_cleared(job)):
                 raise DeployError("SECRET_CONFIGURATION_NOT_AVAILABLE", "该任务不能补充秘密配置。")
             can_generate = self._authorize_secret_configuration(db, job)
-            yield job, can_generate
+            yield (job, can_generate, db) if include_connection else (job, can_generate)
 
     def _authorize_secret_configuration(self, db, job):
         payload = job["input"]
@@ -273,6 +287,8 @@ class Store:
         if selected and assigned and selected != assigned:
             raise conflict
         owner = assigned or selected
+        if self.settings.secret_backend == 'encrypted':
+            self._check_offline_gate(db, owner, subdomain)
         active_release = None
         if owner:
             app = db.execute("SELECT * FROM apps WHERE id=?", (owner,)).fetchone()
@@ -294,7 +310,8 @@ class Store:
             if not isinstance(data, dict):
                 raise DeployError("SECRET_CONFIGURATION_NOT_AVAILABLE", "无法核验配置空间的历史归属。")
             identities = {value for value in (other.get("app_id"), data.get("appId")) if isinstance(value, str) and value}
-            same_scope = data.get("repository") == repository and data.get("subdomain") == subdomain
+            same_scope = (self.settings.secret_backend != "encrypted"
+                          and data.get("repository") == repository and data.get("subdomain") == subdomain)
             same_owner = owner is not None and owner in identities
             if (same_owner or same_scope) and (other["status"] == "succeeded"
                                               or (other.get("execution") or {}).get("storage_volumes")
@@ -364,8 +381,15 @@ class Store:
                     db.execute("INSERT INTO apps VALUES (?,?,NULL,NULL,?,?)",
                                (app_id, payload["repository"], created, created))
                     AccessStore.create_owned(db, actor, app_id)
-                AccessStore.claim_secret_scope(db, self.settings, actor, app_id,
-                                               payload["repository"], payload["subdomain"])
+                    if self.settings.secret_backend == "encrypted":
+                        from .secret_vault import SecretVault
+                        SecretVault(self.settings).register_app(db, app_id, self.settings.feishu_tenant_key,
+                                                               uuid.uuid4().hex, actor_id=actor["id"])
+                if self.settings.secret_backend == "encrypted":
+                    self._prepare_vault_generation(db, app_id, actor["id"])
+                else:
+                    AccessStore.claim_secret_scope(db, self.settings, actor, app_id,
+                                                   payload["repository"], payload["subdomain"])
             self._check_offline_gate(db, app_id, payload.get("subdomain"))
             job_id, now = uuid.uuid4().hex, time.time()
             db.execute(
@@ -377,6 +401,27 @@ class Store:
             if actor is not None:
                 AccessStore.record_operation(db, actor, "job", job_id, app_id, "deploy", request_key)
             return self._get(db, job_id)
+
+    def _prepare_vault_generation(self, db, app_id, actor_id):
+        from .secret_vault import SecretVault
+        vault = SecretVault(self.settings)
+        app = vault._app(db, app_id, allow_destroyed=True)
+        if app['state'] == 'destroyed':
+            current = db.execute('SELECT active_release_id FROM apps WHERE id=?', (app_id,)).fetchone()
+            jobs = [self._job(row) for row in db.execute('SELECT * FROM jobs WHERE app_id=?', (app_id,))]
+            if (not jobs or current['active_release_id'] is not None
+                    or any(not self._data_cleared(job) for job in jobs)):
+                raise DeployError('SECRET_MASTER_PROTECTED', '原数据代际尚未确认完整清除，不能生成新主密钥。')
+            vault.register_app(db, app_id, self.settings.feishu_tenant_key, uuid.uuid4().hex, actor_id=actor_id)
+        else:
+            if app['tenant_id'] != self.settings.feishu_tenant_key:
+                raise DeployError('VAULT_IDENTITY_CONFLICT', '应用密钥所属企业不匹配。')
+            vault._dek(db, app)
+
+    def validate_runtime_secrets(self, job, *, db=None):
+        if self.settings.secret_backend == 'encrypted':
+            from .vault_runtime import VaultRuntime
+            VaultRuntime(self.settings).validate(job, db=db)
 
     def list_jobs(self, limit=50, *, actor=None):
         with self._connection() as db:
@@ -433,6 +478,10 @@ class Store:
 
     @staticmethod
     def _check_offline_gate(db, app_id, subdomain):
+        if db.execute("""SELECT 1 FROM vault_revocations r JOIN apps a ON r.app_id=a.id
+                WHERE r.status IN ('queued','running','recovery_required')
+                AND (a.id=? OR a.subdomain=?) LIMIT 1""", (app_id, subdomain)).fetchone():
+            raise DeployError('SECRET_REVOCATION_STATE', '密钥吊销尚未确认完成，应用暂不能部署、恢复或下线。')
         if db.execute("""SELECT operations.id FROM offline_operations AS operations
             JOIN apps ON apps.id=operations.app_id
             WHERE operations.status IN ('queued','running','recovery_required')
@@ -446,6 +495,9 @@ class Store:
                 raise DeployError("APP_OFFLINE_BUSY", "A historical application scope is being deleted.")
 
     def _offline_block_reason(self, db, app, *, ignore_operation=None):
+        if db.execute("""SELECT 1 FROM vault_revocations WHERE app_id=?
+                AND status IN ('queued','running','recovery_required') LIMIT 1""", (app['id'],)).fetchone():
+            return 'SECRET_REVOCATION_STATE'
         if not app["active_release_id"]:
             return "OFFLINE_RELEASE_CHANGED"
         if db.execute("""SELECT id FROM offline_operations WHERE app_id=?
@@ -535,6 +587,10 @@ class Store:
         domains = {domain for _, domain in scopes}
         for job in jobs:
             data = job["input"]
+            if self.settings.secret_backend == 'encrypted' and job['id'] not in selected:
+                # Ownership is an application identity after migration. A released
+                # domain may now belong to another app without sharing its vault.
+                continue
             same_scope = (data.get("repository"), data.get("subdomain")) in scopes
             if (job["status"] in {"queued", "running", "recovery_required"}
                     and (same_scope or data.get("subdomain") in domains)):
@@ -548,7 +604,7 @@ class Store:
                         or db.execute("SELECT 1 FROM reservations WHERE job_id=?", (job["id"],)).fetchone()):
                     raise conflict
                 selected.add(job["id"])
-        for _, domain in scopes:
+        for _, domain in (scopes if self.settings.secret_backend != 'encrypted' else {(None, app['subdomain'])}):
             self._check_offline_gate(db, app["id"], domain)
         return {"app_id": app["id"], "job_ids": sorted(selected),
                 "scopes": [{"repository": repository, "subdomain": domain} for repository, domain in sorted(scopes)],
@@ -716,11 +772,21 @@ class Store:
             return self._get_offline(db, operation_id)
 
     def _retained_release(self, db, app_id):
-        row = db.execute("""SELECT jobs.* FROM offline_operations AS operations
+        row = db.execute("""SELECT jobs.*,operations.created_at AS retained_at FROM offline_operations AS operations
             JOIN jobs ON jobs.id=operations.target_release_id
             WHERE operations.app_id=? AND operations.status='succeeded'
             ORDER BY operations.created_at DESC,operations.id DESC LIMIT 1""", (app_id,)).fetchone()
-        return self._job(row) if row else None
+        retained = self._job(row) if row else None
+        retained_at = retained.pop('retained_at') if retained is not None else 0
+        # Revocation removes runtime resources, but retains application data and
+        # its exact volume identities just like a retain-data offline operation.
+        for item in db.execute('SELECT * FROM jobs WHERE app_id=? ORDER BY updated_at DESC,id DESC', (app_id,)):
+            candidate = self._job(item)
+            if (candidate['execution'].get('secret_revoked') and candidate['execution'].get('resources_released')
+                    and (candidate['status'] == 'succeeded' or candidate['execution'].get('storage_volumes'))
+                    and (retained is None or candidate['updated_at'] > retained_at)):
+                return candidate
+        return retained
 
     def management_snapshot(self):
         with self._connection() as db:
@@ -765,6 +831,8 @@ class Store:
             }
             blocked.update(row[0] for row in db.execute("""SELECT target_release_id FROM offline_operations
                 WHERE status IN ('queued','running','recovery_required')"""))
+            blocked.update(row[0] for row in db.execute("""SELECT a.active_release_id FROM apps a
+                JOIN vault_revocations r ON r.app_id=a.id WHERE r.status IN ('queued','running','recovery_required')"""))
         due = []
         for job in jobs:
             if job["id"] in blocked:
@@ -798,6 +866,7 @@ class Store:
         now = time.time() if now is None else now
         with self._connection(write=True) as db:
             job = self._require_active(db, job_id)
+            self.validate_runtime_secrets(job, db=db)
             previous = job["execution"].get("active_recovery", {})
             attempts = min(previous.get("attempts", 0) + 1, 16)
             state = {
@@ -820,6 +889,8 @@ class Store:
             # A request may arrive while the worker is already checking this release.
             # Finishing bookkeeping starts nothing; the same worker lock then handles offline.
             job = self._require_active(db, job_id, allow_offline_pending=True)
+            if success:
+                self.validate_runtime_secrets(job, db=db)
             previous = job["execution"].get("active_recovery", {})
             attempts = 0 if success else min(max(previous.get("attempts", 1), 1), 16)
             state = {
@@ -1042,9 +1113,18 @@ class Store:
                 "UPDATE jobs SET app_id=?,snapshot=?,execution=?,phase='reserved',updated_at=? WHERE id=?",
                 (app["id"], _json(snapshot), _json(state), time.time(), job_id),
             )
+            if self.settings.secret_backend == 'encrypted':
+                from .secret_vault import SecretVault
+                for service, versions in snapshot['secret_versions'].items():
+                    for name, version in versions.items():
+                        SecretVault._audit(db, 'SYSTEM', 'secret_version_bound', app['id'], name, version,
+                                           {'job_id': job_id, 'service': service})
             return self._get(db, job_id)
 
     def _check_secret_scope(self, db, app, job, snapshot):
+        if self.settings.secret_backend == 'encrypted':
+            self.validate_runtime_secrets({**job, 'app_id': app['id'], 'snapshot': snapshot}, db=db)
+            return
         wanted = {(name, version) for versions in snapshot.get("secret_versions", {}).values()
                   for name, version in versions.items()}
         if not wanted:
@@ -1090,6 +1170,7 @@ class Store:
                 raise DeployError("JOB_STATE", "An unreserved deployment cannot become active.")
             if job["status"] not in ("queued", "running", "succeeded"):
                 raise DeployError("JOB_STATE", "A failed deployment cannot become active.")
+            self.validate_runtime_secrets(job, db=db)
             app = db.execute("SELECT subdomain FROM apps WHERE id=?", (job["app_id"],)).fetchone()
             if app is None or app["subdomain"] != job["input"]["subdomain"]:
                 raise DeployError("DOMAIN_CONFLICT", "The candidate no longer owns its requested subdomain.")
@@ -1108,6 +1189,30 @@ class Store:
                 "UPDATE jobs SET status='succeeded',phase='complete',error=NULL,execution=?,updated_at=? WHERE id=?",
                 (_json(state), now, job_id),
             )
+            return self._get(db, job_id)
+
+    def confirm_secret_revocation_release(self, operation_id, job_id):
+        """Commit only after worker proved this fixed release has no traffic or containers."""
+        with self._connection(write=True) as db:
+            operation = db.execute('SELECT * FROM vault_revocations WHERE id=?', (operation_id,)).fetchone()
+            job = self._get(db, job_id)
+            if (not operation or operation['status'] != 'running' or job['app_id'] != operation['app_id']
+                    or job_id not in json.loads(operation['execution'])['job_ids']):
+                raise DeployError('SECRET_REVOCATION_STATE', '待清理版本不属于已受理的吊销范围。')
+            db.execute('UPDATE apps SET active_release_id=NULL,updated_at=? WHERE id=? AND active_release_id=?',
+                       (time.time(), job['app_id'], job_id))
+            db.execute('DELETE FROM reservations WHERE job_id=?', (job_id,))
+            if not db.execute('SELECT 1 FROM reservations JOIN jobs ON jobs.id=reservations.job_id WHERE jobs.app_id=?',
+                              (job['app_id'],)).fetchone():
+                db.execute('UPDATE apps SET subdomain=NULL,updated_at=? WHERE id=? AND active_release_id IS NULL',
+                           (time.time(), job['app_id']))
+            state = {**job['execution'], 'resources_released': True, 'secret_revoked': True,
+                     'secret_revocation_id': operation_id}
+            status = job['status'] if job['status'] == 'succeeded' else 'failed'
+            error = {'code': 'SECRET_REVOKED', 'message': '该部署引用的密钥版本已吊销，实例已停止。',
+                     'path': 'secretRefs', 'suggestion': '配置新的有效版本后重新部署。'}
+            db.execute('UPDATE jobs SET status=?,execution=?,error=?,updated_at=? WHERE id=?',
+                       (status, _json(state), _json(error), time.time(), job_id))
             return self._get(db, job_id)
 
     def fail(self, job_id, error, recovery=False):

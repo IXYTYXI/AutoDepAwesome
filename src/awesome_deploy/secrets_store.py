@@ -400,8 +400,7 @@ class SecretStore:
             os.fsync(f.fileno())
 
     def set(self, repository: str, subdomain: str, name: str, value: str) -> str:
-        if not value or "\x00" in value or len(value.encode()) > 16384:
-            raise DeployError("INVALID_SECRET", "秘密配置不能为空、包含 NUL 或超过 16 KiB。")
+        self.validate_value(value)
         directory = self._directory(repository, subdomain, name)
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         # Intermediate directories must not expose values to other local users.

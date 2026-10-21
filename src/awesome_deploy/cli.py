@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 from .auth import initialize_credentials
 from .config import (Settings, validate_ai_settings, validate_git_proxy_settings, validate_storage_settings,
-                     validate_identity_settings)
+                     validate_identity_settings, validate_vault_settings)
 from .errors import DeployError
 
 
@@ -30,7 +30,7 @@ def load_settings(path: Path | None) -> Settings:
             raise DeployError("INVALID_CONFIG", "无法读取运维配置 JSON。") from exc
     if not isinstance(values, dict) or set(values) - {f.name for f in dataclasses.fields(Settings)}:
         raise DeployError("INVALID_CONFIG", "运维配置包含未知字段或不是对象。")
-    for key in ("state_dir", "auth_file", "rootlesskit_socket", "ai_api_key_file", "egress_docker_pid_file", "feishu_app_secret_file"):
+    for key in ("state_dir", "auth_file", "rootlesskit_socket", "ai_api_key_file", "egress_docker_pid_file", "feishu_app_secret_file", "secret_kek_file"):
         if key in values and values[key] is not None:
             try:
                 candidate = Path(values[key]).expanduser()
@@ -40,7 +40,7 @@ def load_settings(path: Path | None) -> Settings:
                 if not candidate.is_absolute() or any(part == ".." for part in candidate.parts):
                     raise DeployError("INVALID_CONFIG", "egress_docker_pid_file 必须是绝对路径。")
                 values[key] = candidate
-            elif key in {"ai_api_key_file", "feishu_app_secret_file"}:
+            elif key in {"ai_api_key_file", "feishu_app_secret_file", "secret_kek_file"}:
                 # Preserve the final path component so O_NOFOLLOW can reject symlinks.
                 values[key] = Path(os.path.abspath(base / candidate))
             else:
@@ -69,6 +69,7 @@ def load_settings(path: Path | None) -> Settings:
         validate_ai_settings(settings)
         validate_storage_settings(settings)
         validate_identity_settings(settings)
+        validate_vault_settings(settings)
         from .egress import policy
 
         try:
@@ -142,9 +143,14 @@ def main(argv=None):
         users.add_argument("--" + flag, choices=("true", "false"))
     sub.add_parser("auth-revoke-all", help="注销所有平台会话与在途登录；恢复数据库后必须执行")
     secret = sub.add_parser("secret-set", help="安全输入应用秘密配置")
-    secret.add_argument("--repository", required=True)
-    secret.add_argument("--subdomain", required=True)
+    secret.add_argument("--repository")
+    secret.add_argument("--subdomain")
     secret.add_argument("--name", required=True)
+    secret.add_argument("--app-id", help="加密模式使用稳定应用标识")
+    secret.add_argument("--expected-current-version", help="加密模式普通轮换的当前版本")
+    secret.add_argument("--reason", help="非敏感操作原因，普通轮换必填")
+    from .vault_cli import add_arguments
+    add_arguments(sub)
     schema = sub.add_parser("schema", help="输出当前支持的 JSON Schema")
     schema.add_argument("--output", type=Path)
     schema.add_argument("--version", type=int, choices=(1, 2), default=1)
@@ -213,6 +219,11 @@ def main(argv=None):
             finally:
                 identities.provider.close()
         elif args.command == "secret-set":
+            if settings.secret_backend == "encrypted":
+                from .vault_cli import set_secret
+                return set_secret(settings, args)
+            if not args.repository or not args.subdomain or args.app_id or args.expected_current_version:
+                raise DeployError("INVALID_REQUEST", "旧格式secret-set必须指定repository和subdomain。")
             from .deployment_secrets import DeploymentSecrets
             from .source import validate_repository
             from .store import Store
@@ -228,6 +239,9 @@ def main(argv=None):
                 with Store(settings).secret_write_scope(repository, args.subdomain):
                     version = configuration.secrets.set(repository, args.subdomain, args.name, value)
             print(json.dumps({"name": args.name, "version": version}, ensure_ascii=False))
+        elif args.command.startswith("vault-"):
+            from .vault_cli import command
+            return command(settings, args)
         elif args.command == "schema":
             from .manifest import schema_document
 

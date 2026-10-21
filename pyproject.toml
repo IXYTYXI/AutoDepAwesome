@@ -7,7 +7,7 @@ name = "awesome-deploy"
 version = "0.9.0"
 description = "A controlled repository-to-HTTPS deployment service"
 requires-python = ">=3.11"
-dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "PyYAML>=6,<7", "jsonschema>=4.23,<5", "httpx>=0.28,<1"]
+dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "PyYAML>=6,<7", "jsonschema>=4.23,<5", "httpx>=0.28,<1", "cryptography>=44,<48"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "ruff>=0.9,<1"]

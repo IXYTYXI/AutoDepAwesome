@@ -5,6 +5,7 @@ Plans contain ownership/file metadata only and never secret values.
 """
 
 import copy
+import json
 import re
 
 from .errors import DeployError
@@ -14,7 +15,9 @@ from .storage import ManagedStorage
 
 class OfflineDataDeletion:
     def __init__(self, settings, docker):
-        self.secrets = SecretStore(settings)
+        self.settings = settings
+        self.encrypted = settings.secret_backend == "encrypted"
+        self.secrets = None if self.encrypted else SecretStore(settings)
         self.storage = ManagedStorage(docker, settings)
         self.docker = docker
 
@@ -99,6 +102,14 @@ class OfflineDataDeletion:
     def inventory(self, metadata):
         self._metadata(metadata)
         self._check_volumes(metadata, unused=False)
+        if self.encrypted:
+            from .secret_vault import SecretVault
+            from .store import Store
+            with Store(self.settings)._connection() as db:
+                db.execute("BEGIN")
+                operation, _ = self._vault_operation(db, metadata)
+                return {"version": 2, "metadata": copy.deepcopy(metadata), "operation_id": operation["id"],
+                        "vault": SecretVault(self.settings).inventory(db, metadata["app_id"])}
         return {
             "version": 1,
             "metadata": copy.deepcopy(metadata),
@@ -106,6 +117,8 @@ class OfflineDataDeletion:
         }
 
     def delete(self, plan, checkpoint):
+        if self.encrypted:
+            return self._delete_vault(plan, checkpoint)
         if (
             not isinstance(plan, dict) or set(plan) != {"version", "metadata", "secrets"}
             or type(plan["version"]) is not int or plan["version"] != 1
@@ -133,4 +146,65 @@ class OfflineDataDeletion:
             self.secrets.delete_scope(scope)
         # A completed deletion is durable before the Store releases the name and
         # ports and marks historical inputs unavailable for configuration replay.
+        checkpoint({"secrets_deleted": True, "data_deleted": True})
+
+    def _vault_operation(self, db, metadata, plan=None):
+        """The durable offline gate excludes API writes throughout volume deletion.
+
+        The worker already holds worker.lock, which excludes CLI and deployment
+        writes. No SQLite transaction is held across checkpoint callbacks.
+        """
+        conflict = DeployError("OFFLINE_DATA_CONFLICT", "应用数据销毁记录或授权范围不一致，已停止清理。")
+        rows = db.execute("SELECT * FROM offline_operations WHERE app_id=? AND status IN ('running','succeeded')",
+                          (metadata["app_id"],)).fetchall()
+        matches = []
+        for row in rows:
+            execution = json.loads(row["execution"])
+            if (execution.get("data_policy") == "delete" and execution.get("deletion_metadata") == metadata
+                    and (plan is None or row["id"] == plan["operation_id"])):
+                matches.append((row, execution))
+        if len(matches) != 1:
+            raise conflict
+        operation, execution = matches[0]
+        authorization = db.execute("SELECT * FROM operation_auth WHERE kind='offline' AND id=?",
+                                   (operation["id"],)).fetchone()
+        if (authorization is None or authorization["app_id"] != metadata["app_id"]
+                or authorization["action"] != "delete" or not authorization["user_id"]):
+            raise conflict
+        if plan is None:
+            if operation["status"] != "running":
+                raise conflict
+        elif (execution.get("deletion_plan") != plan or execution.get("authorization_started") is not True
+              or execution.get("cleanup_confirmed") is not True
+              or operation["status"] == "succeeded" and execution.get("data_deleted") is not True):
+            raise conflict
+        if db.execute("SELECT 1 FROM vault_revocations WHERE app_id=? AND status!='succeeded' LIMIT 1",
+                      (metadata["app_id"],)).fetchone():
+            raise conflict
+        return operation, authorization["user_id"]
+
+    def _delete_vault(self, plan, checkpoint):
+        if (not isinstance(plan, dict) or set(plan) != {"version", "metadata", "vault", "operation_id"}
+                or type(plan["version"]) is not int or plan["version"] != 2
+                or not isinstance(plan["operation_id"], str) or not isinstance(plan["vault"], dict)):
+            raise DeployError("OFFLINE_DATA_CONFLICT", "Unsupported encrypted data deletion plan")
+        metadata = plan["metadata"]
+        self._metadata(metadata)
+        if plan["vault"].get("app_id") != metadata["app_id"]:
+            raise DeployError("OFFLINE_DATA_CONFLICT", "Vault deletion application changed")
+        from .secret_vault import SecretVault
+        from .store import Store
+        store, vault = Store(self.settings), SecretVault(self.settings)
+        self._check_volumes(metadata, unused=True)
+        with store._connection() as db:
+            db.execute("BEGIN")
+            self._vault_operation(db, metadata, plan)
+            vault.verify_deletion(db, plan["vault"])
+        checkpoint({"phase": "offline_delete_data", "data_delete_intent": True})
+        for volume in metadata["volumes"]:
+            self.storage.remove(metadata["app_id"], **volume)
+        checkpoint({"volumes_deleted": True, "phase": "offline_delete_secrets"})
+        with store._connection(write=True) as db:
+            _, actor_id = self._vault_operation(db, metadata, plan)
+            vault.delete(db, plan["vault"], actor_id=actor_id)
         checkpoint({"secrets_deleted": True, "data_deleted": True})

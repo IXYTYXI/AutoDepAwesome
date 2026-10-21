@@ -2,6 +2,8 @@
 
 from dataclasses import replace
 import fcntl
+import os
+import stat
 import time
 
 from .errors import DeployError
@@ -24,8 +26,13 @@ class Worker:
         remains locked if the worker dies while a mutating subprocess is alive.
         There is deliberately no expiring lease or automatic timed takeover.
         """
-        self.settings.state_dir.mkdir(parents=True, exist_ok=True)
-        with (self.settings.state_dir / "worker.lock").open("a+b") as lock:
+        self.settings.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock_fd = os.open(self.settings.state_dir / 'worker.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(lock_fd, 'a+b') as lock:
+            info = os.fstat(lock.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+                raise DeployError('UNSAFE_WORKER_LOCK', '部署执行锁的文件身份不安全。')
+            os.fchmod(lock.fileno(), 0o600)
             try:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -33,6 +40,15 @@ class Worker:
             self.backend.lock_fd = lock.fileno()
             self.source.lock_fd = lock.fileno()
             try:
+                from .runtime_environment import EnvironmentFiles
+                EnvironmentFiles(self.settings).cleanup()
+                if self.settings.secret_backend == 'encrypted':
+                    from .vault_service import VaultService
+                    vault = VaultService(self.settings, self.store)
+                    operation = vault.next_revocation()
+                    if operation:
+                        self._revoke(vault, operation)
+                        return True
                 job = self.store.next_job()
                 maintenance = False
                 urgent_recovery = (
@@ -101,6 +117,34 @@ class Worker:
                 self.source.lock_fd = None
                 # Closing, rather than LOCK_UN, preserves the flock in inherited child descriptors.
 
+    def _revoke(self, vault, operation):
+        operation = vault.claim_revocation(operation['id'])
+        confirmed = set(operation['execution'].get('confirmed_job_ids', []))
+        failed = False
+        for job_id in operation['execution']['job_ids']:
+            if job_id in confirmed:
+                continue
+            try:
+                job = self.store.get(job_id)
+                if job['app_id'] != operation['app_id']:
+                    raise DeployError('SECRET_REVOCATION_STATE', '吊销对象身份不匹配。')
+                if not job['execution'].get('resources_released'):
+                    result = self.backend.revoke_release(job) or {}
+                    displaced = result.get('displaced_release')
+                    if displaced and displaced not in operation['execution']['job_ids']:
+                        raise DeployError('SECRET_REVOCATION_FAILED', '中断的发布涉及其他旧版本，需要人工核对路由与状态。')
+                self.store.confirm_secret_revocation_release(operation['id'], job_id)
+                confirmed.add(job_id)
+                vault.checkpoint_revocation(operation['id'], {'confirmed_job_ids': sorted(confirmed)})
+            except Exception:
+                # Continue stopping the other fixed targets; never restore an old release.
+                failed = True
+        if failed:
+            vault.fail_revocation(operation['id'], {'code': 'SECRET_REVOCATION_FAILED'})
+        else:
+            vault.checkpoint_revocation(operation['id'], {'confirmed_job_ids': sorted(confirmed)})
+            vault.finish_revocation(operation['id'])
+
     def _offline(self, operation):
         try:
             if not offline_started(operation):
@@ -146,8 +190,15 @@ class Worker:
         try:
             job = self.store.begin_active_recovery(job["id"], self.backend.recovery_boot_id())
         except DeployError as error:
-            if error.code == "APP_OFFLINE_BUSY" and not required:
+            if error.code in {"APP_OFFLINE_BUSY", 'SECRET_REVOCATION_STATE'} and not required:
                 return  # A user requested offline after this recovery scan selected the release.
+            if self.settings.secret_backend == 'encrypted' and not required:
+                self.store.checkpoint(job['id'], execution={'active_recovery': {
+                    'boot_id': self.backend.recovery_boot_id(), 'outcome': 'failed', 'attempts': 1,
+                    'next_at': time.time() + 60,
+                }})
+                self.store.event(job['id'], 'recovery', 'Secret validation blocked automatic recovery; operator review is required.')
+                return
             raise
         try:
             result = self.backend.recover_active(
@@ -224,11 +275,13 @@ class Worker:
                     job_id, phase="frozen", execution={"frozen": True}, snapshot=snapshot
                 )
             job = self.store.reserve(job_id, job["snapshot"])
+            self.store.validate_runtime_secrets(job)
             services = set(job["snapshot"]["manifest"]["services"])
             if not services.issubset(job["execution"].get("images", {})):
                 job = self._phase(job_id, "build", "Building candidate images.")
                 images = self.backend.build(job, checkpoint)
                 job = self.store.checkpoint(job_id, execution={"images": images}, phase="built")
+            self.store.validate_runtime_secrets(job)
             self.access.authorize_operation("job", job_id, force=True)
             if job["execution"].get("previous_release") and any(
                 service.get("storage") for service in job["snapshot"]["manifest"]["services"].values()
@@ -243,6 +296,7 @@ class Worker:
                     self.backend.prepare_storage(job, checkpoint)
                     job = self.store.get(job_id)
                 self.access.authorize_operation("job", job_id, force=True)
+                self.store.validate_runtime_secrets(job)
                 job = self.store.checkpoint(job_id, phase="storage_handoff", execution={
                     "storage_handoff_intent": True,
                 })
@@ -253,6 +307,7 @@ class Worker:
                 self.backend.prepare_storage(job, checkpoint)
                 job = self.store.get(job_id)
             self.access.authorize_operation("job", job_id, force=True)
+            self.store.validate_runtime_secrets(job)
             job = self._phase(job_id, "start", "Starting the isolated candidate release.")
             self.backend.start(job, checkpoint)
             job = self._phase(job_id, "health", "Checking candidate health.")
@@ -260,10 +315,15 @@ class Worker:
             job = self._phase(job_id, "https", "Ensuring HTTPS is available.")
             self.backend.ensure_https(job)
             self.access.authorize_operation("job", job_id, force=True)
+            self.store.validate_runtime_secrets(job)
             job = self.store.checkpoint(job_id, phase="publish", execution={"publish_intent": True})
             self.store.event(job_id, "publish", "Publishing the candidate release.")
             self.backend.publish(job)
             job = self._phase(job_id, "verify", "Verifying the public HTTPS route.")
+            self.store.validate_runtime_secrets(job)
+            if self.settings.secret_backend == 'encrypted':
+                from .vault_runtime import VaultRuntime
+                VaultRuntime(self.settings).validate_previous(job)
             self.backend.verify(job)
             self.access.authorize_operation("job", job_id)
             self.store.finish(job_id)
@@ -351,6 +411,9 @@ class Worker:
                 if not job["execution"].get("storage_handoff_intent"):
                     self._recover_previous_for_rollback(job)
                 self.store.event(job_id, "rollback", "Restoring the previous public route.")
+                if self.settings.secret_backend == 'encrypted':
+                    from .vault_runtime import VaultRuntime
+                    VaultRuntime(self.settings).validate_previous(job)
                 self.backend.rollback(job)
                 job = self.store.checkpoint(job_id, execution={"rollback_confirmed": True})
             except Exception:

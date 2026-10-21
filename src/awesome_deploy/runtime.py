@@ -26,6 +26,7 @@ from .gateway import Gateway
 from .port_forward import RootlessPortForwarder
 from .processes import run_command, http_status
 from .secrets_store import SecretStore
+from .runtime_environment import EnvironmentFiles
 from .storage import ManagedStorage
 from .manifest import validate_storage_transition
 from .egress import EgressGuard, bridge_name, policy, validate_policy
@@ -437,10 +438,17 @@ class DeploymentBackend:
             frozen["runtime_network"] = copy.deepcopy(network_policy)
         pins = dict(job.get("execution", {}).get("frozen_images", {}))
         frozen["build_contexts"], frozen["secret_versions"] = {}, {}
+        if self.settings.secret_backend == "encrypted":
+            from .vault_runtime import VaultRuntime
+            bridge = VaultRuntime(self.settings)
+            with bridge.connection() as db:
+                frozen["vault_identity"] = bridge.binding(job, db=db)
+                for service in frozen["manifest"]["services"]:
+                    frozen["secret_versions"][service] = bridge.versions({**job, "snapshot": frozen}, service, db=db)
         source = Path(snapshot["source_dir"]).resolve()
         for name, service in frozen["manifest"]["services"].items():
             refs = service.get("secretRefs") or {}
-            if refs:
+            if refs and self.settings.secret_backend != "encrypted":
                 frozen["secret_versions"][name] = SecretStore(self.settings).versions(
                     frozen["repository"], frozen["manifest"]["app"]["subdomain"], refs
                 )
@@ -476,6 +484,7 @@ class DeploymentBackend:
                 "frozen_images": pins,
                 "build_contexts": frozen["build_contexts"],
                 "secret_versions": frozen["secret_versions"],
+                **({"vault_identity": frozen["vault_identity"]} if "vault_identity" in frozen else {}),
             }
         )
         return frozen
@@ -1026,7 +1035,13 @@ class DeploymentBackend:
                     "QUOTA_NOT_ENFORCED", "QUOTA_BLOCKED", "STORAGE_MOUNT_CHANGED"})):
             self.quota_patrol()
 
+    def _validate_runtime_secrets(self, job):
+        if self.settings.secret_backend == "encrypted":
+            from .vault_runtime import VaultRuntime
+            VaultRuntime(self.settings).validate(job)
+
     def start(self, job, checkpoint):
+        self._validate_runtime_secrets(job)
         validate_policy(job)
         try:
             return self._start(job, checkpoint)
@@ -1093,6 +1108,7 @@ class DeploymentBackend:
                     self._validate_container_network_policy(job, name, created)
                 self._check_egress(job)
                 guard_row = created if service.get("storage") or network_policy is not None else {}
+                self._validate_runtime_secrets(job)
                 with self._storage_guard(storage, job, name, guard_row):
                     quota = storage.is_quota(job["execution"].get("storage_volumes", {}).get(name))
                     self._docker(["container", "start", guard_row["Id"] if quota else container_name])
@@ -1114,6 +1130,7 @@ class DeploymentBackend:
             return "unknown-boot"  # Periodic checks still work if the boot identifier is unavailable.
 
     def recover_active(self, job, checkpoint):
+        self._validate_runtime_secrets(job)
         validate_policy(job)
         try:
             return self._recover_active(job, checkpoint)
@@ -1227,6 +1244,7 @@ class DeploymentBackend:
                             checked.add(dependency)
                     self._check_egress(job)
                     storage = ManagedStorage(self._docker, self.settings)
+                    self._validate_runtime_secrets(job)
                     with self._storage_guard(storage, job, name, row, timeout=bounded()):
                         quota = storage.is_quota(job["execution"].get("storage_volumes", {}).get(name))
                         self._docker(["container", "start", row["Id"] if quota else self._container(job, name)], timeout=bounded())
@@ -1317,13 +1335,18 @@ class DeploymentBackend:
         environment = dict(service.get("env") or {})
         refs = service.get("secretRefs") or {}
         secret_values = {}
+        self._validate_runtime_secrets(job)
         if refs:
-            secret_values = SecretStore(self.settings).resolve(
-                job["snapshot"]["repository"],
-                job["snapshot"]["manifest"]["app"]["subdomain"],
-                refs,
-                job["snapshot"]["secret_versions"][name],
-            )
+            if self.settings.secret_backend == "encrypted":
+                from .vault_runtime import VaultRuntime
+                secret_values = VaultRuntime(self.settings).resolve(job, name)
+            else:
+                secret_values = SecretStore(self.settings).resolve(
+                    job["snapshot"]["repository"],
+                    job["snapshot"]["manifest"]["app"]["subdomain"],
+                    refs,
+                    job["snapshot"]["secret_versions"][name],
+                )
             environment.update(secret_values)
         for key, value in environment.items():
             if (
@@ -1334,13 +1357,7 @@ class DeploymentBackend:
                 raise DeployError(
                     "UNSUPPORTED_ENVIRONMENT", "Environment values must be single-line strings in phase one"
                 )
-        private_dir = self.settings.state_dir / "runtime-env"
-        private_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        fd, env_path = tempfile.mkstemp(dir=private_dir, prefix=job["id"] + "-")
-        try:
-            with os.fdopen(fd, "w") as stream:
-                for key, value in environment.items():
-                    stream.write(f"{key}={value}\n")
+        with EnvironmentFiles(self.settings).create(job["id"], environment) as env_path:
             limits = service["resources"]
             args = [
                 "container",
@@ -1381,7 +1398,7 @@ class DeploymentBackend:
                 name,
                 *[f"--dns={address}" for address in (validate_policy(job) or {"dns": ["127.0.0.1"]})["dns"]],
                 "--env-file",
-                env_path,
+                str(env_path),
             ]
             if service.get("storage"):
                 args.extend(["--mount", ManagedStorage(self._docker, self.settings).mount_argument(job, name)])
@@ -1399,8 +1416,6 @@ class DeploymentBackend:
             self._docker(args, secrets=tuple(secret_values.values()))
             for network in networks[1:]:
                 self._connect_network(job, network, name, self._container(job, name))
-        finally:
-            Path(env_path).unlink(missing_ok=True)
 
     def _health_service(self, job, name, deadline):
         service = job["snapshot"]["manifest"]["services"][name]
@@ -1481,12 +1496,21 @@ class DeploymentBackend:
         self._gateway("ensure_https", job)
 
     def publish(self, job):
+        self._validate_runtime_secrets(job)
         self._gateway("publish", job)
 
     def verify(self, job):
+        self._validate_runtime_secrets(job)
+        if self.settings.secret_backend == 'encrypted':
+            # The helper may roll back internally when its route probe fails.
+            from .vault_runtime import VaultRuntime
+            VaultRuntime(self.settings).validate_previous(job)
         self._gateway("verify", job)
 
     def rollback(self, job):
+        if self.settings.secret_backend == 'encrypted':
+            from .vault_runtime import VaultRuntime
+            VaultRuntime(self.settings).validate_previous(job)
         self._gateway("rollback", job)
 
     def offline(self, job, checkpoint):
@@ -1507,6 +1531,30 @@ class DeploymentBackend:
         checkpoint({"phase": "offline_cleanup", "cleanup_intent": True})
         self.cleanup(job)
         checkpoint({"cleanup_confirmed": True})
+
+    def revoke_release(self, job):
+        """Stop a fixed revoked release even if route isolation needs manual recovery."""
+        self._ids(job)
+        self._runtime_preflight()
+        failure = None
+        result = {}
+        if job.get('execution', {}).get('publish_intent') or job.get('status') == 'succeeded':
+            try:
+                result = self._gateway('quarantine', job)
+                if (not isinstance(result, dict) or result.get('quarantined') is not True
+                        or result.get('release') != job['id']):
+                    raise DeployError('SECRET_REVOCATION_FAILED', '无法确认目标版本的公开路由已隔离。')
+            except Exception as error:
+                failure = error
+        try:
+            self._stop_owned_containers(job, require_existing=False)
+        except Exception:
+            # Do not include engine output or plaintext environments in the journal.
+            raise DeployError('SECRET_REVOCATION_FAILED', '目标实例尚未确认停止，必须显式重试。') from None
+        if failure is not None:
+            raise DeployError('SECRET_REVOCATION_FAILED', '实例已停止，但路由隔离尚未确认，必须显式重试。') from None
+        self.cleanup(job)
+        return result
 
     def cleanup(self, job):
         # Filter is convenience only. Independently inspect ownership before every removal.
@@ -1580,8 +1628,4 @@ class DeploymentBackend:
                 raise DeployError("CLEANUP_UNSAFE", "Refusing to remove a symlinked job directory")
             if path.exists():
                 shutil.rmtree(path)
-        environment_dir = self.settings.state_dir / "runtime-env"
-        if environment_dir.exists():
-            for path in environment_dir.glob(job["id"] + "-*"):
-                if path.is_file() and not path.is_symlink():
-                    path.unlink()
+        EnvironmentFiles(self.settings).cleanup(job["id"])

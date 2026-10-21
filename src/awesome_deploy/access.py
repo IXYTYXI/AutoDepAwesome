@@ -121,13 +121,15 @@ class AccessStore:
             'detail': {'admin', 'owner', 'maintainer'},
             'deploy': {'admin', 'owner', 'maintainer'},
             'secrets': {'admin', 'owner', 'maintainer'},
+            'secrets_rotate': {'admin', 'owner', 'maintainer'},
+            'secrets_revoke': {'admin', 'owner'},
             'offline': {'admin', 'owner'},
             'delete': {'admin', 'owner'},
             'members': {'admin', 'owner'},
         }
         if role not in allowed.get(action, set()):
             raise denied()
-        if action in {'deploy', 'secrets', 'offline', 'delete'} and not actor['can_deploy']:
+        if action in {'deploy', 'secrets', 'secrets_rotate', 'secrets_revoke', 'offline', 'delete'} and not actor['can_deploy']:
             raise denied()
         return role
 
@@ -203,6 +205,10 @@ class AccessStore:
         """Bind a new namespace without adopting somebody else's saved secrets."""
         from .secrets_store import SecretStore
         actor = cls._actor(db, actor)
+        if getattr(settings, 'secret_backend', 'legacy') == 'encrypted':
+            from .vault_format import require_ready
+            require_ready(settings, db)
+            return  # Encrypted ownership is app_id; legacy mappings stay unchanged for migration audits.
         row = db.execute("SELECT app_id FROM app_secret_scopes WHERE repository=? AND subdomain=?",
                          (repository, subdomain)).fetchone()
         if row is not None:
@@ -268,7 +274,12 @@ class AccessStore:
             if job is None:
                 raise denied()
             payload = json.loads(job['input'])
-            cls.require_secret_scope(db, binding['app_id'], payload.get('repository'), payload.get('subdomain'))
+            from .vault_format import state
+            vault_format = state(db)
+            if vault_format is None:
+                cls.require_secret_scope(db, binding['app_id'], payload.get('repository'), payload.get('subdomain'))
+            elif vault_format['format'] != 1 or vault_format['phase'] != 'active':
+                raise DeployError('VAULT_MAINTENANCE', '密钥库尚未完成维护，暂不执行新任务。')
         return actor
 
     def authorize_operation_local(self, kind, operation_id):

@@ -43,6 +43,8 @@ class Settings:
     feishu_app_id: str = ""
     feishu_tenant_key: str = ""
     feishu_app_secret_file: Path | None = None
+    secret_backend: str = "legacy"
+    secret_kek_file: Path | None = None
     ai_base_url: str | None = None
     ai_model: str = ""
     ai_api_key_file: Path | None = None
@@ -81,6 +83,20 @@ def validate_identity_settings(settings: Settings) -> None:
     if (public.scheme != "https" or not public.hostname or public.username or public.password
             or public.query or public.fragment or public.path not in ("", "/")):
         raise ValueError("Feishu login requires a fixed HTTPS origin")
+
+
+def validate_vault_settings(settings: Settings) -> None:
+    """Validate references only; secret bytes never belong in ordinary configuration."""
+    if settings.secret_backend not in {"legacy", "encrypted"}:
+        raise ValueError("secret backend")
+    if settings.secret_backend == "legacy":
+        if settings.secret_kek_file is not None:
+            raise ValueError("KEK configuration requires explicit encrypted mode")
+        return
+    if settings.auth_mode != "feishu" or not isinstance(settings.secret_kek_file, Path):
+        raise ValueError("encrypted secrets require Feishu and an independent KEK file")
+    if settings.secret_kek_file.resolve().is_relative_to(settings.state_dir.resolve()):
+        raise ValueError("KEK must be outside the state directory")
 
 
 def validate_storage_settings(settings: Settings) -> None:
