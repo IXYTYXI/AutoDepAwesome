@@ -304,3 +304,109 @@ def test_changed_manifest_and_missing_key_cannot_resume_by_recreating_root(legac
     manifest["applications"][0]["data_generation"] = "replacement"
     with pytest.raises(DeployError):
         migration.migrate(manifest, actor_id="operator")
+
+
+def test_key_provision_accepts_pending_backup_without_starting_migration(legacy):
+    original, target, manifest, old, current = legacy
+    manifest["backup"] = None
+    module = importlib.import_module("awesome_deploy.vault_migration")
+    migration = module.VaultMigration(target)
+    with sqlite3.connect(original.database_path) as db:
+        jobs_before = list(db.execute("SELECT * FROM jobs ORDER BY id"))
+
+    result = migration.provision(manifest, actor_id="operator")
+
+    assert result["created"] is True
+    keyring_before = target.secret_kek_file.read_bytes()
+    assert migration.provision(manifest, actor_id="operator")["created"] is False
+    assert target.secret_kek_file.read_bytes() == keyring_before
+    with sqlite3.connect(target.database_path) as db:
+        assert module.vault_format.state(db) is None
+        for table in ("vault_migrations", "vault_apps", "vault_app_keys", "vault_secrets", "vault_legacy_jobs"):
+            assert db.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0
+        assert list(db.execute("SELECT * FROM jobs ORDER BY id")) == jobs_before
+        actions = [row[0] for row in db.execute("SELECT action FROM vault_audit")]
+        assert actions == ["kek_provisioned", "kek_provision_checked"]
+    for version, expected in ((old, "original-data-master"), (current, "current-data-master")):
+        assert SecretStore(original).resolve("https://github.com/acme/demo.git", "demo",
+                                             {"ENV": "MASTER_KEY"}, {"MASTER_KEY": version}) == {"ENV": expected}
+    assert not (target.state_dir / ("secrets-quarantine-" + manifest["migration_id"])).exists()
+
+
+def test_pending_backup_cannot_migrate_until_recovery_record_is_completed(legacy):
+    _, target, manifest, _, _ = legacy
+    completed_backup = manifest["backup"]
+    manifest["backup"] = None
+    module = importlib.import_module("awesome_deploy.vault_migration")
+    migration = module.VaultMigration(target)
+    migration.provision(manifest, actor_id="operator")
+    keyring_before = target.secret_kek_file.read_bytes()
+
+    with pytest.raises(DeployError) as error:
+        migration.migrate(manifest, actor_id="operator")
+    assert error.value.code == "VAULT_RECOVERY_RECORD_REQUIRED"
+    assert target.secret_kek_file.read_bytes() == keyring_before
+    assert (target.state_dir / "secrets").is_dir()
+    with pytest.raises(DeployError) as error:
+        migration.initialize(None, actor_id="operator")
+    assert error.value.code == "VAULT_RECOVERY_RECORD_REQUIRED"
+    with sqlite3.connect(target.database_path) as db:
+        assert module.vault_format.state(db) is None
+        assert db.execute("SELECT count(*) FROM vault_migrations").fetchone()[0] == 0
+
+    manifest["backup"] = completed_backup
+    assert migration.migrate(manifest, actor_id="operator")["phase"] == "active"
+    manifest["backup"] = None
+    with pytest.raises(DeployError) as error:
+        migration.migrate(manifest, actor_id="operator")
+    assert error.value.code == "VAULT_RECOVERY_RECORD_REQUIRED"
+    with pytest.raises(DeployError) as error:
+        migration.provision(manifest, actor_id="operator")
+    assert error.value.code == "VAULT_KEY_UNAVAILABLE"
+    assert target.secret_kek_file.read_bytes() == keyring_before
+    with sqlite3.connect(target.database_path) as db:
+        db.row_factory = sqlite3.Row
+        assert module.vault_format.state(db)["phase"] == "active"
+
+
+@pytest.mark.parametrize("problem", ["tenant", "feishu_app", "missing_app", "missing_job", "changed_scope_owner",
+                                     "master_kind", "missing_kind", "missing_backup", "unknown_scope"])
+def test_pending_backup_does_not_relax_key_provision_identity_or_coverage(legacy, problem):
+    _, target, manifest, _, _ = legacy
+    manifest["backup"] = None
+    if problem == "tenant":
+        manifest["tenant_id"] = "other-tenant"
+    elif problem == "feishu_app":
+        manifest["feishu_app_id"] = "cli_other"
+    elif problem == "missing_app":
+        manifest["applications"] = []
+    elif problem == "missing_job":
+        manifest["applications"][0]["job_ids"] = []
+    elif problem == "master_kind":
+        manifest["applications"][0]["scopes"][0]["secrets"][0]["kind"] = "runtime_secret"
+    elif problem == "missing_kind":
+        del manifest["applications"][0]["scopes"][0]["secrets"][0]["kind"]
+    elif problem == "missing_backup":
+        del manifest["backup"]
+    elif problem == "unknown_scope":
+        (target.state_dir / "secrets" / ("f" * 64)).mkdir(mode=0o700)
+    else:
+        with sqlite3.connect(target.database_path) as db:
+            db.execute("UPDATE app_secret_scopes SET app_id='other'")
+    module = importlib.import_module("awesome_deploy.vault_migration")
+    with pytest.raises(DeployError) as error:
+        module.VaultMigration(target).provision(manifest, actor_id="operator")
+    assert error.value.code == "VAULT_MIGRATION_CONFLICT"
+    assert not target.secret_kek_file.exists()
+    assert (target.state_dir / "secrets").is_dir()
+
+
+@pytest.mark.parametrize("backup", [{}, False, "pending", {"backup_reference": "state-copy"}])
+def test_key_provision_still_rejects_malformed_nonnull_recovery_record(legacy, backup):
+    _, target, manifest, _, _ = legacy
+    manifest["backup"] = backup
+    module = importlib.import_module("awesome_deploy.vault_migration")
+    with pytest.raises(DeployError) as error:
+        module.VaultMigration(target).provision(manifest, actor_id="operator")
+    assert error.value.code == "VAULT_RECOVERY_RECORD_REQUIRED"
+    assert not target.secret_kek_file.exists()

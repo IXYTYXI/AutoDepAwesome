@@ -27,6 +27,8 @@
 
 程序验证元信息格式并保存审计，不能证明管理员已经制作了离机备份。必须实际核验恢复副本；未完成时不要执行初始化或迁移。
 
+首次生成 KEK 时尚不可能核验它的独立副本。仅 `vault-keyring-init --manifest` 接受清单中显式的 `"backup": null`，表示恢复记录尚未完成，不表示已备份。清单其余字段与应用、配置空间、全部历史及类型的检查仍须通过；缺失 `backup` 字段或提供残缺记录都会拒绝。生成命令只记录 KEK 操作，不建立迁移记录、应用 DEK 或激活加密格式。已有完整恢复记录仍可用于此命令。
+
 ## 空平台初始化
 
 只有没有应用、任务历史、旧配置空间及加密记录的空平台才能使用 `vault-init`。已有状态即使目前没有在线容器也必须走迁移。
@@ -106,8 +108,8 @@ awesome-deploy --config /etc/awesome-deploy/config.json vault-init \
 
 ## 迁移步骤与重试
 
-1. 完成维护窗口、备份、应用归属与清单核对。
-2. 首次生成 KEK 之前先用完整清单预检：
+1. 完成维护窗口、状态与业务数据备份、应用归属与清单核对。
+2. 首次生成 KEK 之前，用上述完整清单的全部身份和映射字段预检，但将 `backup` 字段设为 `null`，明确独立 KEK 恢复核验尚未完成；不要填写虚构的副本编号或核验时间：
 
 ```sh
 awesome-deploy --config /etc/awesome-deploy/config.json vault-keyring-init \
@@ -115,7 +117,7 @@ awesome-deploy --config /etc/awesome-deploy/config.json vault-keyring-init \
   --manifest /受限运维目录/migration.json
 ```
 
-3. 实际备份并核验该 KEK，完善清单 `backup` 元信息。此时尚未创建迁移记录，可以更新恢复核验时间。
+3. 实际备份并核验该 KEK，将同一清单中的 `backup: null` 替换为完整且真实的恢复记录，包含状态/业务备份、独立 KEK 副本、责任人与带时区的核验及保留时间。此时尚未创建迁移记录，可以完善恢复元信息。`vault-migrate`、`vault-init` 和已激活迁移的重试都不接受空恢复记录；生成 KEK 成功不解除这一门禁。
 4. 执行迁移，命令不再提供即时生成 KEK 的选项：
 
 ```sh

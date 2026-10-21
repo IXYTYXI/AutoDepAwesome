@@ -105,3 +105,33 @@ def test_check_accepts_authenticated_revoked_history_but_reports_unfinished_clea
     output = capsys.readouterr()
     assert "SECRET_REVOCATION_STATE" in output.err
     assert "synthetic" not in output.out + output.err
+
+
+def test_legacy_cli_provisions_pending_manifest_then_requires_completed_recovery(setup, monkeypatch, capsys):
+    from awesome_deploy.store import Store
+    settings, record = setup
+    legacy_settings = replace(settings, secret_backend="legacy", secret_kek_file=None)
+    settings.state_dir.mkdir(mode=0o700)
+    Store(legacy_settings)
+    repository = "https://github.com/acme/demo.git"
+    with sqlite3.connect(settings.database_path) as db:
+        db.execute("INSERT INTO apps VALUES ('app',?,'demo',NULL,1,1)", (repository,))
+        db.execute("INSERT INTO app_secret_scopes VALUES (?,'demo','app','operator',1)", (repository,))
+    manifest = {"format": 1, "migration_id": "a" * 32, "tenant_id": "tenant", "feishu_app_id": "cli_test",
+                "backup": None, "applications": [{"app_id": "app", "data_generation": "generation",
+                "job_ids": [], "scopes": [{"repository": repository, "subdomain": "demo", "secrets": []}]}]}
+    manifest_path = record.with_name("migration.json")
+    manifest_path.write_text(json.dumps(manifest))
+    monkeypatch.setattr(cli, "load_settings", lambda path: legacy_settings)
+    arguments = ["--kek-file", str(settings.secret_kek_file), "--manifest", str(manifest_path)]
+
+    assert cli.main(["vault-keyring-init", *arguments]) == 0
+    provision_output = json.loads(capsys.readouterr().out)
+    assert provision_output["created"] is True
+    assert "phase" not in provision_output
+    assert cli.main(["vault-migrate", *arguments]) == 1
+    assert "VAULT_RECOVERY_RECORD_REQUIRED" in capsys.readouterr().err
+    manifest["backup"] = json.loads(record.read_text())
+    manifest_path.write_text(json.dumps(manifest))
+    assert cli.main(["vault-migrate", *arguments]) == 0
+    assert json.loads(capsys.readouterr().out)["phase"] == "active"

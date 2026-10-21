@@ -136,7 +136,7 @@ class VaultMigration:
                 if db.execute(f"SELECT 1 FROM {table} WHERE status <> 'succeeded' LIMIT 1").fetchone():
                     raise DeployError("VAULT_MIGRATION_BUSY", "仍有密钥吊销清理未确认完成，不能迁移。")
 
-    def _manifest(self, manifest):
+    def _manifest(self, manifest, *, allow_pending_backup=False):
         if (not isinstance(manifest, dict)
                 or set(manifest) != {"format", "migration_id", "tenant_id", "feishu_app_id", "backup", "applications"}
                 or type(manifest["format"]) is not int or manifest["format"] != 1
@@ -145,7 +145,10 @@ class VaultMigration:
                 or manifest["feishu_app_id"] != self.settings.feishu_app_id
                 or not isinstance(manifest["applications"], list)):
             raise _conflict()
-        validate_backup(manifest["backup"])
+        # A first KEK cannot have an independently verified copy before it exists.
+        # Only provision accepts explicit null; migration and replay stay strict.
+        if manifest["backup"] is not None or not allow_pending_backup:
+            validate_backup(manifest["backup"])
         ids, scopes, jobs = set(), set(), set()
         for app in manifest["applications"]:
             if (not isinstance(app, dict) or set(app) != {"app_id", "data_generation", "scopes", "job_ids"}
@@ -552,7 +555,7 @@ class VaultMigration:
 
     def _provision(self, manifest=None, *, actor_id):
         if manifest is not None:
-            manifest = self._manifest(manifest)
+            manifest = self._manifest(manifest, allow_pending_backup=True)
         with worker_lock(self.settings):
             store = self._store()
             with store._connection() as db:

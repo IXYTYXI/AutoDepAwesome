@@ -24,7 +24,9 @@ def add_arguments(sub):
         parser = sub.add_parser(name, help=description)
         parser.add_argument("--kek-file", type=Path, help="显式独立KEK文件；迁移旧配置时必填")
         if name in {"vault-keyring-init", "vault-migrate"}:
-            parser.add_argument("--manifest", type=Path, required=name == "vault-migrate")
+            help_text = ("完整归属与历史清单；仅生成KEK时允许 backup:null 表示恢复核验待完成"
+                         if name == "vault-keyring-init" else "含已核验恢复记录的完整迁移清单；backup 不得为空")
+            parser.add_argument("--manifest", type=Path, required=name == "vault-migrate", help=help_text)
         if name in {"vault-init", "vault-rewrap"}:
             parser.add_argument("--recovery-record", type=Path, required=True)
         if name == "vault-rewrap":
