@@ -41,7 +41,7 @@
 No endpoint returns a secret value, DEK, KEK, envelope or reversible fragment. Existing deployment missing-secret endpoints preserve their semantics.
 
 
-## Code verification record (2026-10-21)
+## Initial code verification record (2026-10-21, before target acceptance)
 
 - Full Python suite: **1,873 passed, 1 skipped**. The skipped cache test requires filesystem user xattrs; this host does not support them. One existing Starlette/httpx deprecation warning remains.
 - Node UI suite: **121 passed**. Ruff for `src`, `tests` and the gateway helper, plus `git diff --check`, passed.
@@ -50,10 +50,23 @@ No endpoint returns a secret value, DEK, KEK, envelope or reversible fragment. E
 - UI/UX Pro Max and the current Web Interface Guidelines were applied to the existing green design. Real browser checks against synthetic API fixtures covered role restrictions, master protection, version lists, rotation and CAS conflicts, recent authentication, revocation/retry progress, empty/error/loading states, hover/focus, keyboard, long content and scroll boundaries at desktop and narrow widths. The temporary preview and browser tabs were removed.
 - The tests use synthetic secrets. Customer repositories and business code were not modified. No production configuration, SSH session, local Docker process or deployment was started for this work.
 
-## Target-environment acceptance remains pending
+## Target acceptance follow-up (2026-10-21)
+
+- Installed candidate `8bda26b` (package 0.9.0) into a separate root-owned directory on the target Linux host, using 33 verified offline wheels. `pip check` passed. Production remains release `e93af9d`, package 0.7.0, Basic/legacy; the production release link was not changed.
+- Target Linux full suite: **1,874 passed**, including the xattr test skipped on macOS. One existing Starlette/httpx warning remains.
+- Real Linux tmpfs permissions, normal/error cleanup and worker-lock startup cleanup after a child process crash passed. Synthetic migration resumed at six interruption points; independent fixture KEK and state restore preserved the original synthetic business bytes. Temporary state and env files were removed.
+- Real rootless Docker start/recovery preserved the original test container, image, volume instance and random data ID. Forged volume identity was rejected before startup; injected gateway failure stopped the test container, and a revoked secret prevented recovery. Test container/network/volume/forwarder were removed. No test image was created; the existing base image was retained. Five pre-existing running containers had unchanged IDs and start times.
+- Real root-owned Nginx in isolated mount/PID/network namespaces verified TLS tombstones, probe logs, quarantine replay and worker drain. A held old-worker connection caused a 30-second deadline failure rather than false completion; after release the same intent completed. Namespace resources were removed. This did **not** exercise the installed privileged helper entrypoint or host Docker-daemon restart.
+- Production callback logging was hardened with the documented exact Nginx location; configuration test/reload passed and a synthetic callback marker was absent from three local Nginx logs. Real OAuth and external log collectors remain unverified.
+- A brief API/worker maintenance window produced a protected platform-state backup. A separate restored copy initialized with the candidate Store/API; all 43 jobs and active mappings for four applications were preserved. Temporary restore state was removed and API/worker resumed. Business containers were not stopped. This was **not** a business-volume backup or production KEK restore.
+- A follow-up found inconsistent treatment of failed history with an empty `secret_versions` map. Migration and `vault-check` now share the conservative field-presence predicate. The new cases failed before the fix; after the fix the focused local suite passed **166 tests**, plus Ruff and diff checks. Independent review found no blocking issue.
+
+## Remaining production gates
 
 - Real Feishu OAuth and tenant/member eligibility, administrator recovery and cross-application permission verification.
-- Linux tmpfs, root-owned gateway upgrade, Docker/Nginx revocation/rollback/crash recovery and actual storage quota/volume identity checks.
-- Responsible-person and retention registration, independent KEK backup, full historical migration, restore original application data and failure on missing keys.
+- The user will provide a company-wide platform Feishu app later. Do not enable Feishu/encrypted mode using placeholder identities or substitute CLI credentials.
+- One offline legacy application has retained successful history and its own data volume but lacks its application row. Its legacy secret scope is also referenced by the current application. Existing ownership/migration guards correctly reject this ambiguity; an explicit historical disposition and reviewed repair are required. No history, secret or business data was deleted or reassigned.
+- Root-owned gateway installation/entrypoint verification, full privileged production integration and actual byte/inode hard-quota acceptance remain pending. The production storage backend is still local, without a verified quota helper.
+- Responsible-person and retention registration, real independent KEK backup, full production historical migration, and original business-volume backup/restore remain pending.
 - Screen-reader speech and operating-system reduced-motion integration were not exercised.
 - C device pairing and D approvals/service audit gates are separate future implementation stages. This branch does not enable or claim those features.

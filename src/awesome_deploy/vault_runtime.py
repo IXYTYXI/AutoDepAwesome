@@ -19,6 +19,13 @@ class VaultRuntime:
             job_id TEXT PRIMARY KEY, app_id TEXT NOT NULL, data_generation TEXT NOT NULL
         )''')
 
+    @staticmethod
+    def has_retained_inputs(status, snapshot, execution):
+        # Field presence is durable evidence of pinning, even when the map is
+        # empty or malformed. Callers must then validate its shape and binding.
+        return bool(status == 'succeeded' or execution.get('frozen')
+                    or 'secret_versions' in snapshot or 'secret_versions' in execution)
+
     @contextmanager
     def connection(self, db=None):
         if db is not None:

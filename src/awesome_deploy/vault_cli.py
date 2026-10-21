@@ -59,8 +59,7 @@ def _check_history(settings, store, db, vault):
     for row in db.execute("SELECT * FROM jobs ORDER BY id"):
         job = store._job(row)
         snapshot, execution = job.get("snapshot") or {}, job.get("execution") or {}
-        if (store._data_cleared(job) or not (job["status"] == "succeeded" or execution.get("frozen")
-                                           or "secret_versions" in snapshot or "secret_versions" in execution)):
+        if store._data_cleared(job) or not runtime.has_retained_inputs(job["status"], snapshot, execution):
             continue
         binding = runtime._validate_binding(job, db, vault)
         app = vault._app(db, binding["app_id"])

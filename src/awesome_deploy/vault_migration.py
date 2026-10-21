@@ -274,7 +274,7 @@ class VaultMigration:
                 continue
             snapshot = json.loads(row["snapshot"]) if row["snapshot"] else {}
             frozen = snapshot.get("secret_versions", execution.get("secret_versions", {}))
-            if row["status"] == "succeeded" or execution.get("frozen") or frozen:
+            if VaultRuntime.has_retained_inputs(row["status"], snapshot, execution):
                 required_jobs.add(row["id"])
                 app = job_targets.get(row["id"])
                 if app is None or any(owner is not None and owner != app["app_id"]

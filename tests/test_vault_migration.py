@@ -45,6 +45,107 @@ def legacy(tmp_path):
     return settings, target, manifest, old, current
 
 
+_MISSING = object()
+
+
+def add_failed_history(settings, location, *, versions=_MISSING, refs=None):
+    """An interrupted preparation may persist an empty versions field."""
+    repository = "https://github.com/acme/demo.git"
+    snapshot = {"repository": repository, "manifest": {
+        "app": {"subdomain": "demo"}, "services": {"web": {"secretRefs": refs or {}}}}}
+    execution = {"frozen": False}
+    if location != "absent":
+        (snapshot if location == "snapshot" else execution)["secret_versions"] = {} if versions is _MISSING else versions
+    with sqlite3.connect(settings.database_path) as db:
+        db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                   ("failed", "failed", json.dumps({"repository": repository, "subdomain": "demo", "ref": "main"}),
+                    "app", "failed", "freeze", json.dumps(snapshot), json.dumps(execution), None, 2, 2))
+
+
+@pytest.mark.parametrize("location", ["snapshot", "execution"])
+def test_failed_empty_versions_are_explicitly_mapped_and_pass_post_migration_check(legacy, location, monkeypatch, capsys):
+    original, target, manifest, _, _ = legacy
+    add_failed_history(original, location)
+    manifest["applications"][0]["job_ids"].append("failed")
+    with sqlite3.connect(original.database_path) as db:
+        before = list(db.execute("SELECT * FROM jobs ORDER BY id"))
+    module = importlib.import_module("awesome_deploy.vault_migration")
+    assert module.VaultMigration(target).migrate(manifest, actor_id="operator", create_keyring=True)["phase"] == "active"
+    with sqlite3.connect(target.database_path) as db:
+        assert list(db.execute("SELECT * FROM jobs ORDER BY id")) == before
+        assert db.execute("SELECT app_id,data_generation FROM vault_legacy_jobs WHERE job_id='failed'").fetchone() == ("app", "generation")
+    from awesome_deploy import cli
+    monkeypatch.setattr(cli, "load_settings", lambda path: target)
+    assert cli.main(["vault-check"]) == 0
+    assert "SECRET_SNAPSHOT_INVALID" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("location", ["snapshot", "execution"])
+def test_failed_empty_versions_cannot_be_omitted_from_migration_binding(legacy, location):
+    original, target, manifest, _, _ = legacy
+    add_failed_history(original, location)
+    module = importlib.import_module("awesome_deploy.vault_migration")
+    with pytest.raises(DeployError) as error:
+        module.VaultMigration(target).migrate(manifest, actor_id="operator", create_keyring=True)
+    assert error.value.code == "VAULT_MIGRATION_CONFLICT"
+    assert not target.secret_kek_file.exists()
+    assert (target.state_dir / "secrets").is_dir()
+
+
+def test_failed_history_without_frozen_inputs_does_not_require_binding(legacy, monkeypatch):
+    original, target, manifest, _, _ = legacy
+    add_failed_history(original, "absent")
+    module = importlib.import_module("awesome_deploy.vault_migration")
+    module.VaultMigration(target).migrate(manifest, actor_id="operator", create_keyring=True)
+    from awesome_deploy import cli
+    monkeypatch.setattr(cli, "load_settings", lambda path: target)
+    assert cli.main(["vault-check"]) == 0
+    with sqlite3.connect(target.database_path) as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE id='failed'").fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM vault_legacy_jobs WHERE job_id='failed'").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("location", ["snapshot", "execution"])
+@pytest.mark.parametrize("bad_versions", [None, [], "", False, 0, {"web": []}])
+def test_failed_history_bad_versions_are_not_treated_as_empty_maps(legacy, location, bad_versions):
+    original, target, manifest, _, _ = legacy
+    add_failed_history(original, location, versions=bad_versions)
+    manifest["applications"][0]["job_ids"].append("failed")
+    module = importlib.import_module("awesome_deploy.vault_migration")
+    with pytest.raises(DeployError) as error:
+        module.VaultMigration(target).migrate(manifest, actor_id="operator", create_keyring=True)
+    assert error.value.code == "VAULT_MIGRATION_CONFLICT"
+    assert not target.secret_kek_file.exists()
+
+
+@pytest.mark.parametrize("location", ["snapshot", "execution"])
+def test_empty_versions_do_not_satisfy_declared_master_key_reference(legacy, location):
+    original, target, manifest, _, _ = legacy
+    add_failed_history(original, location, refs={"MASTER_KEY": "MASTER_KEY"})
+    manifest["applications"][0]["job_ids"].append("failed")
+    module = importlib.import_module("awesome_deploy.vault_migration")
+    with pytest.raises(DeployError):
+        module.VaultMigration(target).migrate(manifest, actor_id="operator", create_keyring=True)
+
+
+@pytest.mark.parametrize("location", ["snapshot", "execution"])
+def test_failed_history_cannot_downgrade_master_key_kind(legacy, location):
+    original, target, manifest, old, _ = legacy
+    add_failed_history(original, location, versions={"web": {"MASTER_KEY": old}}, refs={"MASTER_KEY": "MASTER_KEY"})
+    # Make only the failed history consume MASTER_KEY, so its kind check is
+    # exercised independently of the original successful deployment.
+    with sqlite3.connect(original.database_path) as db:
+        snapshot = json.loads(db.execute("SELECT snapshot FROM jobs WHERE id='job'").fetchone()[0])
+        snapshot["manifest"]["services"]["web"]["secretRefs"] = {}
+        snapshot["secret_versions"] = {}
+        db.execute("UPDATE jobs SET snapshot=? WHERE id='job'", (json.dumps(snapshot),))
+    manifest["applications"][0]["job_ids"].append("failed")
+    manifest["applications"][0]["scopes"][0]["secrets"][0]["kind"] = "runtime_secret"
+    module = importlib.import_module("awesome_deploy.vault_migration")
+    with pytest.raises(DeployError):
+        module.VaultMigration(target).migrate(manifest, actor_id="operator", create_keyring=True)
+
+
 def test_migration_preserves_original_bytes_all_versions_jobs_and_quarantines_plaintext(legacy):
     old_settings, target, manifest, old, current = legacy
     module = importlib.import_module("awesome_deploy.vault_migration")
