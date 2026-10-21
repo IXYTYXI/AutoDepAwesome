@@ -1,6 +1,6 @@
 # Platform secret vault implementation plan
 
-> For agentic workers: use superpowers:subagent-driven-development. User-approved design: Feishu document P1iZd1LoNoLYqnxOK0icr01Gndd revision 76.
+> For agentic workers: use superpowers:subagent-driven-development. The approved implementation scope is summarized below.
 
 **Goal:** Implement stage B and stage A's last-administrator safeguard without changing customer application code or migrating production secrets implicitly.
 
@@ -48,25 +48,26 @@ No endpoint returns a secret value, DEK, KEK, envelope or reversible fragment. E
 - A fresh Python virtual environment installed `requirements-dev.lock` and the editable project with `--no-deps`; `pip check`, CLI help, legacy Store/API construction and encrypted module imports passed. The temporary environment was removed.
 - Independent review corrected rollback/verify restoration of revoked previous versions, authenticated completed-migration replay, and installation dependency lock omissions. Follow-up reproductions passed.
 - UI/UX Pro Max and the current Web Interface Guidelines were applied to the existing green design. Real browser checks against synthetic API fixtures covered role restrictions, master protection, version lists, rotation and CAS conflicts, recent authentication, revocation/retry progress, empty/error/loading states, hover/focus, keyboard, long content and scroll boundaries at desktop and narrow widths. The temporary preview and browser tabs were removed.
-- The tests use synthetic secrets. Customer repositories and business code were not modified. No production configuration, SSH session, local Docker process or deployment was started for this work.
+- The initial implementation and UI checks used synthetic secrets. Customer repositories and business code were not modified. Local Docker was not started.
 
-## Target acceptance follow-up (2026-10-21)
+## Additional verification summary (2026-10-21)
 
-- Installed candidate `8bda26b` (package 0.9.0) into a separate root-owned directory on the target Linux host, using 33 verified offline wheels. `pip check` passed. Production remains release `e93af9d`, package 0.7.0, Basic/legacy; the production release link was not changed.
-- Target Linux full suite: **1,874 passed**, including the xattr test skipped on macOS. One existing Starlette/httpx warning remains.
-- Real Linux tmpfs permissions, normal/error cleanup and worker-lock startup cleanup after a child process crash passed. Synthetic migration resumed at six interruption points; independent fixture KEK and state restore preserved the original synthetic business bytes. Temporary state and env files were removed.
-- Real rootless Docker start/recovery preserved the original test container, image, volume instance and random data ID. Forged volume identity was rejected before startup; injected gateway failure stopped the test container, and a revoked secret prevented recovery. Test container/network/volume/forwarder were removed. No test image was created; the existing base image was retained. Five pre-existing running containers had unchanged IDs and start times.
-- Real root-owned Nginx in isolated mount/PID/network namespaces verified TLS tombstones, probe logs, quarantine replay and worker drain. A held old-worker connection caused a 30-second deadline failure rather than false completion; after release the same intent completed. Namespace resources were removed. This did **not** exercise the installed privileged helper entrypoint or host Docker-daemon restart.
-- Production callback logging was hardened with the documented exact Nginx location; configuration test/reload passed and a synthetic callback marker was absent from three local Nginx logs. Real OAuth and external log collectors remain unverified.
-- A brief API/worker maintenance window produced a protected platform-state backup. A separate restored copy initialized with the candidate Store/API; all 43 jobs and active mappings for four applications were preserved. Temporary restore state was removed and API/worker resumed. Business containers were not stopped. This was **not** a business-volume backup or production KEK restore.
-- A follow-up found inconsistent treatment of failed history with an empty `secret_versions` map. Migration and `vault-check` now share the conservative field-presence predicate. The new cases failed before the fix; after the fix the focused local suite passed **166 tests**, plus Ruff and diff checks. Independent review found no blocking issue.
+- Candidate `de43f6805a95259bb1bec9f89175cf78afe48d1f` passed **1,895 tests** on Linux, with one existing Starlette/httpx deprecation warning. Artifact hash verification, offline installation and `pip check` passed. These results establish tested code behavior; they do not establish production rollout acceptance.
+- Real Linux tmpfs permission, cleanup and crash-recovery checks passed in isolation. Synthetic migration resumed across interruption points, and an independent fixture KEK/state restore preserved the synthetic business bytes.
+- Isolated rootless Docker checks preserved container, image, volume and data identity across recovery. Forged volume identity was rejected, gateway failure stopped the fixture, and revoked secrets prevented restart. Temporary fixture resources were removed.
+- Real root-owned Nginx in isolated namespaces verified TLS tombstones, probe logs, quarantine replay and worker draining. A held old-worker connection correctly prevented completion until it was released.
+- A real `sudo` entrypoint was exercised in an isolated installation layout with Nginx. Checks covered argument restrictions, UID/permissions, hostile environments, malformed input, publishing, quarantine/replay and renewal restrictions. This did not validate a production-installed helper.
+- A restored platform-state copy initialized with the candidate while preserving application and active-deployment mappings. An isolated business-database restore verified original database bytes, encrypted-record readability and application health. This evidence does not establish complete backup/restore coverage for every application or an independent production vault KEK restore.
+- Callback log suppression was checked using a synthetic marker. Network connectivity checks did not exercise OAuth authorization or API authentication. Real authorization callbacks and external log collectors require separate acceptance.
+- A migration edge case involving an explicitly empty `secret_versions` map was corrected so migration and `vault-check` use the same conservative field-presence predicate. Focused regression tests, Ruff and diff checks passed.
+- The current login implementation requires an OAuth redirect URL. It has no Feishu event-subscription, card-callback or long-connection consumer. See `ops/FEISHU-LOGIN.md` for the generic developer-console checklist.
 
-## Remaining production gates
+## Remaining deployment acceptance gates
 
-- Real Feishu OAuth and tenant/member eligibility, administrator recovery and cross-application permission verification.
-- The user will provide a company-wide platform Feishu app later. Do not enable Feishu/encrypted mode using placeholder identities or substitute CLI credentials.
-- One offline legacy application has retained successful history and its own data volume but lacks its application row. Its legacy secret scope is also referenced by the current application. Existing ownership/migration guards correctly reject this ambiguity; an explicit historical disposition and reviewed repair are required. No history, secret or business data was deleted or reassigned.
-- Root-owned gateway installation/entrypoint verification, full privileged production integration and actual byte/inode hard-quota acceptance remain pending. The production storage backend is still local, without a verified quota helper.
-- Responsible-person and retention registration, real independent KEK backup, full production historical migration, and original business-volume backup/restore remain pending.
+- Complete real Feishu OAuth, tenant/member eligibility, authorization denial and revocation checks, administrator recovery and cross-application permission verification with the deployment's own app and designated test users. CLI credentials and placeholder identities are not substitutes.
+- Verify existing application owners explicitly against identities from the configured Feishu app. Review legacy-secret ownership, kinds and generations before migration; never infer ownership from a matching repository.
+- Install and validate the root-owned gateway helper through the deployment's formal entrypoint, then complete privileged integration checks. Isolated entrypoint tests do not close this gate.
+- Validate actual byte and inode hard quotas on a supported filesystem before claiming storage enforcement. Filesystem migration and quota activation require a separate reviewed deployment procedure.
+- Register KEK responsibility and retention, verify an independent KEK backup, complete the full platform/business backup-and-restore plan, and accept the complete historical-secret migration before enabling encrypted mode. Synthetic recovery and a single business-database restore do not close these gates.
 - Screen-reader speech and operating-system reduced-motion integration were not exercised.
-- C device pairing and D approvals/service audit gates are separate future implementation stages. This branch does not enable or claim those features.
+- C device pairing and D approvals/service audit gates remain separate future implementation stages. This branch does not enable or claim those features.

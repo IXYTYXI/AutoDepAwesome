@@ -4,6 +4,8 @@
 
 本指南覆盖平台登录及应用访问控制。B 阶段的应用秘密静态加密与旧数据迁移另见 [密钥库运维指南](../docs/vault-operations.md)；审批、业务应用自己的飞书单点登录及 Skill 配对登录仍是后续工作。自动化测试使用模拟飞书响应，不能代替真实租户、授权回调和撤权验收。
 
+**当前版本需要 OAuth 登录重定向，不需要事件订阅或卡片回调。** 下文的 `/auth/feishu/callback` 是浏览器登录返回的 GET 接口，不是飞书服务器推送事件的请求地址。不要将它填入后台“事件与回调”的事件配置或回调配置。
+
 ## 1. 准备平台专用飞书应用
 
 在组织的飞书开发者后台使用一个受管理员管理的企业自建应用，并完成发布、启用及应用可用范围配置。记录它的 App ID 和预期企业 `tenant_key`，不要按员工邮箱或姓名推断企业身份。
@@ -20,13 +22,49 @@
 
 OAuth v3 客户端认证必须允许 `client_secret_post`：服务端以表单发送客户端凭证，不支持该方式时飞书会返回 `20140`。代码使用 S256 PKCE，必须保留校验并完成真实回调验收，不能为绕过配置错误而降级。
 
-在应用安全设置中登记完整回调地址：
+在应用安全设置中登记完整回调地址。下文的 `deploy.example.com` 是示例域名，必须替换为自身部署的 `public_url` 主机，示例配置不可直接用于实际接入：
 
 ```text
-https://awesome.guanghexinzhi.cn/auth/feishu/callback
+https://deploy.example.com/auth/feishu/callback
 ```
 
 它必须与 `public_url` 加 `/auth/feishu/callback` 的结果完全一致，包括协议、主机和端口。配置固定 HTTPS 管理入口，不使用应用子域名作为管理登录入口。已有证书、ACME 路由和续期配置按 [运维指南](README.md) 保留。
+
+### 后台配置清单
+
+| 后台项目 | 本阶段设置 |
+| --- | --- |
+| 应用类型、版本和状态 | 使用平台专用企业自建应用，确认所属企业、已发布版本和启用状态。 |
+| 凭证与基础信息 | 确认 App ID；App Secret 通过下节安全方式安装到服务器。预期 `tenant_key` 由受信任的企业管理员或已核验的企业安装信息确认。 |
+| 权限管理 | 开通上表三项**应用身份**权限，并完成必要的审批和发布；不为纯登录额外申请用户邮箱、手机号或 `offline_access`。 |
+| 通讯录数据范围 | 覆盖允许登录的管理员和员工。 |
+| 应用可用范围 | 包含允许使用平台的人，首次验收优先限定为指定管理员和专用测试成员；与通讯录数据范围分别核对。 |
+| 开发配置 → 安全设置 → 重定向 URL | 登记完整的 `https://deploy.example.com/auth/feishu/callback`。这是 OAuth 配置位置。 |
+| OAuth 客户端认证方式 | 确认支持代码使用的 `client_secret_post`，按后台实际呈现的认证设置核对；不要只因填写了 App Secret 就假定该方式已允许。 |
+| 开发配置 → 事件与回调 | 本阶段无需选择订阅方式、添加事件或卡片回调，也无需提供事件请求地址、Verification Token 或 Encrypt Key。已有应用承载的其他事件配置不要为本平台随意删除。 |
+
+若希望从飞书工作台点击进入，可另外开启网页应用能力并将主页指向平台固定 HTTPS 入口；这是可选入口展示配置。当前浏览器 OAuth 流程未使用 H5 JSAPI、`jsapi_ticket` 或飞书客户端免登 SDK，不应把这些配置当作当前登录链路的必填项。相关范围见官方[浏览器应用接入指南](https://open.feishu.cn/document/common-capabilities/sso/web-application-end-user-consent/guide)与[网页应用概述](https://open.feishu.cn/document/client-docs/h5/introduction)。
+
+### OAuth、事件订阅与卡片回调的区别
+
+| 类型 | 数据如何到达平台 | 当前实现 |
+| --- | --- | --- |
+| OAuth 登录重定向 | 用户的浏览器向已登记的重定向 URL 发出 GET，携带一次性 `code` / `state` 或拒绝授权的 `error`。 | 已有 `GET /auth/feishu/callback`；校验浏览器绑定、state、PKCE 和企业身份后创建平台会话。 |
+| 事件订阅 | 飞书服务器经 Webhook POST 或 SDK 长连接推送异步事件。Webhook 地址需完成 challenge 验证并校验请求来源。 | 未实现事件接收路由、challenge 应答、事件签名/解密与去重处理，也未运行长连接或 CLI 事件消费者。 |
+| 卡片等交互回调 | 用户操作卡片后，飞书经回调订阅通道把交互交给服务端并等待同步响应。 | 未实现卡片操作、审批交互或链接预览回调。没有可供后台填写的卡片回调接口。 |
+
+平台目前通过服务端主动查询员工状态和应用可用范围来核验资格，浏览器资格缓存最长 5 分钟，worker 关键阶段强制复核。尚无员工变更事件驱动的即时失效、用户撤回 OAuth 同意的事件处理、审批卡片或消息事件集成。新增这些能力时，须先实现对应接收与安全处理，再配置订阅；不要提前编造 `/events`、`/webhook` 等地址。平台已有的部署记录 `events` API 只读取内部部署事件，也不是飞书接收端。
+
+上述区分依据官方[获取授权码](https://open.feishu.cn/document/authentication-management/access-token/obtain-oauth-code)、[事件发送至开发者服务器](https://open.feishu.cn/document/event-subscription-guide/event-subscriptions/event-subscription-configure-/choose-a-subscription-mode/send-notifications-to-developers-server)、[长连接接收事件](https://open.feishu.cn/document/server-docs/event-subscription-guide/event-subscription-configure-/request-url-configuration-case)与[回调概述](https://open.feishu.cn/document/event-subscription-guide/callback-subscription/callback-overview)。事件 Encrypt Key 与 B 阶段密钥库的独立 KEK 用途不同；不接收飞书事件不代表可以省略密钥库的 KEK。
+
+### 可先完成、不依赖真实 App 的准备
+
+- 准备固定 HTTPS 入口、有效证书、精确回调反向代理和各层日志脱敏，使用不含真实授权码的合成标记检查日志。
+- 以服务运行用户确认 `accounts.feishu.cn` 与 `open.feishu.cn` 的 DNS/TLS 可达；无凭证请求只能证明网络连通，不能作为 OAuth 或 API 鉴权成功证据。
+- 在独立安装与独立状态副本上验证候选版本、配置校验、会话和权限逻辑；准备平台状态及业务数据的分离备份、恢复步骤和旧应用归属清单。
+- 准备带占位符的配置片段、服务用户私有目录和安全输入步骤。App 未配置完成前不把生产 `auth_mode` 切为 `feishu`，不创建假身份、假会话或空秘密文件来代替真实接入。
+
+后台设置就绪后，服务端只需补齐 App ID、预期 `tenant_key` 和安全交付的 App Secret；不需要额外的事件凭证。指定管理员与专用测试成员仍须配合真实登录、拒绝授权及撤权验收。前三项资料到位并不等于这些验收已完成。
 
 ## 2. 保存 App Secret 并配置服务
 
@@ -49,12 +87,12 @@ with os.fdopen(fd, "w", encoding="ascii") as target:
 PY
 ```
 
-将以下字段合并到既有 `/etc/awesome-deploy/config.json`，保留其余部署配置。示例中的 App ID 和企业标识必须替换为实际值：
+将以下字段合并到既有 `/etc/awesome-deploy/config.json`，保留其余部署配置。示例中的 `public_url`、App ID 和企业标识必须替换为自身部署的实际值：
 
 ```json
 {
   "auth_mode": "feishu",
-  "public_url": "https://awesome.guanghexinzhi.cn",
+  "public_url": "https://deploy.example.com",
   "feishu_app_id": "cli_REPLACE",
   "feishu_tenant_key": "REPLACE_TENANT_KEY",
   "feishu_app_secret_file": "/var/lib/awesome-deploy/feishu-app-secret"
@@ -83,7 +121,7 @@ location = /auth/feishu/callback {
 
 如必须保留路径级访问统计，在 `http` 上下文定义只记录 `$uri` 的专用格式，再给管理入口使用。不要记录 `$request`、`$request_uri`、`$args`、Referer、Cookie、Authorization 或请求正文。回调 location 单独禁记错误日志，避免上游失败时完整请求进入日志；平台仍记录不含参数的登录成功/失败事件。检查 CDN、WAF 和其他代理层同样不保存回调参数，且不要启用 HTTP 客户端 debug 日志。
 
-登录 Cookie 使用 `__Host-` 前缀、`Secure`、`HttpOnly`、`SameSite=Lax` 和 `Path=/`，不设置 `Domain`。不要在代理层改写为 `Domain=.awesome.guanghexinzhi.cn`，否则各业务子域会与管理登录共享 Cookie 边界。修改接口还会检查来源与 CSRF；不要删除 `Origin` 等请求头。
+登录 Cookie 使用 `__Host-` 前缀、`Secure`、`HttpOnly`、`SameSite=Lax` 和 `Path=/`，不设置 `Domain`。不要在代理层改写为 `Domain=.deploy.example.com`，否则各业务子域会与管理登录共享 Cookie 边界。修改接口还会检查来源与 CSRF；不要删除 `Origin` 等请求头。
 
 ## 4. 首位管理员及已有应用归属
 
