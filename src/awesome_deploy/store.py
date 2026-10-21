@@ -10,6 +10,7 @@ import time
 import uuid
 
 from .errors import DeployError
+from .access import AccessStore, denied, offline_started
 from .storage import ManagedStorage
 
 
@@ -56,6 +57,7 @@ class Store:
                 CREATE INDEX IF NOT EXISTS offline_app ON offline_operations(app_id, status);
             """)
             self._migrate_domain_bindings(db, verified_offline_domains)
+            AccessStore.ensure_schema(db)
 
     def _migrate_domain_bindings(self, db, verified_offline_domains):
         """Relax only the old domain constraint; preserve every child table and foreign key."""
@@ -226,7 +228,7 @@ class Store:
             yield
 
     @contextmanager
-    def secret_configuration_scope(self, job_id, *, write=False):
+    def secret_configuration_scope(self, job_id, *, write=False, actor=None):
         """Authorize a new secret writer independently of old-version reuse rules.
 
         The caller holds worker.lock before requesting a write transaction, and
@@ -237,6 +239,17 @@ class Store:
             if not write:
                 db.execute("BEGIN")
             job = self._get(db, job_id)
+            if actor is not None:
+                fresh = AccessStore._actor(db, actor)
+                if job.get("app_id"):
+                    AccessStore._require(db, fresh, job["app_id"], "secrets")
+                    if not fresh["is_admin"]:
+                        AccessStore.require_secret_scope(db, job["app_id"],
+                            job["input"].get("repository"), job["input"].get("subdomain"))
+                elif not fresh["is_admin"] or not fresh["can_deploy"]:
+                    raise denied()
+            elif getattr(self.settings, "auth_mode", "basic") == "feishu":
+                raise denied()
             if (job["status"] != "failed" or not isinstance(job.get("error"), dict)
                     or job["error"].get("code") != "SECRET_NOT_FOUND"
                     or not isinstance(job.get("input"), dict) or self._data_cleared(job)):
@@ -311,38 +324,74 @@ class Store:
         for row in db.execute("SELECT * FROM offline_operations WHERE status IN ('queued','running','recovery_required')"):
             if row["app_id"] == owner or row["target_release_id"] in relevant_ids:
                 raise busy
-        return (owner is None or reset_owner) and not active_release and not generation_data
+        managed_draft = owner is not None and db.execute(
+            "SELECT 1 FROM app_access WHERE app_id=?", (owner,)
+        ).fetchone() is not None
+        return (owner is None or reset_owner or managed_draft) and not active_release and not generation_data
 
-    def enqueue(self, payload, idempotency_key):
+    def enqueue(self, payload, idempotency_key, *, actor=None):
         encoded = _json(payload)
+        request_key = idempotency_key
         if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 200:
             raise DeployError("INVALID_IDEMPOTENCY_KEY", "Provide an idempotency key of 1–200 characters.")
+        if actor is None and getattr(self.settings, "auth_mode", "basic") == "feishu":
+            raise denied()
         with self._connection(write=True) as db:
+            if actor is not None:
+                actor = AccessStore._actor(db, actor)
+                if not actor["can_deploy"]:
+                    raise denied()
+                idempotency_key = AccessStore.scoped_key(actor, "job", idempotency_key)
             row = db.execute("SELECT * FROM jobs WHERE idempotency_key=?", (idempotency_key,)).fetchone()
             if row:
+                if actor is not None:
+                    AccessStore._authorize_operation_local(db, "job", row["id"], required=True)
                 if row["input"] != encoded:
-                    raise DeployError(
-                        "IDEMPOTENCY_CONFLICT", "This key already belongs to a different request."
-                    )
+                    raise DeployError("IDEMPOTENCY_CONFLICT", "This key already belongs to a different request.")
                 return self._job(row)
-            self._check_offline_gate(db, payload.get("appId"), payload.get("subdomain"))
+            app_id = payload.get("appId")
+            if actor is not None:
+                if app_id:
+                    AccessStore._require(db, actor, app_id, "deploy")
+                    app = db.execute("SELECT * FROM apps WHERE id=?", (app_id,)).fetchone()
+                    if (app["repository"] != payload["repository"]
+                            or app["subdomain"] is not None and app["subdomain"] != payload["subdomain"]):
+                        raise DeployError("APP_IDENTITY_CONFLICT", "Repository and subdomain must match the application.")
+                else:
+                    if db.execute("SELECT 1 FROM apps WHERE subdomain=?", (payload["subdomain"],)).fetchone():
+                        raise denied()
+                    app_id, created = uuid.uuid4().hex, time.time()
+                    db.execute("INSERT INTO apps VALUES (?,?,NULL,NULL,?,?)",
+                               (app_id, payload["repository"], created, created))
+                    AccessStore.create_owned(db, actor, app_id)
+                AccessStore.claim_secret_scope(db, self.settings, actor, app_id,
+                                               payload["repository"], payload["subdomain"])
+            self._check_offline_gate(db, app_id, payload.get("subdomain"))
             job_id, now = uuid.uuid4().hex, time.time()
             db.execute(
                 """INSERT INTO jobs
-                (id,idempotency_key,input,status,phase,created_at,updated_at)
-                VALUES (?,?,?,'queued','queued',?,?)""",
-                (job_id, idempotency_key, encoded, now, now),
+                (id,idempotency_key,input,app_id,status,phase,created_at,updated_at)
+                VALUES (?,?,?,?,'queued','queued',?,?)""",
+                (job_id, idempotency_key, encoded, app_id if actor is not None else None, now, now),
             )
+            if actor is not None:
+                AccessStore.record_operation(db, actor, "job", job_id, app_id, "deploy", request_key)
             return self._get(db, job_id)
 
-    def list_jobs(self, limit=50):
+    def list_jobs(self, limit=50, *, actor=None):
         with self._connection() as db:
-            return [
-                self._job(row)
-                for row in db.execute(
-                    "SELECT * FROM jobs ORDER BY created_at DESC,id DESC LIMIT ?", (max(1, min(limit, 200)),)
-                )
-            ]
+            params = []
+            clause = ""
+            if actor is not None:
+                actor = AccessStore._actor(db, actor)
+                if not actor["is_admin"]:
+                    clause = """WHERE EXISTS (SELECT 1 FROM app_members m
+                        WHERE m.app_id=jobs.app_id AND m.user_id=? AND m.enabled=1
+                        AND m.role IN ('owner','maintainer'))"""
+                    params.append(actor["id"])
+            params.append(max(1, min(limit, 200)))
+            return [self._job(row) for row in db.execute(
+                f"SELECT * FROM jobs {clause} ORDER BY created_at DESC,id DESC LIMIT ?", params)]
 
     def apps(self):
         with self._connection() as db:
@@ -506,15 +555,24 @@ class Store:
                 "volumes": [volumes[name] for name in sorted(volumes)]}
 
     def enqueue_offline(self, app_id, expected_release_id, idempotency_key, *, data_policy="retain",
-                        delete_confirmation=None):
+                        delete_confirmation=None, actor=None):
+        request_key = idempotency_key
         if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 200:
             raise DeployError("INVALID_IDEMPOTENCY_KEY", "Provide an idempotency key of 1–200 characters.")
         if data_policy not in ("retain", "delete"):
             raise DeployError("OFFLINE_DATA_POLICY", "Choose retain or delete for application data.")
+        if actor is None and getattr(self.settings, "auth_mode", "basic") == "feishu":
+            raise denied()
         with self._connection(write=True) as db:
+            if actor is not None:
+                actor = AccessStore._actor(db, actor)
+                AccessStore._require(db, actor, app_id, "delete" if data_policy == "delete" else "offline")
+                idempotency_key = AccessStore.scoped_key(actor, "offline", idempotency_key)
             row = db.execute("SELECT * FROM offline_operations WHERE idempotency_key=?", (idempotency_key,)).fetchone()
             existing = self._offline(row) if row else None
             if existing:
+                if actor is not None and not offline_started(existing):
+                    AccessStore._authorize_operation_local(db, "offline", existing["id"], required=True)
                 if (existing["app_id"] != app_id or existing["target_release_id"] != expected_release_id
                         or existing["execution"].get("data_policy", "retain") != data_policy):
                     raise DeployError("IDEMPOTENCY_CONFLICT", "This key already belongs to a different request.")
@@ -548,6 +606,9 @@ class Store:
                 (id,idempotency_key,app_id,target_release_id,status,phase,execution,created_at,updated_at)
                 VALUES (?,?,?,?,'queued','offline_queued',?,?,?)""",
                 (operation_id, idempotency_key, app_id, expected_release_id, _json(state), now, now))
+            if actor is not None:
+                AccessStore.record_operation(db, actor, "offline", operation_id, app_id,
+                                             "delete" if data_policy == "delete" else "offline", request_key)
             return self._get_offline(db, operation_id)
 
     def next_offline(self):
@@ -577,6 +638,12 @@ class Store:
             if operation["status"] != "running":
                 raise DeployError("OFFLINE_STATE", "Only a running offline operation may checkpoint.")
             patch = dict(execution)
+            if patch.get("authorization_started") is True and not offline_started(operation):
+                AccessStore._authorize_operation_local(db, "offline", operation_id,
+                    required=getattr(self.settings, "auth_mode", "basic") == "feishu")
+                AccessStore._audit(db, "SYSTEM", "offline_cleanup_started", operation["app_id"], operation_id)
+            if operation["execution"].get("authorization_started") and patch.get("authorization_started", True) is not True:
+                raise DeployError("OFFLINE_STATE", "Started offline cleanup cannot be cancelled.")
             for key in ("data_policy", "deletion_metadata"):
                 if key in patch and patch[key] != operation["execution"].get(key, "retain" if key == "data_policy" else None):
                     raise DeployError("OFFLINE_STATE", "The confirmed deletion plan cannot change.")
@@ -595,6 +662,15 @@ class Store:
             if operation["status"] == "succeeded":
                 raise DeployError("OFFLINE_STATE", "A completed offline operation cannot fail.")
             db.execute("UPDATE offline_operations SET status='recovery_required',error=?,updated_at=? WHERE id=?",
+                       (_json(error), time.time(), operation_id))
+            return self._get_offline(db, operation_id)
+
+    def cancel_offline(self, operation_id, error):
+        with self._connection(write=True) as db:
+            operation = self._get_offline(db, operation_id)
+            if offline_started(operation):
+                raise DeployError("OFFLINE_STATE", "Started offline cleanup cannot be cancelled.")
+            db.execute("UPDATE offline_operations SET status='failed',error=?,updated_at=? WHERE id=?",
                        (_json(error), time.time(), operation_id))
             return self._get_offline(db, operation_id)
 
@@ -629,6 +705,9 @@ class Store:
                     cleared = {**historical["execution"], "data_deleted": True, "data_reset_operation": operation_id}
                     db.execute("UPDATE jobs SET execution=?,updated_at=? WHERE id=?", (_json(cleared), now, job_id))
                 state.update(data_deleted=True, data_reset_operation=operation_id)
+                for repository, subdomain in scopes:
+                    db.execute("DELETE FROM app_secret_scopes WHERE app_id=? AND repository=? AND subdomain=?",
+                               (app["id"], repository, subdomain))
             db.execute("UPDATE apps SET active_release_id=NULL,subdomain=NULL,updated_at=? WHERE id=?", (now, app["id"]))
             db.execute("DELETE FROM reservations WHERE job_id=?", (job["id"],))
             db.execute("UPDATE jobs SET execution=?,updated_at=? WHERE id=?", (_json(state), now, job["id"]))
@@ -789,6 +868,11 @@ class Store:
     def claim(self, job_id):
         with self._connection(write=True) as db:
             job = self._get(db, job_id)
+            cleanup = any(job["execution"].get(key) for key in (
+                "failure_intent", "resources_released", "storage_handoff_intent", "publish_intent"))
+            if not cleanup:
+                AccessStore._authorize_operation_local(db, "job", job_id,
+                    required=getattr(self.settings, "auth_mode", "basic") == "feishu")
             if job["status"] not in ("queued", "running"):
                 raise DeployError("JOB_STATE", "This job cannot be started.")
             db.execute("UPDATE jobs SET status='running',updated_at=? WHERE id=?", (time.time(), job_id))
@@ -905,6 +989,8 @@ class Store:
     def reserve(self, job_id, snapshot):
         with self._connection(write=True) as db:
             job = self._get(db, job_id)
+            AccessStore._authorize_operation_local(db, "job", job_id,
+                required=getattr(self.settings, "auth_mode", "basic") == "feishu")
             if job["execution"].get("resources_released") or job["execution"].get("failure_intent"):
                 raise DeployError(
                     "JOB_STATE", "A cleaned or failing deployment cannot reserve resources again."
@@ -996,6 +1082,8 @@ class Store:
     def finish(self, job_id):
         with self._connection(write=True) as db:
             job = self._get(db, job_id)
+            AccessStore._authorize_operation_local(db, "job", job_id,
+                required=getattr(self.settings, "auth_mode", "basic") == "feishu")
             if job["execution"].get("resources_released") or job["execution"].get("failure_intent"):
                 raise DeployError("JOB_STATE", "A cleaned or failing deployment cannot become active.")
             if not job["app_id"] or not job["execution"].get("ports"):

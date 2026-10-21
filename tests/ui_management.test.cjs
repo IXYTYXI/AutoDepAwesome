@@ -424,3 +424,21 @@ test('idempotency conflicts never unlock an uncertain data policy',async()=>{
   await h.run('submitOffline()');assert.equal(h.get('offline-retain').disabled,true);
   selectPolicy(h,'retain');assert.equal(h.get('offline-delete').checked,true);
 });
+
+test('authorization-cancelled offline operations are terminal and a fresh request keeps its new key after a lost response',async()=>{
+  const operation={id:'cancelled-op',appId:online.id,releaseId:'release-one',status:'failed',dataPolicy:'delete',retryable:false};
+  const data={...empty,apps:[{...online,operation}],offlineOperations:[operation]};
+  const storage=new Map([['awesome.offline.intent:'+online.id,JSON.stringify({appId:online.id,releaseId:'release-one',key:'cancelled-key',dataPolicy:'delete',deleteConfirmation:'删除 demo'})]]);
+  const h=harness({data,sessionStore:storage});await settle();
+  const content=all(h.get('online-apps')).map(node=>node.textContent).join(' ');
+  assert.match(content,/下线已取消/);assert.doesNotMatch(content,/等待平台完成|等待下线完成|下线未确认/);
+  assert.equal(all(h.get('online-apps')).some(node=>node.textContent==='重试下线'),false);
+  h.run("openOfflineDialog('app-one')");assert.equal(h.get('offline-retain').checked,true);assert.equal(h.get('offline-delete').disabled,false);
+  const posts=[];h.context.fetch=async(url,options={})=>{if(options.method==='POST'){posts.push(options);throw new Error('Lost response');}return {ok:true,json:async()=>data};};
+  await h.run('submitOffline()');const key=posts[0].headers['Idempotency-Key'];assert.notEqual(key,'cancelled-key');
+  h.run("closeOfflineDialog();openOfflineDialog('app-one')");await h.run('submitOffline()');assert.equal(posts[1].headers['Idempotency-Key'],key);
+  const saved=JSON.parse(storage.get('awesome.offline.intent:'+online.id));assert.equal(saved.afterFailedOperationId,'cancelled-op');
+  const reloaded=harness({data,sessionStore:storage});await settle();reloaded.run("openOfflineDialog('app-one')");
+  reloaded.context.fetch=async(url,options={})=>{if(options.method==='POST'){posts.push(options);throw new Error('Lost again');}return {ok:true,json:async()=>data};};
+  await reloaded.run('submitOffline()');assert.equal(posts[2].headers['Idempotency-Key'],key);
+});

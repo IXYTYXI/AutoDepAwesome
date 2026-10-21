@@ -39,6 +39,10 @@ class Settings:
     repo_size_limit_mib: int = 256
     auth_file: Path | None = None
     admin_user: str = "operator"
+    auth_mode: str = "basic"
+    feishu_app_id: str = ""
+    feishu_tenant_key: str = ""
+    feishu_app_secret_file: Path | None = None
     ai_base_url: str | None = None
     ai_model: str = ""
     ai_api_key_file: Path | None = None
@@ -60,6 +64,23 @@ class Settings:
     @property
     def database_path(self) -> Path:
         return self.state_dir / "platform.sqlite3"
+
+
+def validate_identity_settings(settings: Settings) -> None:
+    if settings.auth_mode not in {"basic", "feishu"}:
+        raise ValueError("authentication mode")
+    if settings.auth_mode == "basic":
+        if settings.feishu_app_id or settings.feishu_tenant_key or settings.feishu_app_secret_file is not None:
+            raise ValueError("Feishu settings require explicit Feishu mode")
+        return
+    if (not re.fullmatch(r"cli_[A-Za-z0-9]{1,80}", settings.feishu_app_id)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", settings.feishu_tenant_key)
+            or not isinstance(settings.feishu_app_secret_file, Path)):
+        raise ValueError("Feishu identity settings")
+    public = urlsplit(settings.public_url)
+    if (public.scheme != "https" or not public.hostname or public.username or public.password
+            or public.query or public.fragment or public.path not in ("", "/")):
+        raise ValueError("Feishu login requires a fixed HTTPS origin")
 
 
 def validate_storage_settings(settings: Settings) -> None:

@@ -13,7 +13,8 @@ import time
 from urllib.parse import urlsplit
 
 from .auth import initialize_credentials
-from .config import Settings, validate_ai_settings, validate_git_proxy_settings, validate_storage_settings
+from .config import (Settings, validate_ai_settings, validate_git_proxy_settings, validate_storage_settings,
+                     validate_identity_settings)
 from .errors import DeployError
 
 
@@ -29,7 +30,7 @@ def load_settings(path: Path | None) -> Settings:
             raise DeployError("INVALID_CONFIG", "无法读取运维配置 JSON。") from exc
     if not isinstance(values, dict) or set(values) - {f.name for f in dataclasses.fields(Settings)}:
         raise DeployError("INVALID_CONFIG", "运维配置包含未知字段或不是对象。")
-    for key in ("state_dir", "auth_file", "rootlesskit_socket", "ai_api_key_file", "egress_docker_pid_file"):
+    for key in ("state_dir", "auth_file", "rootlesskit_socket", "ai_api_key_file", "egress_docker_pid_file", "feishu_app_secret_file"):
         if key in values and values[key] is not None:
             try:
                 candidate = Path(values[key]).expanduser()
@@ -39,7 +40,7 @@ def load_settings(path: Path | None) -> Settings:
                 if not candidate.is_absolute() or any(part == ".." for part in candidate.parts):
                     raise DeployError("INVALID_CONFIG", "egress_docker_pid_file 必须是绝对路径。")
                 values[key] = candidate
-            elif key == "ai_api_key_file":
+            elif key in {"ai_api_key_file", "feishu_app_secret_file"}:
                 # Preserve the final path component so O_NOFOLLOW can reject symlinks.
                 values[key] = Path(os.path.abspath(base / candidate))
             else:
@@ -67,6 +68,7 @@ def load_settings(path: Path | None) -> Settings:
         validate_git_proxy_settings(settings)
         validate_ai_settings(settings)
         validate_storage_settings(settings)
+        validate_identity_settings(settings)
         from .egress import policy
 
         try:
@@ -133,6 +135,12 @@ def main(argv=None):
     worker = sub.add_parser("worker", help="运行持久化部署执行器")
     worker.add_argument("--once", action="store_true")
     sub.add_parser("check", help="只读检查服务器部署前提")
+    sub.add_parser("user-list", help="列出本平台已登录的飞书用户，不输出任何令牌")
+    users = sub.add_parser("user-set", help="在可信服务器终端设置飞书用户权限，并撤销其旧会话及排队授权")
+    users.add_argument("--user-id", required=True)
+    for flag in ("enabled", "can-deploy", "admin"):
+        users.add_argument("--" + flag, choices=("true", "false"))
+    sub.add_parser("auth-revoke-all", help="注销所有平台会话与在途登录；恢复数据库后必须执行")
     secret = sub.add_parser("secret-set", help="安全输入应用秘密配置")
     secret.add_argument("--repository", required=True)
     secret.add_argument("--subdomain", required=True)
@@ -175,11 +183,35 @@ def main(argv=None):
             from .api import create_app
             import uvicorn
 
-            if not settings.auth_file.is_file():
+            if settings.auth_mode == "basic" and not settings.auth_file.is_file():
                 raise DeployError("AUTH_NOT_INITIALIZED", "请先运行 init 初始化运维账号。")
             uvicorn.run(
-                create_app(settings), host="127.0.0.1", port=settings.listen_port, proxy_headers=False
+                create_app(settings), host="127.0.0.1", port=settings.listen_port, proxy_headers=False,
+                access_log=False,  # OAuth callback query strings contain one-time credentials.
             )
+        elif args.command in {"user-list", "user-set", "auth-revoke-all"}:
+            if settings.auth_mode != "feishu":
+                raise DeployError("INVALID_CONFIG", "该命令需要 auth_mode=feishu。")
+            from .store import Store
+            from .identity import IdentityStore
+            Store(settings)  # Run legacy schema migrations before adding identity tables.
+            identities = IdentityStore(settings)
+            try:
+                if args.command == "user-list":
+                    print(json.dumps([{"userId": row["id"], "displayName": row["name"],
+                                       "openId": row["open_id"], "enabled": bool(row["enabled"]),
+                                       "canDeploy": bool(row["can_deploy"]), "admin": bool(row["is_admin"])}
+                                      for row in identities.list_users()], ensure_ascii=False, indent=2))
+                elif args.command == "user-set":
+                    values = {name: None if value is None else value == "true" for name, value in
+                              {"enabled": args.enabled, "can_deploy": args.can_deploy, "is_admin": args.admin}.items()}
+                    identities.set_user(args.user_id, **values)
+                    print("权限已更新；该用户旧会话和未开始执行的旧授权已失效。")
+                else:
+                    identities.revoke_all_sessions()
+                    print("全部平台会话及在途登录已撤销。")
+            finally:
+                identities.provider.close()
         elif args.command == "secret-set":
             from .deployment_secrets import DeploymentSecrets
             from .source import validate_repository

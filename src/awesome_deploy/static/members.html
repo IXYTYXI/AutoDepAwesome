@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#f3f5f1">
+<title>成员管理 · Awesome 自动部署</title>
+<link rel="stylesheet" href="/assets/app.css?v=0.9.0"><link rel="stylesheet" href="/assets/auth.css?v=0.9.0"><link rel="stylesheet" href="/assets/members.css?v=0.9.0">
+<script src="/assets/auth.js?v=0.9.0" defer></script><script src="/assets/members.js?v=0.9.0" defer></script>
+</head><body><a class="skip-link" href="#members-main">跳到主要内容</a><main id="members-main">
+<header class="console-header"><span class="brand"><span class="brand-mark" aria-hidden="true">A</span> AWESOME / DEPLOY</span><nav class="console-nav" aria-label="控制台导航"><a href="/">部署控制台</a><a href="/manage" aria-current="page">应用管理</a></nav><div id="auth-session" class="auth-session" aria-label="当前登录账号" aria-busy="true"><div class="auth-identity"><span id="auth-name" class="auth-name">正在检查登录…</span><span id="auth-role" class="auth-role"></span></div><button id="auth-copy-id" class="secondary auth-logout" type="button" hidden>复制成员 ID</button><span id="auth-copy-status" class="sr-only" role="status" aria-live="polite"></span><button id="auth-logout" class="secondary auth-logout" type="button" hidden>退出登录</button></div></header>
+  <section id="auth-notice" class="auth-notice" aria-label="登录状态提示" hidden><p id="auth-notice-text" role="status" aria-live="polite"></p><div class="auth-notice-actions"><a id="auth-login" href="/login" target="_blank" rel="noopener">在新标签页登录 ↗</a><button id="auth-retry" class="secondary" type="button">重新检查登录</button></div></section>
+
+<section class="intro members-intro"><div><p class="eyebrow">应用权限</p><h1>成员管理</h1><p>为已登录平台的成员授予此应用的访问权限。</p></div><a class="members-back" href="/manage">返回应用管理</a></section>
+<div class="member-identities"><p>当前应用 <code id="member-app-id"></code></p><p>你的成员 ID <code id="member-self-id">正在读取…</code><span>可使用页面右上方的“复制成员 ID”与负责人共享。</span></p></div>
+<p id="members-error" class="members-error" role="alert"></p><p id="members-notice" class="members-notice" role="status" aria-live="polite"></p>
+<section class="panel members-panel" aria-labelledby="members-title"><div class="section-head"><div><h2 id="members-title">应用成员</h2><p id="member-count" class="section-description">正在读取成员…</p></div><button id="members-refresh" class="secondary" type="button">刷新成员</button></div>
+<p id="member-readonly" class="members-help" hidden>当前账号只能查看成员。如需修改，请联系应用负责人或平台管理员。</p>
+<div id="member-list" class="member-list" tabindex="0" role="region" aria-label="应用成员列表，可滚动" aria-describedby="member-count" aria-busy="true"></div></section>
+<section id="member-invite" class="panel member-invite-panel" hidden aria-label="添加或指派应用成员">
+<form id="member-form" hidden><h2>添加成员</h2><p class="members-help">请对方先登录平台，再提供其成员 ID。添加现有成员会更新其角色；负责人请使用列表中的转交操作。</p>
+<div class="member-form-fields"><div><label for="member-user-id">成员 ID</label><input id="member-user-id" name="userId" autocomplete="off" spellcheck="false" required maxlength="128" placeholder="对方在平台复制的成员 ID…"></div><div><label for="member-role">应用角色</label><select id="member-role" name="role"><option value="viewer">查看者</option><option value="maintainer">维护者</option></select></div></div>
+<p class="members-help">查看者可浏览安全概览。维护者可查看部署详情、配置允许修改的密钥；发起部署还需要平台部署权限。</p><button id="member-add" type="submit">保存成员</button></form>
+<form id="owner-form" hidden><h2>为历史应用指定负责人</h2><p class="members-help">此应用尚未关联负责人。管理员可指定一名已登录平台的成员，完成权限迁移。新负责人将获得此应用的管理权限，并可使用其已有配置和已绑定的仓库访问权限。</p><label for="owner-user-id">负责人 ID</label><input id="owner-user-id" name="userId" autocomplete="off" spellcheck="false" required maxlength="128" placeholder="新负责人的平台成员 ID…"><button id="owner-assign" type="submit">指定负责人</button></form>
+</section>
+<section id="repository-credentials-panel" class="panel repository-credentials-panel" aria-labelledby="repository-credentials-title" hidden>
+<h2 id="repository-credentials-title">固定仓库读取授权</h2>
+<p id="repository-credentials-status" class="repository-credentials-status" role="status" aria-live="polite">正在确认授权状态…</p>
+<p class="members-help">仅允许此应用的固定仓库使用平台已配置的读取凭证；不会向成员展示凭证。变更会使旧排队授权失效。</p>
+<p id="repository-credentials-help" class="members-help"></p>
+<div class="repository-credentials-actions"><button id="repository-credentials-approve" type="button" disabled>批准仓库访问</button><button id="repository-credentials-revoke" class="secondary" type="button" disabled>撤销仓库访问</button></div>
+</section>
+</main>
+<dialog id="member-dialog" class="member-dialog" aria-labelledby="member-dialog-title" aria-describedby="member-dialog-message"><h2 id="member-dialog-title">确认权限变更</h2><p id="member-dialog-message"></p><p id="member-dialog-error" class="members-error" role="alert"></p><p class="members-help">权限变更需要最近 10 分钟内的登录确认。若提示重新登录，请在新标签页登录后返回重试。</p><div id="member-dialog-reauth" class="member-dialog-reauth" hidden><a href="/login" target="_blank" rel="noopener">在新标签页重新登录 ↗</a><button id="member-dialog-check" class="secondary" type="button">重新检查登录</button></div><div class="member-dialog-actions"><button id="member-cancel" class="secondary" type="button">取消</button><button id="member-confirm" type="button">确认更改</button></div></dialog>
+</body></html>

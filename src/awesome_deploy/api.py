@@ -1,21 +1,27 @@
 """HTTP submission is durable and quick; only the worker executes deployments."""
 
 import asyncio
+import base64
+from contextlib import asynccontextmanager
+import hashlib
+import hmac
 import re
+import time
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .auth import verify_credentials
 from .ai_advice import AdviceService
-from .config import Settings
+from .config import Settings, validate_identity_settings
 from .diagnostics import ERROR_CODES, PHASE_LABELS, localize_error, localize_event
 from .deployment_secrets import DeploymentSecrets
 from .errors import DeployError
@@ -56,6 +62,27 @@ class OfflineRequest(BaseModel):
 class SecretConfigurationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     values: dict[StrictStr, StrictStr]
+
+
+class MemberRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: Literal["maintainer", "viewer"]
+
+
+class OwnerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    userId: StrictStr
+
+
+class UserPermissionsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: StrictBool | None = None
+    canDeploy: StrictBool | None = None
+
+
+class RepositoryCredentialsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    approved: StrictBool
 
 
 _RUNTIME_NETWORK_TEXT = {
@@ -107,17 +134,40 @@ def advice_context(job):
     }
 
 
-def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
+def create_app(settings: Settings, store: Store | None = None, *, identity_provider=None) -> FastAPI:
+    validate_identity_settings(settings)
     store = store or Store(settings)
-    app = FastAPI(title="Awesome Deploy", docs_url=None, redoc_url=None, openapi_url=None)
+    identity = access = None
+    if settings.auth_mode == "feishu":
+        from .identity import IdentityStore
+        from .access import AccessStore
+        identity = IdentityStore(settings, provider=identity_provider)
+        access = AccessStore(settings)
+        access.identity = identity
+
+    @asynccontextmanager
+    async def lifespan(app):
+        yield
+        if identity:
+            identity.provider.close()
+
+    app = FastAPI(title="Awesome Deploy", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.store = store
+    app.state.identity, app.state.access = identity, access
     app.state.advice = AdviceService(settings)
     app.state.deployment_secrets = DeploymentSecrets(settings, store)
     public = urlsplit(settings.public_url)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[public.hostname or "127.0.0.1"])
     basic = HTTPBasic(auto_error=False)
 
-    def authenticated(credentials: HTTPBasicCredentials | None = Depends(basic)):
+    def authenticated(request: Request, credentials: HTTPBasicCredentials | None = Depends(basic)):
+        if identity:
+            from .identity import SESSION_COOKIE
+            actor = identity.session(request.cookies.get(SESSION_COOKIE))
+            if actor is None:
+                raise HTTPException(401, "登录已失效，请重新使用飞书登录。")
+            request.state.actor = actor
+            return actor
         if not credentials or not verify_credentials(
             settings.auth_file, credentials.username, credentials.password
         ):
@@ -126,17 +176,111 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
                 "请使用部署控制台账号登录。",
                 headers={"WWW-Authenticate": 'Basic realm="Awesome Deploy", charset="UTF-8"'},
             )
-        return credentials.username
+        request.state.actor = None
+        return None
 
-    def write_access(request: Request, actor: str = Depends(authenticated)):
+    def write_access(request: Request, actor=Depends(authenticated)):
         origin = request.headers.get("origin")
         if origin is not None and origin != settings.public_url.rstrip("/"):
             raise HTTPException(403, "请求来源不被允许。")
         if request.headers.get("sec-fetch-site") == "cross-site":
             raise HTTPException(403, "拒绝跨站写操作。")
+        if identity:
+            from .identity import SESSION_COOKIE, csrf_token
+            token = request.headers.get("x-csrf-token", "")
+            if (origin != settings.public_url.rstrip("/") or not re.fullmatch(r"[0-9a-f]{64}", token)
+                    or not hmac.compare_digest(token, csrf_token(request.cookies.get(SESSION_COOKIE, "")))):
+                raise HTTPException(403, "页面验证已失效，请刷新后重试。")
         if not request.headers.get("content-type", "").lower().startswith("application/json"):
             raise HTTPException(415, "请使用 application/json。")
         return actor
+
+    def fresh(actor):
+        if identity and time.time() - actor["authenticated_at"] > 600:
+            raise DeployError("AUTH_REAUTH_REQUIRED", "请重新使用飞书登录后再进行此操作。")
+
+    def feishu_only():
+        if identity is None:
+            raise HTTPException(404)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(request, error):
+        if identity and error.status_code == 401 and request.url.path in {"/", "/manage", "/members"}:
+            return RedirectResponse("/login?error=session", status_code=303)
+        return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=error.headers)
+
+    @app.get("/login")
+    def login_page():
+        feishu_only()
+        return FileResponse(STATIC / "login.html")
+
+    @app.get("/auth/feishu/start")
+    def start_login(request: Request):
+        feishu_only()
+        from .identity import OAUTH_COOKIE
+        attempt = identity.begin_login(request.query_params.get("return", "/"))
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(attempt["verifier"].encode()).digest()).rstrip(b"=").decode()
+        response = RedirectResponse(identity.provider.authorize_url(attempt["state"], challenge), status_code=303)
+        response.set_cookie(OAUTH_COOKIE, attempt["browser"], max_age=300, secure=True, httponly=True, samesite="lax")
+        return response
+
+    @app.get("/auth/feishu/callback")
+    def finish_login(request: Request):
+        feishu_only()
+        from .feishu import FeishuDenied, FeishuUnavailable
+        from .identity import OAUTH_COOKIE, SESSION_COOKIE, SESSION_MAX_AGE
+        error = None
+        verified_attempt = False
+        try:
+            # Reject duplicates instead of allowing proxy/framework parameter disagreement.
+            if any(len(request.query_params.getlist(key)) > 1 for key in ("state", "code", "error")):
+                raise DeployError("AUTH_STATE_INVALID", "登录参数无效。")
+            attempt = identity.consume_login(request.query_params.get("state"), request.cookies.get(OAUTH_COOKIE))
+            verified_attempt = True
+            code = request.query_params.get("code", "")
+            if request.query_params.get("error"):
+                error = "cancelled"
+            elif not code or len(code) > 4096 or any(ord(c) < 33 or ord(c) > 126 for c in code):
+                error = "invalid"
+            else:
+                actor = identity.login_user(identity.provider.exchange(code, attempt["verifier"]))
+                token = identity.create_session(actor["id"], expected_epoch=attempt["auth_epoch"])
+                identity.logout(request.cookies.get(SESSION_COOKIE))
+        except FeishuDenied:
+            error = "denied"
+        except FeishuUnavailable:
+            error = "unavailable"
+        except DeployError as exc:
+            error = "expired" if exc.code == "AUTH_STATE_INVALID" else "denied"
+        if error:
+            if verified_attempt:
+                identity.login_failure(error)
+            response = RedirectResponse("/login?error=" + error, status_code=303)
+        else:
+            response = RedirectResponse(attempt["return_path"], status_code=303)
+            response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_MAX_AGE,
+                                secure=True, httponly=True, samesite="lax")
+        response.delete_cookie(OAUTH_COOKIE, secure=True, httponly=True, samesite="lax")
+        return response
+
+    @app.get("/auth/session")
+    def session_info(request: Request, actor=Depends(authenticated)):
+        if identity is None:
+            return {"mode": "basic", "authenticated": True, "role": "admin", "canDeploy": True}
+        from .identity import SESSION_COOKIE, csrf_token
+        return {"mode": "feishu", "authenticated": True, "userId": actor["id"],
+                "displayName": actor["name"], "role": "admin" if actor["is_admin"] else "member",
+                "canDeploy": bool(actor["can_deploy"]), "csrfToken": csrf_token(request.cookies[SESSION_COOKIE])}
+
+    @app.post("/auth/logout", dependencies=[Depends(write_access)])
+    def logout(request: Request):
+        feishu_only()
+        from .identity import SESSION_COOKIE, OAUTH_COOKIE
+        identity.logout(request.cookies.get(SESSION_COOKIE))
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(SESSION_COOKIE, secure=True, httponly=True, samesite="lax")
+        response.delete_cookie(OAUTH_COOKIE, secure=True, httponly=True, samesite="lax")
+        return response
 
     @app.middleware("http")
     async def headers_and_limits(request, call_next):
@@ -170,7 +314,10 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
     async def deployment_error(request, error):
         code = error.code
         status = (
-            429
+            403 if code in {"ACCESS_DENIED", "AUTH_REAUTH_REQUIRED"}
+            else 503 if code == "IDENTITY_UNAVAILABLE"
+            else 429 if code == "AUTH_BUSY"
+            else 429
             if code in {"AI_BUSY", "AI_RATE_LIMITED"}
             else 504
             if code == "AI_TIMEOUT"
@@ -213,6 +360,49 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
             "createdAt": job.get("created_at"),
         }
 
+    def permissions(actor, app_id):
+        if access is None:
+            return None
+        role = access.role(actor, app_id)
+        writable = role in {"admin", "owner", "maintainer"} and bool(actor["can_deploy"])
+        with access._connection() as db:
+            assigned = db.execute("SELECT 1 FROM app_access WHERE app_id=?", (app_id,)).fetchone() is not None
+        return {"viewDetails": role in {"admin", "owner", "maintainer"}, "deploy": writable,
+                "configureSecrets": writable, "offline": writable and role in {"admin", "owner"},
+                "manageMembers": role in {"admin", "owner"} and assigned,
+                "assignOwner": role == "admin" and not assigned,
+                "manageRepositoryCredentials": role == "admin" and assigned}
+
+    def visible_job(actor, job):
+        if access is None:
+            return True
+        try:
+            access.require_job(actor, job, "detail")
+            return True
+        except DeployError as error:
+            if error.code != "ACCESS_DENIED":
+                raise
+            return False
+
+    def operation_view(actor, operation):
+        result = public_operation(operation)
+        if access and result is not None:
+            result["retryKey"] = access.retry_key(actor, operation) if result["retryable"] else None
+            result["retryable"] = bool(result["retryKey"])
+        return result
+
+    def application_view(actor, item):
+        result = public_application(item, settings.base_domain)
+        if access:
+            role = access.require_app(actor, item["id"])
+            if role == "viewer":
+                result = {key: result[key] for key in ("id", "subdomain", "lastSubdomain", "domainBound",
+                                                      "status", "url", "updatedAt")}
+            else:
+                result["operation"] = operation_view(actor, item.get("operation"))
+            result.update(role=role, permissions=permissions(actor, item["id"]))
+        return result
+
     @app.get("/", dependencies=[Depends(authenticated)])
     def home():
         return FileResponse(STATIC / "index.html")
@@ -221,9 +411,17 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
     def manage():
         return FileResponse(STATIC / "manage.html")
 
-    @app.get("/assets/{name}", dependencies=[Depends(authenticated)])
-    def asset(name: str):
-        if name not in ("app.js", "app.css", "manage.js", "manage.css"):
+    @app.get("/members", dependencies=[Depends(authenticated)])
+    def members_page():
+        feishu_only()
+        return FileResponse(STATIC / "members.html")
+
+    @app.get("/assets/{name}")
+    def asset(name: str, request: Request, credentials: HTTPBasicCredentials | None = Depends(basic)):
+        if identity is None:
+            authenticated(request, credentials)
+        if name not in ("app.js", "app.css", "manage.js", "manage.css", "auth.js", "auth.css",
+                        "login.js", "members.js", "members.css"):
             raise HTTPException(404)
         return FileResponse(STATIC / name)
 
@@ -299,32 +497,44 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
         payload = body.model_dump(exclude_none=True)
         payload["repository"] = validate_repository(body.repository, settings)
         payload["ref"] = validate_ref(body.ref)
-        return public_job(store.enqueue(payload, key))
+        return public_job(store.enqueue(payload, key, **({"actor": request.state.actor} if access else {})))
 
     @app.get("/api/v1/deployments", dependencies=[Depends(authenticated)])
-    def deployments():
-        return {"items": [public_job(j) for j in store.list_jobs()]}
+    def deployments(actor=Depends(authenticated)):
+        jobs = store.list_jobs(actor=actor) if access else store.list_jobs()
+        return {"items": [public_job(j) for j in jobs if visible_job(actor, j)]}
 
     @app.get("/api/v1/deployments/{job_id}", dependencies=[Depends(authenticated)])
-    def deployment(job_id: str):
-        return public_job(store.get(job_id))
+    def deployment(job_id: str, actor=Depends(authenticated)):
+        job = store.get(job_id)
+        if access:
+            access.require_job(actor, job)
+        return public_job(job)
 
     @app.get("/api/v1/deployments/{job_id}/events", dependencies=[Depends(authenticated)])
-    def events(job_id: str):
-        store.get(job_id)
+    def events(job_id: str, actor=Depends(authenticated)):
+        job = store.get(job_id)
+        if access:
+            access.require_job(actor, job)
         return {"items": [localize_event(event) for event in store.events(job_id)]}
 
     @app.get("/api/v1/deployments/{job_id}/secrets", dependencies=[Depends(authenticated)])
-    def deployment_secret_requirements(job_id: str):
-        return app.state.deployment_secrets.describe(job_id)
+    def deployment_secret_requirements(job_id: str, actor=Depends(authenticated)):
+        if access:
+            access.require_job(actor, store.get(job_id), "secrets")
+        return app.state.deployment_secrets.describe(job_id, **({"actor": actor} if access else {}))
 
     @app.post("/api/v1/deployments/{job_id}/secrets", dependencies=[Depends(write_access)])
-    def save_deployment_secrets(job_id: str, body: SecretConfigurationRequest):
-        return app.state.deployment_secrets.save(job_id, body.values)
+    def save_deployment_secrets(job_id: str, body: SecretConfigurationRequest, actor=Depends(write_access)):
+        if access:
+            access.require_job(actor, store.get(job_id), "secrets")
+        return app.state.deployment_secrets.save(job_id, body.values, **({"actor": actor} if access else {}))
 
     @app.post("/api/v1/deployments/{job_id}/analyze", dependencies=[Depends(write_access)])
-    async def analyze(job_id: str, body: AnalysisRequest):
+    async def analyze(job_id: str, body: AnalysisRequest, actor=Depends(write_access)):
         job = store.get(job_id)
+        if access:
+            access.require_job(actor, job, "deploy")
         if job["status"] not in {"failed", "recovery_required"} or not job.get("error"):
             raise DeployError("DIAGNOSIS_NOT_AVAILABLE", "只有失败或需要恢复的任务可以分析。")
         try:
@@ -337,20 +547,30 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
             return JSONResponse({"status": "pending"}, status_code=202, headers={"Retry-After": "1"})
 
     @app.get("/api/v1/apps", dependencies=[Depends(authenticated)])
-    def apps():
-        return {"items": store.apps()}
+    def apps(actor=Depends(authenticated)):
+        items = store.apps()
+        if access:
+            items = [{**access.project_app(actor, item), "permissions": permissions(actor, item["id"])}
+                     for item in items if access.can_view(actor, item["id"])]
+        return {"items": items}
 
     @app.get("/api/v1/management", dependencies=[Depends(authenticated)])
-    def management():
+    def management(actor=Depends(authenticated)):
         snapshot = store.management_snapshot()
         return {
-            "apps": [public_application(item, settings.base_domain) for item in snapshot["apps"]],
-            "deployments": [public_job(item) for item in snapshot["deployments"]],
-            "offlineOperations": [public_operation(item) for item in snapshot["offline_operations"]],
+            "apps": [application_view(actor, item) for item in snapshot["apps"]
+                     if access is None or access.can_view(actor, item["id"])],
+            "deployments": [public_job(item) for item in snapshot["deployments"] if visible_job(actor, item)],
+            "offlineOperations": [operation_view(actor, item) for item in snapshot["offline_operations"]
+                                  if access is None or access.role(actor, item["app_id"]) in {"admin", "owner", "maintainer"}],
         }
 
     @app.post("/api/v1/apps/{app_id}/offline", status_code=202, dependencies=[Depends(write_access)])
     def offline(app_id: str, body: OfflineRequest, request: Request):
+        if access:
+            access.require_app(request.state.actor, app_id, "delete" if body.dataPolicy == "delete" else "offline")
+            if body.dataPolicy == "delete":
+                fresh(request.state.actor)
         key = request.headers.get("idempotency-key", "")
         if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", key):
             raise HTTPException(400, "必须提供 1–128 字符的 Idempotency-Key。")
@@ -358,13 +578,80 @@ def create_app(settings: Settings, store: Store | None = None) -> FastAPI:
             raise DeployError("INVALID_APP_ID", "应用编号格式错误。", "appId")
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", body.expectedReleaseId):
             raise DeployError("OFFLINE_STATE", "下线目标版本格式错误。")
-        return public_operation(store.enqueue_offline(
+        return operation_view(request.state.actor, store.enqueue_offline(
             app_id, body.expectedReleaseId, key,
             data_policy=body.dataPolicy, delete_confirmation=body.deleteConfirmation,
+            **({"actor": request.state.actor} if access else {}),
         ))
 
     @app.get("/api/v1/offline-operations/{operation_id}", dependencies=[Depends(authenticated)])
-    def offline_operation(operation_id: str):
-        return public_operation(store.get_offline(operation_id))
+    def offline_operation(operation_id: str, actor=Depends(authenticated)):
+        operation = store.get_offline(operation_id)
+        if access:
+            access.require_offline(actor, operation)
+        return operation_view(actor, operation)
+
+    @app.get("/api/v1/apps/{app_id}/members")
+    def members(app_id: str, actor=Depends(authenticated)):
+        feishu_only()
+        return {"items": access.list_members(actor, app_id), "permissions": permissions(actor, app_id),
+                "repositoryCredentialsApproved": access.repository_credentials_allowed(app_id),
+                "repositoryCredentialsConfigured": bool(settings.git_askpass)}
+
+    @app.put("/api/v1/apps/{app_id}/repository-credentials")
+    def repository_credentials(app_id: str, body: RepositoryCredentialsRequest, actor=Depends(write_access)):
+        feishu_only()
+        fresh(actor)
+        if body.approved and not settings.git_askpass:
+            raise HTTPException(409, "请先由运维配置平台仓库读取凭证。")
+        access.set_credentials_approved(actor, app_id, body.approved)
+        return {"ok": True}
+
+    @app.put("/api/v1/apps/{app_id}/members/{user_id}")
+    def set_member(app_id: str, user_id: str, body: MemberRequest, actor=Depends(write_access)):
+        feishu_only()
+        fresh(actor)
+        access.set_member(actor, app_id, user_id, body.role)
+        return {"ok": True}
+
+    @app.delete("/api/v1/apps/{app_id}/members/{user_id}")
+    def remove_member(app_id: str, user_id: str, actor=Depends(write_access)):
+        feishu_only()
+        fresh(actor)
+        access.remove_member(actor, app_id, user_id)
+        return {"ok": True}
+
+    @app.post("/api/v1/apps/{app_id}/transfer")
+    def transfer(app_id: str, body: OwnerRequest, actor=Depends(write_access)):
+        feishu_only()
+        fresh(actor)
+        access.transfer_owner(actor, app_id, body.userId)
+        return {"ok": True}
+
+    @app.post("/api/v1/apps/{app_id}/owner")
+    def assign_owner(app_id: str, body: OwnerRequest, actor=Depends(write_access)):
+        feishu_only()
+        fresh(actor)
+        access.assign_owner(actor, app_id, body.userId)
+        return {"ok": True}
+
+    @app.get("/api/v1/users")
+    def users(actor=Depends(authenticated)):
+        feishu_only()
+        if not actor["is_admin"]:
+            raise HTTPException(403, "需要管理员权限。")
+        return {"items": [{"userId": row["id"], "displayName": row["name"], "enabled": bool(row["enabled"]),
+                           "canDeploy": bool(row["can_deploy"]), "role": "admin" if row["is_admin"] else "member"}
+                          for row in identity.list_users()]}
+
+    @app.patch("/api/v1/users/{user_id}")
+    def set_user(user_id: str, body: UserPermissionsRequest, actor=Depends(write_access)):
+        feishu_only()
+        fresh(actor)
+        if not actor["is_admin"]:
+            raise HTTPException(403, "需要管理员权限。")
+        identity.set_user(user_id, enabled=body.enabled, can_deploy=body.canDeploy, actor_id=actor["id"],
+                          expected_actor_revision=actor["revision"])
+        return {"ok": True}
 
     return app

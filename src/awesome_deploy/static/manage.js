@@ -2,7 +2,7 @@ const $=id=>document.getElementById(id);
 const appLabels={online:'在线',offlining:'正在下线',offline:'已下线',attention:'需要处理',not_deployed:'尚未部署'};
 const deploymentLabels={queued:'已排队',running:'执行中',recovery_required:'需要恢复处理'};
 const phaseLabels={queued:'等待执行',source:'获取代码',prepared:'配置已校验',freeze:'固定部署输入',frozen:'输入已固定',build:'构建镜像',built:'镜像构建完成',start:'启动服务',https:'准备 HTTPS 证书',publish:'切换路由',verify:'验证发布版本',rollback:'恢复上一版本',retire:'清理旧版本',health:'健康检查',complete:'完成'};
-const operationLabels={queued:'下线排队中',running:'正在停止服务并验证公开访问',succeeded:'下线已确认',recovery_required:'下线未确认，需要恢复处理'};
+const operationLabels={queued:'下线排队中',running:'正在停止服务并验证公开访问',succeeded:'下线已确认',failed:'下线已取消',recovery_required:'下线未确认，需要恢复处理'};
 let managementData=null;
 let refreshPromise=null;
 let pollTimer;
@@ -26,8 +26,8 @@ function errorMessage(error,fallback='操作未完成，请稍后重试。') {
 }
 async function request(url,options={}) {
   let response;
-  try {response=await fetch(url,{credentials:'same-origin',...options});}
-  catch {throw new Error('网络连接失败，未能确认操作结果。请重试或刷新状态。');}
+  try {response=await (typeof window!=='undefined' && window.AwesomeAuth ? window.AwesomeAuth.fetch : fetch)(url,{credentials:'same-origin',...options});}
+  catch (error) {if(error?.auth)throw error;throw new Error('网络连接失败，未能确认操作结果。请重试或刷新状态。');}
   let result;
   try {result=await response.json();}
   catch {throw new Error('无法读取服务器响应，未能确认操作结果。请重试或刷新状态。');}
@@ -75,6 +75,7 @@ function retryAllowed(operation) {
 function operationPolicy(operation) {return operation?.dataPolicy===undefined ? 'retain' : ['retain','delete'].includes(operation.dataPolicy) ? operation.dataPolicy : null;}
 function dataStatus(app,operation) {
   const policy=operationPolicy(operation);
+  if(operation?.status==='failed')return '此下线请求已取消，未停止服务或删除数据。重新获得权限后需发起新请求。';
   if(operation && operation.status!=='succeeded') {
     if(policy==='delete')return operation.status==='recovery_required' ? '已选择删除数据；可能已部分清理，尚未确认全部完成。恢复时将继续原删除请求。' : '已选择删除数据，等待平台完成并确认清理。';
     if(policy==='retain')return '已选择保留数据，等待下线完成。';
@@ -89,8 +90,8 @@ function dataStatus(app,operation) {
 function appName(app) {return app.subdomain || app.lastSubdomain || '未绑定域名';}
 function appRow(app) {
   const row=text('article','','management-row');row.setAttribute('data-app-id',app.id);
-  const info=text('div','');info.append(text('strong',appName(app),'management-name'),text('span',app.repository || '仓库信息未记录','management-repository'));
-  const meta=text('div','');meta.append(text('p',`${app.ref || '版本未记录'}${app.commit ? ' · '+app.commit.slice(0,10) : ''}`,'management-meta'));
+  const info=text('div','');info.append(text('strong',appName(app),'management-name'),text('span',app.repository || (app.permissions?.viewDetails===false ? '仅有概览权限' : '仓库信息未记录'),'management-repository'));
+  const meta=text('div','');if(app.permissions?.viewDetails!==false)meta.append(text('p',`${app.ref || '版本未记录'}${app.commit ? ' · '+app.commit.slice(0,10) : ''}`,'management-meta'));
   meta.append(text('p',`应用 ${app.id.slice(0,8)}`,'management-meta'));
   if(!app.subdomain && app.lastSubdomain)meta.append(text('p',`上次使用：${app.lastSubdomain}`,'management-meta'));
   const operation=operationFor(app),pending=['queued','running'].includes(operation?.status);
@@ -114,16 +115,17 @@ function appRow(app) {
   if(url && app.status==='online' && app.domainBound!==false && !pending) {
     const link=action('a','访问 ↗',`visit:${app.id}`);link.href=url;link.target='_blank';link.rel='noopener';actions.append(link);
   }
-  if(retryAllowed(operation)) {
+  if(app.permissions?.offline!==false && retryAllowed(operation)) {
     const retry=action('button','重试下线',`offline:${app.id}`);retry.addEventListener('click',()=>openOfflineDialog(app.id,true));actions.append(retry);
-  } else if(app.status==='online') {
+  } else if(app.status==='online' && app.permissions?.offline!==false) {
     const button=action('button',pending ? '下线处理中' : '下线',`offline:${app.id}`);
     button.disabled=app.canOffline!==true || !app.activeReleaseId || pending;
     button.setAttribute('aria-label',`${appName(app)}，应用 ${app.id.slice(0,8)}，下线应用`);
     button.addEventListener('click',()=>openOfflineDialog(app.id));actions.append(button);
-  } else if(['offline','not_deployed'].includes(app.status)) {
+  } else if(['offline','not_deployed'].includes(app.status) && app.permissions?.deploy!==false) {
     const link=action('a','去部署控制台 ↗',`deploy:${app.id}`);link.href='/';actions.append(link);
   }
+  if(app.permissions?.manageMembers===true || app.permissions?.assignOwner===true){const link=action('a',app.permissions.assignOwner ? '指定负责人' : '成员管理',`members:${app.id}`);link.href='/members?appId='+encodeURIComponent(app.id);actions.append(link);}
   row.append(info,meta,state,actions);return row;
 }
 function deploymentRow(job) {
@@ -134,7 +136,7 @@ function deploymentRow(job) {
   state.append(text('p',phaseLabels[job.phase] || '处理部署任务','management-state'));
   if(job.error)state.append(text('p',errorMessage(job.error),'management-state attention'));
   const actions=text('div','','management-actions'),link=action('a','查看进度 ↗',`job:${job.id}`);
-  link.href='/?deployment='+encodeURIComponent(job.id);actions.append(link);row.append(info,meta,state,actions);return row;
+  link.href='/?deployment='+encodeURIComponent(job.id);if(job.permissions?.viewDetails!==false)actions.append(link);row.append(info,meta,state,actions);return row;
 }
 function renderManagement(data) {
   if(!data || !Array.isArray(data.apps) || !Array.isArray(data.deployments) || !Array.isArray(data.offlineOperations))throw new Error('管理数据不完整，请稍后刷新。');
@@ -146,7 +148,7 @@ function renderManagement(data) {
   $('count-queued').textContent=String(jobs.filter(job=>job.status==='queued').length);
   $('count-running').textContent=String(jobs.filter(job=>job.status==='running').length);
   $('count-attention').textContent=String(data.apps.filter(app=>app.status==='attention').length+jobs.filter(job=>job.status==='recovery_required').length);
-  $('online-count').textContent=`全部应用 ${data.apps.length} 个 · 当前列表 ${current.length} 个 · 在窗口内滚动查看`;
+  $('online-count').textContent=`可访问应用 ${data.apps.length} 个 · 当前列表 ${current.length} 个 · 在窗口内滚动查看`;
   $('deployment-count').textContent=`当前 ${jobs.length} 项 · 包含排队、执行中和需要恢复处理的部署`;
   $('retained-count').textContent=`保留 ${retained.length} 个应用记录 · 数据处理结果见各应用，重新部署需使用可用域名`;
   renderList('online-apps',current.map(appRow),'暂无在线应用或待处理服务。');
@@ -178,7 +180,7 @@ function readOfflineIntent(target) {
     const saved=JSON.parse(sessionStorage.getItem('awesome.offline.intent:'+target.appId));
     if(saved?.appId!==target.appId || saved.releaseId!==target.releaseId || !['retain','delete'].includes(saved.dataPolicy) || typeof saved.key!=='string' || !saved.key || saved.key.length>256 || /[\u0000-\u001f\u007f]/.test(saved.key))return null;
     if(saved.dataPolicy==='delete' && (typeof saved.deleteConfirmation!=='string' || saved.deleteConfirmation.length>256))return null;
-    const intent={key:saved.key,dataPolicy:saved.dataPolicy,...(saved.dataPolicy==='delete' ? {deleteConfirmation:saved.deleteConfirmation} : {})};
+    const intent={key:saved.key,dataPolicy:saved.dataPolicy,...(typeof saved.afterFailedOperationId==='string' ? {afterFailedOperationId:saved.afterFailedOperationId} : {}),...(saved.dataPolicy==='delete' ? {deleteConfirmation:saved.deleteConfirmation} : {})};
     offlineIntents.set(identity,intent);return intent;
   } catch {return null;}
 }
@@ -205,6 +207,9 @@ async function reconcileRejectedIntent(target,error) {
     .sort((a,b)=>(b.createdAt || 0)-(a.createdAt || 0));
   const operation=operations[0];
   if(operation) {
+    if(operation.status==='failed' && offlineTarget.intent?.afterFailedOperationId!==operation.id){
+      clearOfflineIntent(target);delete offlineTarget.intent;offlineTarget.retry=false;offlineTarget.retryKey=null;offlineTarget.afterFailedOperationId=operation.id;offlineTarget.dataPolicy='retain';$('offline-delete-confirmation').value='';return;
+    }
     if(!retryAllowed(operation)){offlineTarget.conflict=true;return;}
     offlineTarget.retry=true;offlineTarget.retryKey=operation.retryKey;offlineTarget.dataPolicy=operationPolicy(operation);
     const saved=offlineTarget.intent;
@@ -249,7 +254,11 @@ function openOfflineDialog(id,retry=false) {
   if(retry ? !retryAllowed(operation) : app.status!=='online' || !app.canOffline || !app.activeReleaseId || ['queued','running'].includes(operation?.status))return;
   const domain=app.subdomain || app.lastSubdomain || '';
   offlineTarget={appId:id,releaseId:retry ? operation.releaseId : app.activeReleaseId,retry,retryKey:retry ? operation.retryKey : null,domain,expectedConfirmation:domain ? '删除 '+domain : null,dataPolicy:retry ? operationPolicy(operation) : 'retain',conflict:false};
-  const saved=readOfflineIntent(offlineTarget);
+  let saved=readOfflineIntent(offlineTarget);
+  if(!retry && operation?.status==='failed'){
+    offlineTarget.afterFailedOperationId=operation.id;
+    if(saved && saved.afterFailedOperationId!==operation.id){clearOfflineIntent(offlineTarget);saved=null;}
+  }
   if(saved && (!retry || saved.key===operation.retryKey && saved.dataPolicy===offlineTarget.dataPolicy)) {
     offlineTarget.intent=saved;offlineTarget.dataPolicy=saved.dataPolicy;
     offlineTarget.conflict=saved.dataPolicy==='delete' && saved.deleteConfirmation!==offlineTarget.expectedConfirmation;
@@ -278,7 +287,7 @@ async function submitOffline() {
   if(target.dataPolicy==='delete' && (!target.expectedConfirmation || $('offline-delete-confirmation').value!==target.expectedConfirmation)) {
     $('offline-error').textContent='请准确输入目标确认文字后再删除数据。';$('offline-delete-confirmation').focus();return;
   }
-  const intent=target.intent || {key:target.retryKey || crypto.randomUUID(),dataPolicy:target.dataPolicy,...(target.dataPolicy==='delete' ? {deleteConfirmation:target.expectedConfirmation} : {})};
+  const intent=target.intent || {key:target.retryKey || crypto.randomUUID(),dataPolicy:target.dataPolicy,...(target.afterFailedOperationId ? {afterFailedOperationId:target.afterFailedOperationId} : {}),...(target.dataPolicy==='delete' ? {deleteConfirmation:target.expectedConfirmation} : {})};
   saveOfflineIntent(target,intent);offlineTarget.intent=intent;
   const body={expectedReleaseId:target.releaseId,dataPolicy:intent.dataPolicy,...(intent.dataPolicy==='delete' ? {deleteConfirmation:intent.deleteConfirmation} : {})};
   offlineSubmitting=true;syncOfflineControls();$('offline-error').textContent='';
@@ -286,7 +295,7 @@ async function submitOffline() {
     const result=await request(`/api/v1/apps/${encodeURIComponent(target.appId)}/offline`,{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':intent.key},body:JSON.stringify(body)});
     if(!result || typeof result.id!=='string' || result.appId!==target.appId || result.releaseId!==target.releaseId || !operationLabels[result.status] || operationPolicy(result)!==intent.dataPolicy)throw new Error('未能确认下线请求结果，请刷新状态后重试。');
     acceptedOperations.set(target.appId,result);renderManagement(managementData);
-    $('management-notice').textContent=result.status==='succeeded' ? `下线已确认，${intent.dataPolicy==='delete' ? '业务数据及平台保存的密码和密钥已清除' : '数据已保留'}，部署历史保留。` : result.status==='recovery_required' ? '下线尚未确认，请查看应用的恢复处理提示。' : '下线请求已受理，请在应用列表中查看执行状态。';
+    $('management-notice').textContent=result.status==='succeeded' ? `下线已确认，${intent.dataPolicy==='delete' ? '业务数据及平台保存的密码和密钥已清除' : '数据已保留'}，部署历史保留。` : result.status==='failed' ? '下线已取消，未停止服务或删除数据。重新获得权限后需发起新请求。' : result.status==='recovery_required' ? '下线尚未确认，请查看应用的恢复处理提示。' : '下线请求已受理，请在应用列表中查看执行状态。';
     offlineSubmitting=false;closeOfflineDialog();refreshManagement();
   } catch(error) {
     await reconcileRejectedIntent(target,error);
@@ -304,3 +313,8 @@ $('offline-dialog').addEventListener('close',restoreDialogFocus);
 $('offline-dialog').addEventListener('cancel',event=>{if(offlineSubmitting)event.preventDefault();});
 $('management-refresh').addEventListener('click',refreshManagement);
 refreshManagement();
+
+if(typeof window!=='undefined' && window.AwesomeAuth){
+  const syncPermission=()=>{const session=window.AwesomeAuth.session();$('management-deploy').hidden=!session || (session.mode==='feishu' ? session.canDeploy!==true : session.canDeploy===false);};
+  window.AwesomeAuth.onChange(syncPermission);window.AwesomeAuth.ready.then(syncPermission);
+}

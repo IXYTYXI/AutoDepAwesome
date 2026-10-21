@@ -8,6 +8,12 @@
 
 后续功能分支只用于临时开发，通过审查和测试后合入 `main` 再清理。部署时固定具体提交；正式发布版本使用版本标签，归档标签仅用于历史追溯。
 
+## 飞书登录与应用权限（0.9.0，待真实回调验收）
+
+`auth_mode: "feishu"` 启用飞书网页登录，核验租户、员工状态及应用可用范围，使用平台独立会话和 CSRF 保护；此模式不接受旧 Basic 凭证。普通成员的新应用记录明确负责人；owner 管理成员及下线，maintainer 可部署和补充缺少的配置，viewer 仅看安全概览。所有部署类写操作还要求用户具备平台部署权限。管理员只能在可信服务器终端通过 `user-set` 明确授予，旧应用须显式指定归属。
+
+撤销账号、部署能力或应用成员权限会使旧排队授权失效；执行器在获取代码、冻结配置、停止旧版、启动和发布前复核。已经开始的下线清理按固定范围完成，已上线版本的系统恢复不依赖原提交者。新应用不能自动继承其他应用或尚未归属的历史秘密，也不能借用平台全局 Git 凭证。`lark-cli` 可用独立应用 profile 核验配置；服务不复用某台机器的 CLI 用户登录态。配置、迁移、撤权与验收步骤见 [飞书登录操作说明](ops/FEISHU-LOGIN.md)。应用密钥加密、业务应用 SSO、Skill 配对登录及审批流仍是后续工作。
+
 ## 服务存储硬配额（0.8.0，待目标机验收）
 
 新增可选 XFS 后端，为每服务 `/data` 同时设置容量与 inode 硬限；提供唯一账本、显式扩容、未决操作重试、受控恢复、独立巡检与定向删除。默认仍为 `storage_backend: local`。新后端需管理员配置和验收，新建存储使用 schemaVersion 2 的 `sizeMiB`、`maxInodes`，已有 named volume 不会自动迁移。
@@ -207,7 +213,7 @@ secretRefs:
 
 ## API
 
-所有网页、静态资源和 API 都需要 HTTP Basic 运维认证。远程请求必须通过 HTTPS。写请求使用 `application/json`；浏览器 Origin 必须与 `public_url` 完全一致，跨站写入会被拒绝。单次 HTTP 请求最大 128 KiB；配置预检只校验 manifest，不拉仓库、不构建、不预留容量。
+兼容模式 `auth_mode: "basic"` 使用 HTTP Basic 运维认证。多人使用应配置 `auth_mode: "feishu"`，登录页及静态资源公开，业务页面/API 需要独立会话和应用权限；所有写请求必须同时具备精确匹配的 Origin 与 `X-CSRF-Token`。远程请求必须通过 HTTPS，写请求使用 `application/json`。单次 HTTP 请求最大 128 KiB；配置预检只校验 manifest，不拉仓库、不构建、不预留容量。
 
 | 方法与路径 | 用途 |
 | --- | --- |
@@ -278,7 +284,7 @@ AI 默认关闭。运维可在配置 JSON 中同时设置以下三项（不要�
 ## 验证
 
 ```sh
-.venv/bin/pytest -q
+.venv/bin/python -m pytest -q
 .venv/bin/ruff check src tests
 # 可选的前端交互回归，使用 Node 内置测试器，无需安装 npm 依赖。
 node --test tests/ui_*.test.cjs

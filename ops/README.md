@@ -147,7 +147,7 @@ location / {
 
 根域名原有 `/.well-known/acme-challenge/` location 继续指向 `/var/www/certbot`；既有 HTTP 到 HTTPS 跳转和证书路径保持不变。只有新部署的应用子域由 helper 写入自己的 ACME location，并使用 `/var/www/awesome-acme`。
 
-API 使用自身 HTTP Basic 认证，不要改写或移除 Authorization、Origin 等请求头。不要在自定义 access log 中记录认证头。管理员可进一步在管理域名入口限制可信网络，但不要影响应用域名的 ACME 验证。
+API 按 `auth_mode` 使用兼容的 HTTP Basic 或飞书独立会话；多人使用按 [飞书登录操作说明](FEISHU-LOGIN.md) 配置后者。不要改写或移除 Authorization、Cookie、Origin、X-CSRF-Token 等认证请求头，也不要记录其值。飞书回调还须禁止日志记录含 code 的查询参数，具体反代片段见该说明。管理员可在管理域名入口限制可信网络，但不要影响应用域名的 ACME 验证。
 
 **保留现有 `certbot.timer`/续期调度，不禁用它，不另建一套竞争的续期 timer。** 把目录 deploy hook 安装到既有 Certbot 流程：
 

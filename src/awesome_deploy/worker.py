@@ -1,9 +1,12 @@
 """A single local worker with durable checkpoints and conservative recovery."""
 
+from dataclasses import replace
 import fcntl
 import time
 
 from .errors import DeployError
+from .access import AccessStore, offline_started
+from .source import GitSource
 
 
 class Worker:
@@ -12,6 +15,7 @@ class Worker:
         self.store = store
         self.source = source
         self.backend = backend
+        self.access = AccessStore(settings)
 
     def run_once(self):
         """Process one job, or return False when idle or another worker owns the lock.
@@ -62,7 +66,13 @@ class Worker:
                 if job is None:
                     return maintenance
                 interrupted_publish = job["status"] == "running" and job["execution"].get("publish_intent")
-                job = self.store.claim(job["id"])
+                try:
+                    if not urgent_recovery:
+                        self.access.authorize_operation("job", job["id"], force=True)
+                    job = self.store.claim(job["id"])
+                except DeployError as error:
+                    self._fail(job["id"], error)
+                    return True
                 if job["execution"].get("failure_intent") or job["execution"].get("resources_released"):
                     self._fail(
                         job["id"],
@@ -93,6 +103,8 @@ class Worker:
 
     def _offline(self, operation):
         try:
+            if not offline_started(operation):
+                self.access.authorize_operation("offline", operation["id"], force=True)
             operation = self.store.claim_offline(operation["id"])
             job = self.store.get(operation["target_release_id"])
             def checkpoint(delta):
@@ -105,6 +117,9 @@ class Worker:
                 operation = checkpoint({"deletion_plan": plan})
             if delete_data and operation["execution"]["deletion_plan"].get("metadata") != operation["execution"]["deletion_metadata"]:
                 raise DeployError("OFFLINE_DATA_CONFLICT", "Deletion plan differs from accepted application scope")
+            if not offline_started(operation):
+                self.access.authorize_operation("offline", operation["id"], force=True)
+                operation = checkpoint({"authorization_started": True})
             # Once runtime cleanup was durably confirmed, a partial data purge
             # must never replay container logic expecting those volumes to exist.
             if not delete_data or not operation["execution"].get("cleanup_confirmed"):
@@ -119,7 +134,13 @@ class Worker:
             }
             # Never restore online traffic after a durable user request to stop it.
             # Keep reservations and the admission/recovery gate until cleanup is confirmed.
-            self.store.fail_offline(operation["id"], failure)
+            current = self.store.get_offline(operation["id"])
+            if not offline_started(current) and failure["code"] in {
+                "ACCESS_DENIED", "IDENTITY_UNAVAILABLE",
+            }:
+                self.store.cancel_offline(operation["id"], failure)
+            else:
+                self.store.fail_offline(operation["id"], failure)
 
     def _recover_active(self, job, required=False):
         try:
@@ -181,12 +202,22 @@ class Worker:
             return self.store.checkpoint(job_id, execution=delta)
 
         try:
+            self.access.authorize_operation("job", job_id)
             job = self.store.prepare_context(job_id)
             if not job["snapshot"]:
                 job = self._phase(job_id, "source", "Preparing the pinned repository source.")
-                snapshot = self.source.prepare(job, checkpoint)
+                source = self.source
+                if isinstance(source, GitSource) and not self.access.repository_credentials_allowed(job["app_id"]):
+                    source = GitSource(replace(self.settings, git_askpass=None), runner=self.source.runner)
+                    source.lock_fd = self.source.lock_fd
+                try:
+                    snapshot = source.prepare(job, checkpoint)
+                finally:
+                    if source is not self.source:
+                        source.lock_fd = None
                 job = self.store.checkpoint(job_id, phase="prepared", snapshot=snapshot)
             if not job["execution"].get("frozen"):
+                self.access.authorize_operation("job", job_id)
                 job = self._phase(job_id, "freeze", "Freezing deployment inputs.")
                 snapshot = self.backend.freeze(job["snapshot"], job, checkpoint)
                 job = self.store.checkpoint(
@@ -198,6 +229,7 @@ class Worker:
                 job = self._phase(job_id, "build", "Building candidate images.")
                 images = self.backend.build(job, checkpoint)
                 job = self.store.checkpoint(job_id, execution={"images": images}, phase="built")
+            self.access.authorize_operation("job", job_id, force=True)
             if job["execution"].get("previous_release") and any(
                 service.get("storage") for service in job["snapshot"]["manifest"]["services"].values()
             ):
@@ -210,6 +242,7 @@ class Worker:
                 if callable(getattr(self.backend, "prepare_storage", None)):
                     self.backend.prepare_storage(job, checkpoint)
                     job = self.store.get(job_id)
+                self.access.authorize_operation("job", job_id, force=True)
                 job = self.store.checkpoint(job_id, phase="storage_handoff", execution={
                     "storage_handoff_intent": True,
                 })
@@ -219,17 +252,20 @@ class Worker:
             elif callable(getattr(self.backend, "prepare_storage", None)):
                 self.backend.prepare_storage(job, checkpoint)
                 job = self.store.get(job_id)
+            self.access.authorize_operation("job", job_id, force=True)
             job = self._phase(job_id, "start", "Starting the isolated candidate release.")
             self.backend.start(job, checkpoint)
             job = self._phase(job_id, "health", "Checking candidate health.")
             self.backend.health(job)
             job = self._phase(job_id, "https", "Ensuring HTTPS is available.")
             self.backend.ensure_https(job)
+            self.access.authorize_operation("job", job_id, force=True)
             job = self.store.checkpoint(job_id, phase="publish", execution={"publish_intent": True})
             self.store.event(job_id, "publish", "Publishing the candidate release.")
             self.backend.publish(job)
             job = self._phase(job_id, "verify", "Verifying the public HTTPS route.")
             self.backend.verify(job)
+            self.access.authorize_operation("job", job_id)
             self.store.finish(job_id)
         except Exception as error:
             self._fail(job_id, error)

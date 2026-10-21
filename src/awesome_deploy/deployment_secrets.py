@@ -59,10 +59,10 @@ class DeploymentSecrets:
                       for name in sorted(uses)],
         }
 
-    def describe(self, job_id):
+    def describe(self, job_id, *, actor=None):
         """Read only authorized reference names, pointer metadata and file attributes."""
         try:
-            with self.store.secret_configuration_scope(job_id) as (job, can_generate):
+            with self.store.secret_configuration_scope(job_id, **({"actor": actor} if actor else {})) as (job, can_generate):
                 return self._describe(job, can_generate)
         except DeployError:
             raise
@@ -92,16 +92,16 @@ class DeploymentSecrets:
             if fd is not None:
                 os.close(fd)
 
-    def save(self, job_id, values):
+    def save(self, job_id, values, *, actor=None):
         try:
-            return self._save(job_id, values)
+            return self._save(job_id, values, actor=actor)
         except DeployError:
             raise
         except Exception:
             # Dependencies must never turn submitted values into an ASGI traceback.
             raise DeployError("SECRET_UNAVAILABLE", "无法安全保存配置，请刷新状态后重试。") from None
 
-    def _save(self, job_id, values):
+    def _save(self, job_id, values, *, actor=None):
         if not isinstance(values, dict) or len(values) > 2048:
             raise DeployError("INVALID_REQUEST", "请提供需要补充的配置。")
         for name, value in values.items():
@@ -109,7 +109,7 @@ class DeploymentSecrets:
                 raise DeployError("INVALID_REQUEST", "配置引用名称不符合要求。")
             SecretStore.validate_value(value)
         with self._worker_lock():
-            with self.store.secret_configuration_scope(job_id, write=True) as (job, can_generate):
+            with self.store.secret_configuration_scope(job_id, write=True, **({"actor": actor} if actor else {})) as (job, can_generate):
                 metadata = self._describe(job, can_generate)
                 states = {item["name"]: item["state"] for item in metadata["items"]}
                 if set(values) - states.keys():

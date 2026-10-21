@@ -18,16 +18,31 @@ let appChoices = [];
 let activeAppIndex = 0;
 let secretEditor = null;
 let deploymentSubmitting = false;
+let authFailed = false;
+function mayDeploy(appId=$('appId').value) {
+  const session=typeof window!=='undefined' && window.AwesomeAuth ? window.AwesomeAuth.session() : null;
+  if(typeof window!=='undefined' && window.AwesomeAuth && (!session || (session.mode==='feishu' ? session.canDeploy!==true : session.canDeploy===false)))return false;
+  const app=allApps.find(item=>item.id===appId);
+  return app?.permissions?.deploy!==false;
+}
+function syncDeployPermission() {
+  const allowed=mayDeploy();$('submit').disabled=deploymentSubmitting || !allowed;
+  const session=typeof window!=='undefined' && window.AwesomeAuth ? window.AwesomeAuth.session() : undefined;
+  if(session && authFailed){$('form-error').textContent='';authFailed=false;}
+  const hint=$('deploy-permission');if(hint){hint.hidden=allowed;hint.textContent=session===null?'登录尚未确认，请使用页面上方的登录提示恢复会话。当前填写内容会保留。':'当前账号没有此应用的部署权限。可在应用管理中查看已有应用，或联系管理员授权。';}
+  if(secretEditor)secretControls(secretEditor);
+}
 const statusLabels = {queued:'已排队',running:'执行中',succeeded:'部署成功',failed:'部署失败',recovery_required:'需要处理恢复状态'};
 const phaseLabels = {source:'获取代码',prepared:'配置已校验',freeze:'固定部署输入',frozen:'输入已固定',build:'构建镜像',built:'镜像构建完成',start:'启动服务',https:'准备 HTTPS 证书',publish:'切换路由',verify:'验证发布版本',rollback:'恢复上一版本',retire:'清理旧版本',failed:'失败清理完成',queued:'排队',fetching:'获取代码',preparing:'准备配置',validating:'校验',reserved:'资源已预留',building:'构建镜像',starting:'启动服务',health:'健康检查',certificate:'准备证书',publishing:'切换路由',verifying:'验证发布版本',cleanup:'清理旧版本',complete:'完成',recovery:'恢复运行状态'};
 async function api(url, options={}) {
   let response;
-  try {response = await fetch(url, {credentials:'same-origin', ...options});}
-  catch {throw new Error('网络连接失败，请检查连接后重试。');}
+  try {response = await (typeof window!=='undefined' && window.AwesomeAuth ? window.AwesomeAuth.fetch : fetch)(url, {credentials:'same-origin', ...options});}
+  catch (error) {if(error?.auth){authFailed=true;throw error;}throw new Error('网络连接失败，请检查连接后重试。');}
   let data;
   try {data = await response.json();}
   catch {throw new Error('无法读取服务器响应，请稍后重试。');}
   if (!response.ok) {
+    if(response.status===401)authFailed=true;
     const parts=[data.error?.message || (typeof data.detail === 'string' ? data.detail : '请求未通过校验，请检查输入。')];
     if(data.error?.steps?.length)parts.push(...data.error.steps);
     else if(data.error?.suggestion)parts.push(data.error.suggestion);
@@ -45,7 +60,7 @@ function secretConfigurationBlocked(editor) {return editor.items.some(item=>item
 function secretControls(editor) {
   const missing=editor.items.some(item=>item.state==='missing');
   editor.submit.textContent=editor.busy ? '正在处理…' : missing ? '保存并继续部署' : '继续部署';
-  editor.submit.disabled=deploymentSubmitting || editor.busy || editor.loading || !editor.loaded || secretConfigurationBlocked(editor);
+  editor.submit.disabled=!mayDeploy(editor.payload?.appId) || deploymentSubmitting || editor.busy || editor.loading || !editor.loaded || secretConfigurationBlocked(editor);
   editor.retry.disabled=editor.busy || editor.loading;
   for(const field of editor.fields.values()) {
     field.input.disabled=editor.busy || editor.loading;
@@ -143,7 +158,7 @@ async function saveSecretsAndContinue(editor) {
     if(saving)await loadSecretRequirements(editor,{preserveMessage:true});
   } finally {
     for(const name of Object.keys(values))delete values[name];
-    deploymentSubmitting=false;$('submit').disabled=false;editor.busy=false;
+    deploymentSubmitting=false;syncDeployPermission();editor.busy=false;
     if(secretEditor)secretControls(secretEditor);
   }
 }
@@ -237,7 +252,7 @@ function highlightAppOption() {
 }
 function renderAppOptions() {
   const query=pickerQuery.trim().toLocaleLowerCase();
-  const matching=allApps.filter(app=>`${app.subdomain || ''} ${app.lastSubdomain || ''} ${app.repository} ${app.id}`.toLocaleLowerCase().includes(query));
+  const matching=allApps.filter(app=>app.permissions?.deploy!==false).filter(app=>`${app.subdomain || ''} ${app.lastSubdomain || ''} ${app.repository} ${app.id}`.toLocaleLowerCase().includes(query));
   appChoices=[{id:'',subdomain:'创建新应用',repository:'使用新的域名前缀部署项目'},...matching];
   activeAppIndex=Math.max(0,Math.min(activeAppIndex,appChoices.length-1));
   $('app-options').replaceChildren();
@@ -278,7 +293,7 @@ function closeAppPicker() {
 }
 function chooseApp(id) {
   const app=allApps.find(item=>item.id===id);
-  if(id && !app)return;
+  if(id && (!app || app.permissions?.deploy===false))return;
   const fields=['appId','repository','subdomain'];
   const previousValues=fields.map(field=>$(field).value);
   $('appId').value=id;
@@ -287,7 +302,7 @@ function chooseApp(id) {
     if(app.domainBound!==false)$('subdomain').value=app.subdomain || '';
     else if(previousValues[0]!==id)$('subdomain').value='';
   }
-  updateDomainPreview();updateAppHelp();
+  updateDomainPreview();updateAppHelp();syncDeployPermission();
   if(fields.some((field,index)=>$(field).value!==previousValues[index]))requestKey=crypto.randomUUID();
   closeAppPicker();
   $('app-search').focus();
@@ -299,7 +314,7 @@ function updateApps(items) {
   }
   if(pickerOpen)renderAppOptions();
   else $('app-search').value=selectedAppLabel();
-  updateAppHelp();
+  updateAppHelp();syncDeployPermission();
 }
 $('app-search').addEventListener('input',()=>openAppPicker($('app-search').value));
 $('app-search').addEventListener('click',()=>{if(!pickerOpen)openAppPicker();});
@@ -459,7 +474,7 @@ form.addEventListener('input',event=>{
   if(['repository','ref','subdomain','appId'].some(id=>$(id)===event.target))requestKey=crypto.randomUUID();
 });
 form.addEventListener('submit',async(event)=>{
-  event.preventDefault();if(deploymentSubmitting)return;
+  event.preventDefault();if(deploymentSubmitting || !mayDeploy()){syncDeployPermission();return;}
   deploymentSubmitting=true;$('submit').disabled=true;$('form-error').textContent='';
   if(secretEditor)secretControls(secretEditor);
   try {
@@ -467,7 +482,7 @@ form.addEventListener('submit',async(event)=>{
     const job=await submitDeployment(body,requestKey);
     requestKey=crypto.randomUUID();historyFilter='all';$('history').scrollTop=0;await refresh();await watch(job.id);
   } catch(error){$('form-error').textContent=error.message;}
-  finally{deploymentSubmitting=false;$('submit').disabled=false;if(secretEditor)secretControls(secretEditor);}
+  finally{deploymentSubmitting=false;syncDeployPermission();if(secretEditor)secretControls(secretEditor);}
 });
 $('refresh').addEventListener('click',()=>refresh().catch(error=>{$('form-error').textContent=error.message;}));
 api('/api/v1/capabilities').then(renderCapabilities).catch(error=>{renderCapabilities({});$('form-error').textContent=error.message;});
@@ -479,3 +494,5 @@ refresh().catch(error=>{$('form-error').textContent=error.message;}).then(()=>{
     if(id)watch(id,{focus:true});
   }
 });
+
+if(typeof window!=='undefined' && window.AwesomeAuth){window.AwesomeAuth.onChange(syncDeployPermission);window.AwesomeAuth.ready.then(syncDeployPermission);}
