@@ -80,6 +80,8 @@ RootlessKit 数字 ID 会重用，清理必须按当前完整目标匹配，先�
 
 主机整体还要为操作系统、Nginx、Docker daemon 和构建器留资源。`max_cpu`/`max_memory_mib` 限制的是被预留的应用实例总和，builder 自身单独检查上限；不能把 6 CPU/6144 MiB 当作平台所有进程的整体上限。
 
+`max_app_memory_mib` 是独立的每应用内存预算，默认 1024 MiB（1 GiB），必须是正整数。manifest 中全部服务的 `resources.memoryMiB`（包含继承值和默认值）合计不得超过此预算；预留资源时还会合计同一应用所有未释放版本，包括活动版及候选版，事务失败不会留下部分预留。不同应用各有独立预算，仍共同受 `max_memory_mib` 限制。在线更新需要在应用预算内同时容纳新旧版本；一个已预留完整 1 GiB 的活动版不能再并行预留候选版。修改此配置不会自动缩减现有容器或修改历史预留；已有超额预留会阻止该应用继续预留或重放部署，需要运维先处理存量资源。每个服务仍使用同值的 Docker `--memory` 和 `--memory-swap` 限制，不获得额外 swap。
+
 ## 3. 受限 buildx 构建器
 
 构建器使用平台专用 Docker CLI 配置目录 `/var/lib/awesome-deploy/docker-config`。在普通用户默认 Docker 配置中创建同名 builder，不会自动出现在平台的配置目录里。

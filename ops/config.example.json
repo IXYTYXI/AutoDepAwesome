@@ -12,6 +12,7 @@
   "port_end": 29999,
   "max_cpu": 6.0,
   "max_memory_mib": 6144,
+  "max_app_memory_mib": 1024,
   "build_timeout": 900,
   "health_timeout": 180,
   "docker_binary": "/usr/bin/docker",

@@ -42,6 +42,43 @@ def test_defaults_and_resource_inheritance():
     assert load(changed, previous)["services"]["web"]["resources"] == {"cpu": 2, "memoryMiB": 700}
 
 
+@pytest.mark.parametrize("second_memory", [512, 513])
+def test_application_memory_limit_sums_all_services(second_memory):
+    data = valid()
+    data["services"]["api"] = copy.deepcopy(data["services"]["web"])
+    data["services"]["api"]["resources"] = {"memoryMiB": second_memory}
+    if second_memory == 512:
+        assert sum(service["resources"]["memoryMiB"] for service in load(data)["services"].values()) == 1024
+    else:
+        with pytest.raises(DeployError) as caught:
+            load(data)
+        assert caught.value.code == "INVALID_MANIFEST"
+        assert caught.value.path == "services"
+
+
+def test_application_memory_limit_includes_inherited_resources():
+    data = valid()
+    data["services"]["api"] = copy.deepcopy(data["services"]["web"])
+    data["services"]["web"]["resources"] = {"memoryMiB": 324}
+    data["services"]["api"]["resources"] = {"memoryMiB": 700}
+    previous = load(data)
+    data["services"]["web"]["resources"] = {"memoryMiB": 325}
+    del data["services"]["api"]["resources"]
+    with pytest.raises(DeployError) as caught:
+        load(data, previous)
+    assert caught.value.code == "INVALID_MANIFEST"
+
+
+def test_application_memory_limit_is_configurable():
+    from awesome_deploy.manifest import load_manifest
+
+    data = valid()
+    data["services"]["web"]["resources"] = {"memoryMiB": 513}
+    with pytest.raises(DeployError) as caught:
+        load_manifest(yaml.safe_dump(data), Settings(max_app_memory_mib=512))
+    assert caught.value.code == "INVALID_MANIFEST"
+
+
 @pytest.mark.parametrize("key,value", [
     ("kind", "worker"), ("port", True), ("port", 0), ("port", 65536),
     ("command", "npm start"), ("entrypoint", []), ("unknown", "x"),
