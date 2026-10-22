@@ -6,7 +6,7 @@
 <p>范围可选“我有权部署的应用”（可创建新应用并更新当前有权限的应用）、“指定单个应用”（只能更新该应用）、“仅创建新应用”。创建后立即复制完整凭证，存入调用程序的密钥配置，并以环境变量 <code>AWESOME_DEPLOY_TOKEN</code> 注入。页面之后只能查看凭证名称、范围和有效期，不能再次查看完整值。</p>
 <p>少数具名自动化来源由平台管理员单独签发和撤销，并关联一位负责的飞书成员。来源可连续提交多个应用和任务；队列、权限及资源配额照常生效。</p>
 <h2>2. 首次部署</h2>
-<p>先在调用程序的工作目录创建 <code>deployment.json</code>。下面的仓库、分支和域名前缀都要换成真实值。仓库中还必须有符合 <a href="https://guanghe.feishu.cn/docx/Zye7dwbe8oCvjrxLnnicujtnnFe" target="_blank" rel="noopener noreferrer">平台使用手册</a> 要求的 <code>awesome.yaml</code>。</p>
+<p>先在调用程序的工作目录创建 <code>deployment.json</code>。下面的仓库、分支和域名前缀都要换成真实值。仓库中还必须有符合 <a href="https://guanghe.feishu.cn/docx/VBffdzM2do2H8txSOt1cwLsanig" target="_blank" rel="noopener noreferrer">平台使用手册</a> 要求的 <code>awesome.yaml</code>。</p>
 <pre><code>{<br>  &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,<br>  &quot;ref&quot;: &quot;main&quot;,<br>  &quot;subdomain&quot;: &quot;demo&quot;<br>}</code></pre>
 <p>确认运行环境已经从安全配置注入 <code>AWESOME_DEPLOY_TOKEN</code> 后，提交请求。每次新的部署都要使用新的 <code>Idempotency-Key</code>；示例键只用于演示。</p>
 <pre><code>curl --fail-with-body -sS \<br>  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \<br>  -H &#x27;Content-Type: application/json&#x27; \<br>  -H &#x27;Idempotency-Key: demo-initial-001&#x27; \<br>  --data-binary @deployment.json \<br>  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments</code></pre>
