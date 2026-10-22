@@ -244,9 +244,15 @@ class StorageMigrations:
 
 def resolve_job(settings, job):
     migrations = StorageMigrations(settings)
-    result = copy.deepcopy(job)
+    replacements = {}
     for service, reference in job.get('execution', {}).get('storage_volumes', {}).items():
         spec = (job.get('snapshot') or {}).get('manifest', {}).get('services', {}).get(service, {}).get('storage')
         if spec:
-            result['execution']['storage_volumes'][service] = migrations.resolve(job['app_id'], service, spec, reference)
+            resolved = migrations.resolve(job['app_id'], service, spec, reference)
+            if resolved != reference:
+                replacements[service] = resolved
+    if not replacements:
+        return job
+    result = copy.deepcopy(job)
+    result['execution']['storage_volumes'].update(replacements)
     return result

@@ -47,6 +47,12 @@ def test_migration_requires_verified_commit_then_resolves_without_mutating_histo
     assert job == before
 
 
+def test_unmigrated_release_keeps_runtime_checkpoint_identity(tmp_path, monkeypatch):
+    from awesome_deploy.storage_migration import resolve_job
+    settings, _, job, _, _, _, _, _ = setup_migration(tmp_path, monkeypatch)
+    assert resolve_job(settings, job) is job
+
+
 @pytest.mark.parametrize('kind', ['digest', 'active-release', 'snapshot', 'source'])
 def test_commit_refuses_changed_source_or_publication(tmp_path, monkeypatch, kind):
     _, store, job, _, _, _, migrations, _ = setup_migration(tmp_path, monkeypatch)
