@@ -136,6 +136,10 @@ def main(argv=None):
     sub.add_parser("serve", help="仅在 127.0.0.1 启动网页/API")
     worker = sub.add_parser("worker", help="运行持久化部署执行器")
     worker.add_argument("--once", action="store_true")
+    base_sync = sub.add_parser("base-sync", help="独立同步应用与部署记录到飞书多维表格")
+    base_sync.add_argument("--base-config", type=Path, default=Path("/etc/awesome-deploy/base-sync.json"))
+    base_sync.add_argument("--once", action="store_true")
+    base_sync.add_argument("--status", action="store_true", help="仅查看本地同步状态")
     sub.add_parser("check", help="只读检查服务器部署前提")
     sub.add_parser("user-list", help="列出本平台已登录的飞书用户，不输出任何令牌")
     users = sub.add_parser("user-set", help="在可信服务器终端设置飞书用户权限，并撤销其旧会话及排队授权")
@@ -240,6 +244,29 @@ def main(argv=None):
                 with Store(settings).secret_write_scope(repository, args.subdomain):
                     version = configuration.secrets.set(repository, args.subdomain, args.name, value)
             print(json.dumps({"name": args.name, "version": version}, ensure_ascii=False))
+        elif args.command == "base-sync":
+            if settings.auth_mode != "feishu":
+                raise DeployError("INVALID_CONFIG", "多维表格同步需要飞书登录模式。")
+            from .base_sync import BaseMirror, BaseRemote, BaseSyncError, load_base_config
+            try:
+                config = load_base_config(args.base_config)
+                remote = None if args.status else BaseRemote(settings, config)
+                mirror = BaseMirror(settings.database_path, remote)
+                try:
+                    if args.status:
+                        print(json.dumps(mirror.status(), ensure_ascii=False))
+                    else:
+                        while True:
+                            result = mirror.run_once()
+                            if args.once:
+                                print(json.dumps(result, ensure_ascii=False))
+                                return 1 if result["pending"] else 0
+                            time.sleep(15)
+                finally:
+                    if remote:
+                        remote.close()
+            except BaseSyncError as exc:
+                raise DeployError("BASE_SYNC_FAILED", str(exc)) from None
         elif args.command.startswith("vault-"):
             from .vault_cli import command
             return command(settings, args)

@@ -1,0 +1,5 @@
+{
+  "base_token": "YOUR_BASE_TOKEN",
+  "app_table_id": "tblYOUR_APP_TABLE_ID",
+  "deployment_table_id": "tblYOUR_DEPLOYMENT_TABLE_ID"
+}
