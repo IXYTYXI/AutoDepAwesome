@@ -213,8 +213,16 @@ class EgressGuard:
         network = info.get("networkDriver", {}) if isinstance(info, dict) else {}
         port = info.get("portDriver", {}) if isinstance(info, dict) else {}
         extra = port.get("extra", {}) if isinstance(port, dict) else {}
+        nontransparent = isinstance(extra, dict) and extra.get("sourceIPTransparentBackend") == "none"
+        if isinstance(info, dict) and info.get("version") == "3.3.0":
+            # v3.3.0 builtin Info() omits extra only when transparency is disabled.
+            # Its explicit "none" can instead mean the enabled backend is not ready.
+            # Restrict this interpretation to the reviewed implementation/API pair.
+            nontransparent = (info.get("apiVersion") == "1.1.3"
+                              and isinstance(port, dict) and "extra" not in port)
         if (not isinstance(network, dict) or network.get("driver") != "slirp4netns"
-                or not isinstance(extra, dict) or extra.get("sourceIPTransparentBackend") != "none"):
+                or not isinstance(port, dict) or port.get("driver") != "builtin"
+                or not nontransparent):
             raise _error("EGRESS_NAMESPACE_UNSAFE")
 
     @staticmethod
