@@ -28,11 +28,11 @@ def database(path):
     CREATE TABLE offline_operations(id TEXT PRIMARY KEY,app_id TEXT,status TEXT,updated_at REAL);
     CREATE TABLE app_access(app_id TEXT PRIMARY KEY,owner_id TEXT);
     CREATE TABLE operation_auth(kind TEXT,id TEXT,user_id TEXT);
-    CREATE TABLE auth_users(id TEXT PRIMARY KEY,name TEXT);
+    CREATE TABLE auth_users(id TEXT PRIMARY KEY,name TEXT,open_id TEXT);
     ''')
     db.execute("INSERT INTO apps VALUES (?,?,?,?,?,?)", ('a1','https://user:pass@github.com/team/repo.git?token=oops','demo',None,100,100))
     db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?)", ('j1','a1',json.dumps({'repository':'https://user:pass@github.com/team/repo.git?token=oops','ref':'main','subdomain':'demo','secretRefs':['VERY_SECRET']}),'failed','build',None,'{}',json.dumps({'message':'VERY_SECRET'}),100,100))
-    db.execute("INSERT INTO auth_users VALUES (?,?)", ('u1','测试用户'))
+    db.execute("INSERT INTO auth_users VALUES (?,?,?)", ('u1','测试用户','ou_test123'))
     db.execute("INSERT INTO app_access VALUES (?,?)", ('a1','u1'))
     db.execute("INSERT INTO operation_auth VALUES (?,?,?)", ('job','j1','u1'))
     db.commit()
@@ -49,7 +49,7 @@ def test_projection_excludes_secrets_and_raw_errors(tmp_path):
     assert 'token=oops' not in rendered
     assert app['状态'] == '失败'
     assert job['状态'] == '失败'
-    assert app['负责人'] == '测试用户'
+    assert app['负责人'] == [{'id': 'ou_test123'}]
     assert job['提交人'] == '测试用户'
 
 
@@ -95,6 +95,22 @@ def test_remote_search_before_create_and_update(monkeypatch):
     assert remote.upsert('app', 'a1', {'应用 ID': 'a1', '仓库地址': 'https://github.com/team/repo'}, None, '00000000-0000-4000-8000-000000000000') == 'rec1'
     assert remote.upsert('app', 'a1', {'应用 ID': 'a1', '仓库地址': 'https://github.com/team/repo'}, 'rec1', '00000000-0000-4000-8000-000000000000') == 'rec1'
     assert [method for method, _, _ in calls] == ['POST', 'POST', 'POST', 'PUT']
+    assert 'user_id_type=open_id' in calls[2][1] and 'user_id_type=open_id' in calls[3][1]
     sent = json.loads(calls[2][2])['fields']['仓库地址']
     assert sent == {'text': 'https://github.com/team/repo', 'link': 'https://github.com/team/repo'}
     assert all('secret' not in url and 'Bearer' not in url for _, url, _ in calls)
+
+
+def test_owner_transfer_uses_current_login_identity(tmp_path):
+    path = tmp_path / 'db.sqlite'
+    with database(path) as db:
+        db.execute("INSERT INTO auth_users VALUES (?,?,?)", ('u2', '另一个用户', 'ou_other123'))
+        db.execute("UPDATE app_access SET owner_id='u2' WHERE app_id='a1'")
+    remote = FakeBase()
+    mirror = BaseMirror(path, remote)
+    assert mirror.run_once() == {'synced': 2, 'pending': 0}
+    assert remote.rows['app']['a1']['负责人'] == [{'id': 'ou_other123'}]
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE app_access SET owner_id='u1' WHERE app_id='a1'")
+    assert mirror.run_once() == {'synced': 1, 'pending': 0}
+    assert remote.rows['app']['a1']['负责人'] == [{'id': 'ou_test123'}]

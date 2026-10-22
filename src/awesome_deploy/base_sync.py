@@ -15,7 +15,7 @@ import uuid
 
 import httpx
 
-from .feishu import _read_secret
+from .feishu import OPEN_ID, _read_secret
 
 
 BASE_ORIGIN = 'https://open.feishu.cn'
@@ -48,6 +48,14 @@ def _name(db, user_id):
         return ''
     row = db.execute('SELECT name FROM auth_users WHERE id=?', (user_id,)).fetchone()
     return str(row['name'])[:100] if row else ''
+
+
+def _person(db, user_id):
+    if not user_id:
+        return []
+    row = db.execute('SELECT open_id FROM auth_users WHERE id=?', (user_id,)).fetchone()
+    open_id = row['open_id'] if row else ''
+    return [{'id': open_id}] if isinstance(open_id, str) and OPEN_ID.fullmatch(open_id) else []
 
 
 def _job_input(row):
@@ -86,7 +94,7 @@ def project_app(db, row):
         status = '待部署'
     return {'应用 ID': app_id, '应用名称': str(domain or app_id[:8]),
             '仓库地址': _safe_repository(row['repository']), '当前域名': str(domain),
-            '状态': status, '负责人': _name(db, owner['owner_id'] if owner else None),
+            '状态': status, '负责人': _person(db, owner['owner_id'] if owner else None),
             '当前部署 ID': str(row['active_release_id'] or ''),
             '创建时间': _ms(row['created_at']), '更新时间': _ms(row['updated_at'])}
 
@@ -176,9 +184,10 @@ class BaseRemote:
             if items:
                 record_id = items[0].get('record_id')
         if record_id:
-            body = self._request('PUT', path + '/' + record_id, token=token, json={'fields': wire_fields})
+            body = self._request('PUT', path + '/' + record_id + '?user_id_type=open_id',
+                                 token=token, json={'fields': wire_fields})
             return (body.get('data') or {}).get('record', {}).get('record_id') or record_id
-        body = self._request('POST', path + '?client_token=' + client_token, token=token,
+        body = self._request('POST', path + '?client_token=' + client_token + '&user_id_type=open_id', token=token,
                              json={'fields': wire_fields})
         value = (body.get('data') or {}).get('record', {}).get('record_id')
         if not isinstance(value, str) or not value:
