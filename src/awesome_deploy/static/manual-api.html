@@ -8,12 +8,12 @@
 <h2>2. 首次部署</h2>
 <p>先在调用程序的工作目录创建 <code>deployment.json</code>。下面的仓库、分支和域名前缀都要换成真实值。仓库中还必须有符合 <a href="https://guanghe.feishu.cn/docx/VBffdzM2do2H8txSOt1cwLsanig" target="_blank" rel="noopener noreferrer">平台使用手册</a> 要求的 <code>awesome.yaml</code>。</p>
 <pre><code>{<br>  &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,<br>  &quot;ref&quot;: &quot;main&quot;,<br>  &quot;subdomain&quot;: &quot;demo&quot;<br>}</code></pre>
-<p>确认运行环境已经从安全配置注入 <code>AWESOME_DEPLOY_TOKEN</code> 后，提交请求。每次新的部署都要使用新的 <code>Idempotency-Key</code>；示例键只用于演示。</p>
-<pre><code>curl --fail-with-body -sS \<br>  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \<br>  -H &#x27;Content-Type: application/json&#x27; \<br>  -H &#x27;Idempotency-Key: demo-initial-001&#x27; \<br>  --data-binary @deployment.json \<br>  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments</code></pre>
+<p>提交部署使用 <strong>POST</strong> <code>/api/v1/automation/deployments</code>。请求体是 JSON，需带 Bearer 凭证、<code>Content-Type: application/json</code> 和 <code>Idempotency-Key</code>。确认运行环境已从安全配置注入 <code>AWESOME_DEPLOY_TOKEN</code>；每次新的部署使用新幂等键，示例键仅作演示。</p>
+<pre><code>curl --request POST --fail-with-body -sS \<br>  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \<br>  -H &#x27;Content-Type: application/json&#x27; \<br>  -H &#x27;Idempotency-Key: demo-initial-001&#x27; \<br>  --data-binary @deployment.json \<br>  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments</code></pre>
 <p>成功受理时返回 HTTP 202，响应包含任务编号 <code>id</code> 和应用编号 <code>appId</code>。请保存 <code>id</code> 供后续查询。此时任务可能仍在排队。</p>
 <h2>3. 查询任务结果</h2>
-<p>把下面的 <code>JOB_ID</code> 换成提交响应中的 <code>id</code>。查询必须使用提交该任务的同一枚凭证；其他凭证不能读取这条任务。</p>
-<pre><code>curl --fail-with-body -sS \<br>  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \<br>  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments/JOB_ID</code></pre>
+<p>查询任务使用 <strong>GET</strong> <code>/api/v1/automation/deployments/{JOB_ID}</code>，把 <code>JOB_ID</code> 换成提交响应中的 <code>id</code>。查询必须使用提交该任务的同一枚凭证；GET 不会创建或重试部署任务。</p>
+<pre><code>curl --request GET --fail-with-body -sS \<br>  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \<br>  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments/JOB_ID</code></pre>
 <table><colgroup><col><col></colgroup><thead><tr><th><p>status</p></th><th><p>含义与下一步</p></th></tr></thead><tbody><tr><td><p><code>queued</code></p></td><td><p>已入队；稍后用同一接口查询。</p></td></tr><tr><td><p><code>running</code></p></td><td><p>正在执行；继续查询。</p></td></tr><tr><td><p><code>succeeded</code></p></td><td><p>该次部署成功；再看 <code>active</code> 和 <code>url</code> 确认它是否仍是当前在线版本。</p></td></tr><tr><td><p><code>failed</code></p></td><td><p>部署失败；查看响应中的中文 <code>error</code>，修复原因后用新幂等键重新提交。</p></td></tr><tr><td><p><code>recovery_required</code></p></td><td><p>需要平台管理员检查资源与恢复状态；不要把它当成成功。</p></td></tr></tbody></table>
 <h2>4. 更新已有应用</h2>
 <p>更新时在请求体中加入已有应用的 <code>appId</code>，并保持 <code>repository</code>、<code>subdomain</code> 与该应用一致。可以更换 <code>ref</code>；提交时换用新的幂等键。应用编号可从首次提交响应或应用管理页取得。创建新应用时不要填写 <code>appId</code>。</p>

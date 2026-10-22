@@ -72,5 +72,7 @@ Dockerfile 支持显式 FROM、RUN、COPY、ENV、WORKDIR、USER、EXPOSE、LABE
 说明哪些限制已满足、哪些需要业务方决定，禁止把未验证事项写成通过。
 登录平台后获取 /api/v1/schema?version=2 核对字段；无存储旧项目可使用 version=1。
 可调用 POST /api/v1/preflight 做配置预检，但预检不会拉代码、构建、预留资源或保证最终上线。
+自动化提交部署使用 POST /api/v1/automation/deployments，请求体为 JSON，并携带 Bearer 凭证和 Idempotency-Key；返回 HTTP 202 仅代表任务入队。
+使用同一凭证调用 GET /api/v1/automation/deployments/{任务ID} 查询结果。GET 只读取任务状态，不创建或重试部署；每次新的部署要换幂等键。
 实际构建与运行使用既有远端部署平台；未经用户要求，不自动启动本机 Docker Desktop。
 验收应覆盖真实页面/API、真实健康路径、重部署及所声明的数据持久化行为。只做与本次交付相关的检查。
