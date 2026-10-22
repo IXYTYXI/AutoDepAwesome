@@ -531,7 +531,7 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
             authenticated(request, credentials)
         if name not in ("app.js", "app.css", "manage.js", "manage.css", "auth.js", "auth.css",
                         "login.js", "members.js", "members.css", "vault.js", "vault.css",
-                        "document.js", "document.css", "api-credentials.js", "api-credentials.css"):
+                        "document.js", "document.css", "api-credentials.js", "api-credentials.css", "theme.css"):
             raise HTTPException(404)
         return FileResponse(STATIC / name)
 

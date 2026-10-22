@@ -62,6 +62,16 @@ def test_handbook_download_uses_current_limits_and_document_viewer_is_protected(
     assert client.get("/assets/deployment-guide.txt", auth=AUTH).status_code == 404
 
 
+def test_shared_console_theme_is_available_on_every_page(client):
+    from awesome_deploy.api import STATIC
+
+    for name in ("index", "manage", "api-credentials", "document", "members", "login"):
+        assert '/assets/theme.css?v=0.10.0' in (STATIC / f"{name}.html").read_text()
+    theme = client.get("/assets/theme.css", auth=AUTH)
+    assert theme.status_code == 200
+    assert "--blue:#2457d6" in theme.text
+
+
 def test_submit_idempotent_and_status_available(client):
     r = client.post("/api/v1/deployments", json=BODY, headers=headers(), auth=AUTH)
     assert r.status_code == 202, r.text
