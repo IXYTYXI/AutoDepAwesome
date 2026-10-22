@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -230,7 +230,7 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request, error):
-        if identity and error.status_code == 401 and request.url.path in {"/", "/manage", "/members"}:
+        if identity and error.status_code == 401 and request.url.path in {"/", "/manage", "/members", "/document"}:
             return RedirectResponse("/login?error=session", status_code=303)
         return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=error.headers)
 
@@ -441,6 +441,30 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
     def manage():
         return FileResponse(STATIC / "manage.html")
 
+    @app.get("/document", dependencies=[Depends(authenticated)])
+    def document():
+        return FileResponse(STATIC / "document.html")
+
+    @app.get("/document/deployment-guide.txt", dependencies=[Depends(authenticated)])
+    def deployment_guide():
+        from .storage_status import quota_capability
+
+        quota = quota_capability(settings)
+        limits = quota.get("limits") or {}
+        storage = limits.get("app_budget_mib")
+        pool = limits.get("global_budget_mib")
+        resource_text = f"每应用全部服务内存上限：{settings.max_app_memory_mib} MiB，按需使用，不固定预占。"
+        resource_text += (f"\n每应用持久数据合计上限：{storage} MiB。" if storage
+                          else "\n存储上限暂未确认，请在部署页面核对当前配置。")
+        if pool:
+            resource_text += f"\n平台共享存储池预算：{pool} MiB；不是单应用可用空间。"
+        if quota.get("configured") and not quota.get("enabled"):
+            resource_text += "\n存储配额状态待确认，请刷新部署页面或联系管理员。"
+        body = (STATIC / "deployment-guide.txt").read_text().replace("{{RESOURCE_LIMITS}}", resource_text)
+        return Response(body, media_type="text/plain; charset=utf-8", headers={
+            "Content-Disposition": 'attachment; filename="awesome-deploy-guide.txt"',
+        })
+
     @app.get("/members", dependencies=[Depends(authenticated)])
     def members_page():
         feishu_only()
@@ -451,7 +475,8 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
         if identity is None:
             authenticated(request, credentials)
         if name not in ("app.js", "app.css", "manage.js", "manage.css", "auth.js", "auth.css",
-                        "login.js", "members.js", "members.css", "vault.js", "vault.css"):
+                        "login.js", "members.js", "members.css", "vault.js", "vault.css",
+                        "document.js", "document.css"):
             raise HTTPException(404)
         return FileResponse(STATIC / name)
 

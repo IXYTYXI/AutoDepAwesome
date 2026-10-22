@@ -25,9 +25,33 @@ BODY = {"repository": "https://github.com/org/repo.git", "ref": "main", "subdoma
 
 
 def test_management_endpoints_are_protected(client):
-    for url in ["/", "/api/v1/deployments", "/api/v1/apps", "/api/v1/schema"]:
+    for url in ["/", "/api/v1/deployments", "/api/v1/apps", "/api/v1/schema",
+                "/document", "/document/deployment-guide.txt"]:
         assert client.get(url).status_code == 401
     assert client.post("/api/v1/deployments", json=BODY, headers=headers()).status_code == 401
+
+
+def test_handbook_download_uses_current_limits_and_example_validates(client, monkeypatch):
+    import html
+    import re
+    from awesome_deploy.manifest import load_manifest
+
+    monkeypatch.setattr("awesome_deploy.storage_status.quota_capability", lambda settings: {
+        "configured": True, "enabled": True,
+        "limits": {"app_budget_mib": 37, "global_budget_mib": 4096},
+    })
+    page = client.get("/document", auth=AUTH)
+    assert page.status_code == 200
+    example = re.search(r'<pre class="manual-example"[^>]*><code>(.*?)</code>', page.text, re.S)[1]
+    parsed = load_manifest(html.unescape(example), Settings(storage_backend="xfs-project"))
+    assert parsed["services"]["web"]["storage"]["sizeMiB"] == 50
+    guide = client.get("/document/deployment-guide.txt", auth=AUTH)
+    assert guide.status_code == 200
+    assert "attachment" in guide.headers["content-disposition"]
+    assert "text/plain" in guide.headers["content-type"]
+    assert "37 MiB" in guide.text and "4096 MiB" in guide.text
+    assert "{{RESOURCE_LIMITS}}" not in guide.text
+    assert client.get("/assets/deployment-guide.txt", auth=AUTH).status_code == 404
 
 
 def test_submit_idempotent_and_status_available(client):

@@ -57,11 +57,15 @@ def login(client):
 def test_login_session_headers_and_basic_cannot_bypass(web):
     client, app, provider = web
     assert client.get("/").status_code == 303
+    assert client.get("/document").headers["location"] == "/login?error=session"
+    assert client.get("/document/deployment-guide.txt").status_code == 401
     assert client.get("/login").status_code == 200
     assert client.get("/api/v1/apps", auth=("operator", "password")).status_code == 401
     session = login(client)
     assert session["role"] == "member" and session["canDeploy"] is True
     assert session["userId"] and session["csrfToken"]
+    assert client.get("/document").status_code == 200
+    assert client.get("/document/deployment-guide.txt").status_code == 200
     assert "open_id" not in session and "access_token" not in session
     cookie = client.cookies.get("__Host-awesome_session")
     assert cookie and len(cookie) >= 43

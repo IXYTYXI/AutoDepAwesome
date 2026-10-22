@@ -1,0 +1,76 @@
+Awesome Deploy 部署接入说明｜供 AI 与开发者使用
+说明版本：2026-10-22 / 平台 0.9.3；支持 schemaVersion 1、2。
+本文件是当前接入补充说明，完整字段以平台 JSON Schema 和执行器校验为准。
+技术协议原文：https://guanghe.feishu.cn/docx/WaCDdlTg2of7lCxGkY9c2fbQnPf
+原文含 0.5.0 历史基线；资源配额、登录、秘密和下线能力按本说明及当前服务器配置执行。
+
+一、不可变更的业务边界
+只部署用户提供的业务实现。不得增加、删除或修改业务逻辑、鉴权、数据模型、接口语义或依赖行为。
+可以提供与原行为一致的 awesome.yaml、Dockerfile、镜像引用、构建产物和部署说明。
+镜像固定摘要不授权替换业务实现。若适配必须修改业务代码，说明原因和所需变更，由用户另行决定。
+不要关闭鉴权、删除数据库依赖、伪造健康检查，或用演示程序替换原应用以取得部署成功。
+
+二、当前资源限制（下载时读取）
+{{RESOURCE_LIMITS}}
+多个服务按应用合计；各服务应显式填写 resources.memoryMiB，避免默认值叠加超限。
+内存值是运行上限，实际占用随负载变化。超限可能被终止；存储写满会拒绝继续写入。
+新建持久数据使用 schemaVersion: 2。每服务最多一个 /data 存储；sizeMiB、maxInodes 必须为正整数。
+总申请须满足应用和平台预算。inode 还受服务器配置约束；JSON Schema 的字段上界不是当前可用配额。
+
+三、仓库与文件
+1. 使用 GitHub / GitLab HTTPS 仓库 URL，不嵌入账号、令牌、端口、查询参数或片段。
+2. 填写真实存在的分支、标签或完整 commit。所有部署文件都要提交并推送到该版本。
+3. 仓库根目录放置 UTF-8 awesome.yaml，最大 256 KiB。YAML 不使用重复键、锚点、别名或显式标签。
+4. 源码构建提交 Dockerfile 和完整构建上下文；使用已有镜像时在 image 与 build 中二选一。
+5. 不依赖 Git submodule、Git LFS 下载或仓库符号链接。私有仓库需平台具备对应的读取权限。
+6. 不需要额外提交 ZIP“交付包”；平台从仓库读取已提交的文件。
+
+四、清单契约
+必填顶层字段：schemaVersion、app、services、routes；禁止未定义字段。
+app 必填 name、description、subdomain。域名前缀为 1–7 位小写字母、数字或中划线，首尾为字母或数字，并与部署表单一致；还要通过保留名称校验。
+services 为 1–16 个具名服务，当前只支持 kind: web。每服务必填 port、healthcheck，且 image/build 二选一。
+服务名以小写字母起始，只含小写字母、数字和中划线，最长 31 字符。
+build.context 相对仓库；build.dockerfile 相对 context；可选 target 和非秘密 args。
+env 的值必须是字符串；secretRefs 只填写引用名，不填写秘密值。同一变量不得同时出现在两者中。
+command、entrypoint 使用字符串数组；workingDir 使用绝对路径；不做 shell 或变量插值。
+dependsOn 可填写 started 或 healthy，不允许不存在的服务或循环依赖。
+routes 必填 path、match（exact/prefix）、service，可选 stripPrefix；网关最多 32 条，并执行额外路径校验。
+声明 storage 时，挂载点固定 /data。schemaVersion 2 还必须填写 sizeMiB 和 maxInodes；新 XFS 存储从空目录开始，应用应按原有启动逻辑初始化。
+
+五、构建与运行条件
+运行用户为非 root（当前 65532:65532），根文件系统只读。持久文件写入已声明的 /data；临时文件仅写入平台允许的临时目录。
+应用监听 0.0.0.0，并与 services.<name>.port 一致。Dockerfile 的 EXPOSE 不能代替实际监听。
+HTTP 健康检查填写真实可用的路径；exec 健康检查使用容器内已有的命令数组。不要假设镜像内有 curl。
+构建 RUN 默认不能访问外网。所需依赖应已在所选基础镜像或仓库构建上下文中；不能假设构建时可执行联网 npm/pip/apt 安装。
+平台保持正常构建缓存。基础镜像会固定到摘要；不得通过禁用所有缓存作为常规部署方案。
+Dockerfile 支持显式 FROM、RUN、COPY、ENV、WORKDIR、USER、EXPOSE、LABEL、CMD、ENTRYPOINT、ARG、STOPSIGNAL。
+当前不支持续行、heredoc、自定义 frontend/parser、动态 FROM、RUN flags/mounts、ADD、VOLUME、ONBUILD；COPY flags 仅允许引用之前命名阶段的 --from=。
+运行时网络由平台配置决定，见 /api/v1/capabilities；构建网络和运行网络是两个不同的限制。受限公网 HTTPS 模式允许公网 IPv4 TCP 443，不表示任意端口和私网均可访问。
+不支持独立数据库/消息队列服务、后台 worker、数据库迁移钩子、主机目录挂载或任意 TCP/UDP 暴露。应用自身使用 /data 保存 SQLite 等文件不等于平台托管数据库。
+
+六、密码与密钥
+密码、API Key、令牌、MASTER_KEY 的实际值不得提交到 Git、env、build.args 或镜像中。
+示例引用：secretRefs: {BOOTSTRAP_PASSWORD: BOOTSTRAP_PASSWORD, MASTER_KEY: MASTER_KEY}
+缺少项目登录密码时，在部署页面设置；外部 API Key 填供应商签发的真实值，不能随机生成代替。
+平台识别为托管主密钥的 MASTER_KEY 自动生成、加密保存并按应用复用；已有值不会在每次部署时重新生成。
+其他随机密钥不能仅因名称含 KEY 就假定自动生成。应用必须与平台托管值格式兼容，不能要求平台改业务算法。
+应用管理中的密钥页面显示名称、版本与状态，不回显已保存值。普通运行密钥可轮换/吊销；主密钥不支持普通轮换。
+飞书登录用于部署控制台；业务应用的登录用户名、密码和初始化逻辑由该应用本身定义。
+
+七、提交、更新和下线
+首次部署选择创建新应用；更新或保留数据后重新上线时选择原应用。
+平台依次获取代码、固定输入、构建、启动、健康检查和验证 HTTPS。排队成功不等于上线成功。
+有持久数据的更新可能短暂停机；回退应用版本不会撤销候选版本对数据的写入，数据格式须保持兼容。
+下线可选择保留数据，或清除平台受控业务数据及该应用保存的密码、API Key、密钥。删除不可恢复，外部数据库不会自动删除。
+确认下线与清理完成后才释放域名和运行端口。失败或待恢复状态可能继续占用资源；不能仅凭“部署失败”判断已释放。
+部署失败时查看具体错误和当前应用状态，不自动修改用户源码，也不为重试随意删除已有数据或替换主密钥。
+当前未提供飞书多维表格自动登记、审批流、后台 worker 或自动备份。
+
+八、AI 交付检查清单
+请先检查原项目，再提供实际所需的部署文件和简短操作说明。不要创建与业务无关的演示程序。
+说明每个文件放置位置、端口、健康路径、所需引用名称及数据目录；不要在说明中放秘密值。
+说明哪些限制已满足、哪些需要业务方决定，禁止把未验证事项写成通过。
+登录平台后获取 /api/v1/schema?version=2 核对字段；无存储旧项目可使用 version=1。
+可调用 POST /api/v1/preflight 做配置预检，但预检不会拉代码、构建、预留资源或保证最终上线。
+实际构建与运行使用既有远端部署平台；未经用户要求，不自动启动本机 Docker Desktop。
+验收应覆盖真实页面/API、真实健康路径、重部署及所声明的数据持久化行为。只做与本次交付相关的检查。
