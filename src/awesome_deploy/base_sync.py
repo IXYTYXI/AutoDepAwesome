@@ -15,6 +15,7 @@ import uuid
 
 import httpx
 
+from .config import Settings
 from .feishu import OPEN_ID, _read_secret
 
 
@@ -71,7 +72,7 @@ def _job_status(value):
             'failed': '失败', 'recovery_required': '待恢复'}.get(value, '待恢复')
 
 
-def project_app(db, row):
+def project_app(db, row, *, base_domain=Settings().base_domain):
     app_id = row['id']
     latest = db.execute('SELECT * FROM jobs WHERE app_id=? ORDER BY created_at DESC,id DESC LIMIT 1',
                         (app_id,)).fetchone()
@@ -80,6 +81,23 @@ def project_app(db, row):
     owner = db.execute('SELECT owner_id FROM app_access WHERE app_id=?', (app_id,)).fetchone()
     last_input = _job_input(latest) if latest else {}
     domain = row['subdomain'] or last_input.get('subdomain') or ''
+    active = None
+    if row['active_release_id']:
+        active = db.execute('SELECT status,snapshot FROM jobs WHERE id=? AND app_id=?',
+                            (row['active_release_id'], app_id)).fetchone()
+    visit_url = source_dir = ''
+    if active and active['status'] == 'succeeded':
+        if isinstance(domain, str) and re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,5}[a-z0-9])?', domain):
+            visit_url = f'https://{domain}.{base_domain}/'
+        try:
+            snapshot = json.loads(active['snapshot'])
+            source = Path(snapshot['source_dir'])
+            if (source.is_absolute() and source.parent.name == 'sources'
+                    and source.name == row['active_release_id'] and not source.is_symlink()
+                    and not source.parent.is_symlink() and source.is_dir()):
+                source_dir = str(source)
+        except (TypeError, ValueError, KeyError, OSError):
+            pass
     if offline and offline['status'] in ('queued', 'running', 'recovery_required'):
         status = {'queued': '排队', 'running': '执行中', 'recovery_required': '待恢复'}[offline['status']]
     elif row['active_release_id']:
@@ -95,6 +113,7 @@ def project_app(db, row):
     return {'应用 ID': app_id, '应用名称': str(domain or app_id[:8]),
             '仓库地址': _safe_repository(row['repository']), '当前域名': str(domain),
             '状态': status, '负责人': _person(db, owner['owner_id'] if owner else None),
+            '访问地址': visit_url, '服务器部署路径': source_dir,
             '当前部署 ID': str(row['active_release_id'] or ''),
             '创建时间': _ms(row['created_at']), '更新时间': _ms(row['updated_at'])}
 
@@ -173,6 +192,9 @@ class BaseRemote:
         repository = wire_fields.pop('仓库地址', '')
         if repository:
             wire_fields['仓库地址'] = {'text': repository, 'link': repository}
+        if '访问地址' in wire_fields:
+            visit_url = wire_fields['访问地址']
+            wire_fields['访问地址'] = {'text': visit_url, 'link': visit_url} if visit_url else None
         if not record_id:
             primary = '应用 ID' if kind == 'app' else '部署 ID'
             found = self._request('POST', path + '/search', token=token, json={
@@ -209,8 +231,8 @@ def load_base_config(path: Path):
 
 
 class BaseMirror:
-    def __init__(self, database_path, remote, *, clock=time.time):
-        self.path, self.remote, self.clock = database_path, remote, clock
+    def __init__(self, database_path, remote, *, base_domain=Settings().base_domain, clock=time.time):
+        self.path, self.remote, self.base_domain, self.clock = database_path, remote, base_domain, clock
 
     def _connect(self):
         db = sqlite3.connect(self.path, timeout=30)
@@ -227,7 +249,8 @@ class BaseMirror:
             PRIMARY KEY(kind,entity_id))''')
         for kind, table, project in (('app', 'apps', project_app), ('job', 'jobs', project_job)):
             for row in db.execute(f'SELECT * FROM {table}').fetchall():
-                payload = json.dumps(project(db, row), ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+                fields = project(db, row, base_domain=self.base_domain) if kind == 'app' else project(db, row)
+                payload = json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
                 digest = hashlib.sha256(payload.encode()).hexdigest()
                 db.execute('''INSERT INTO base_registry_sync(kind,entity_id,payload,desired_hash,client_token)
                     VALUES (?,?,?,?,?) ON CONFLICT(kind,entity_id) DO UPDATE SET

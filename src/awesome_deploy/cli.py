@@ -251,7 +251,7 @@ def main(argv=None):
             try:
                 config = load_base_config(args.base_config)
                 remote = None if args.status else BaseRemote(settings, config)
-                mirror = BaseMirror(settings.database_path, remote)
+                mirror = BaseMirror(settings.database_path, remote, base_domain=settings.base_domain)
                 try:
                     if args.status:
                         print(json.dumps(mirror.status(), ensure_ascii=False))

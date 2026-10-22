@@ -98,6 +98,12 @@ def test_remote_search_before_create_and_update(monkeypatch):
     assert 'user_id_type=open_id' in calls[2][1] and 'user_id_type=open_id' in calls[3][1]
     sent = json.loads(calls[2][2])['fields']['仓库地址']
     assert sent == {'text': 'https://github.com/team/repo', 'link': 'https://github.com/team/repo'}
+    remote.upsert('app', 'a1', {'应用 ID': 'a1', '访问地址': 'https://demo.example.test/'},
+                  'rec1', '00000000-0000-4000-8000-000000000000')
+    assert json.loads(calls[-1][2])['fields']['访问地址'] == {
+        'text': 'https://demo.example.test/', 'link': 'https://demo.example.test/'}
+    remote.upsert('app', 'a1', {'应用 ID': 'a1', '访问地址': ''}, 'rec1', '00000000-0000-4000-8000-000000000000')
+    assert json.loads(calls[-1][2])['fields']['访问地址'] is None
     assert all('secret' not in url and 'Bearer' not in url for _, url, _ in calls)
 
 
@@ -114,3 +120,33 @@ def test_owner_transfer_uses_current_login_identity(tmp_path):
         db.execute("UPDATE app_access SET owner_id='u1' WHERE app_id='a1'")
     assert mirror.run_once() == {'synced': 1, 'pending': 0}
     assert remote.rows['app']['a1']['负责人'] == [{'id': 'ou_test123'}]
+
+
+def test_active_app_projects_visit_url_and_server_source_path(tmp_path):
+    path = tmp_path / 'db.sqlite'
+    with database(path) as db:
+        source = tmp_path / 'sources' / 'j1'
+        source.mkdir(parents=True)
+        db.execute("UPDATE jobs SET status='succeeded',snapshot=? WHERE id='j1'",
+                   (json.dumps({'source_dir': str(source)}),))
+        db.execute("UPDATE apps SET active_release_id='j1' WHERE id='a1'")
+        app = project_app(db, db.execute('SELECT * FROM apps').fetchone(), base_domain='example.test')
+        assert app['访问地址'] == 'https://demo.example.test/'
+        assert app['服务器部署路径'] == str(source)
+        source.rmdir()
+        app = project_app(db, db.execute('SELECT * FROM apps').fetchone(), base_domain='example.test')
+        assert app['服务器部署路径'] == ''
+        db.execute("UPDATE apps SET active_release_id=NULL WHERE id='a1'")
+        app = project_app(db, db.execute('SELECT * FROM apps').fetchone(), base_domain='example.test')
+        assert app['访问地址'] == ''
+        assert app['服务器部署路径'] == ''
+
+
+def test_base_mirror_uses_configured_public_domain(tmp_path):
+    path = tmp_path / 'db.sqlite'
+    with database(path) as db:
+        db.execute("UPDATE jobs SET status='succeeded' WHERE id='j1'")
+        db.execute("UPDATE apps SET active_release_id='j1' WHERE id='a1'")
+    remote = FakeBase()
+    assert BaseMirror(path, remote, base_domain='example.test').run_once()['pending'] == 0
+    assert remote.rows['app']['a1']['访问地址'] == 'https://demo.example.test/'
