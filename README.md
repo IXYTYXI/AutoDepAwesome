@@ -265,15 +265,33 @@ awesome-deploy --config /etc/awesome-deploy/config.json api-token-revoke --id CR
 
 签发命令仅输出一次完整凭证；请在可信终端安全保存，不要放入仓库、聊天或命令行参数。数据库只存摘要，列表不显示原值。管理员也可以选择 `--app-id APP_ID` 限定单应用，或 `--allow-create` 只允许创建新应用。自动化客户端仅向 `https://awesome.guanghexinzhi.cn/api/v1/automation/deployments` 发送 `Authorization: Bearer <凭证>`、`Content-Type: application/json`、`Idempotency-Key: <唯一键>`，请求体与普通部署 API 相同。返回 `202` 和任务 ID 后，可用同一凭证访问 `GET /api/v1/automation/deployments/{id}` 查询状态；不同凭证不能读取彼此的任务。此凭证不能用于网页管理、密钥、下线或普通浏览器 API。撤销凭证会阻止尚未执行的关联部署继续执行。`202` 只表示任务已经入队，不表示部署成功。
 
-先保存请求文件，避免在命令中包含秘密：
+网页上的完整步骤和示例位于 [API 凭证页面](https://awesome.guanghexinzhi.cn/api-access)，登录后点击「查看调用示例」。以下示例要求调用环境事先从安全配置注入 `AWESOME_DEPLOY_TOKEN`，不要把凭证写入仓库或请求文件：
+
+先保存请求文件 `deployment.json`：
 
 ```json
 {
-  "repository": "https://github.com/your-org/your-repo",
+  "repository": "https://github.com/your-org/your-repo.git",
   "ref": "main",
   "subdomain": "demo"
 }
 ```
+
+```sh
+curl --fail-with-body -sS \
+  -H "Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: demo-initial-001' \
+  --data-binary @deployment.json \
+  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments
+
+# 把 JOB_ID 换成上一步响应中的 id；查询时继续使用同一凭证。
+curl --fail-with-body -sS \
+  -H "Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}" \
+  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments/JOB_ID
+```
+
+对相同请求的重试复用同一幂等键；每次新的部署换新键。更新已有应用时，请求体另加 `appId`，仓库和域名前缀必须与该应用一致。任务状态为 `queued`、`running`、`succeeded`、`failed` 或 `recovery_required`；仅 `succeeded` 表示该次部署成功，还可用 `active`、`url` 确认当前是否在线。
 
 ```sh
 # 以下示例仅适用于旧的 auth_mode=basic 兼容模式；飞书登录模式请使用上方专用自动化接口。
