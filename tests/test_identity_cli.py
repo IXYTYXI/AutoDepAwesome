@@ -60,3 +60,27 @@ def test_cli_user_grant_and_revoke_invalidates_sessions(config, capsys):
     assert actor["id"] in output and token not in output and "csrf" not in output
     main(["--config", str(config), "auth-revoke-all"])
     identity.provider.close()
+
+
+def test_cli_explicit_automation_credential_issue_list_and_revoke(config, capsys):
+    from awesome_deploy.api_credentials import ApiCredentialStore
+    from awesome_deploy.identity import IdentityStore
+    from awesome_deploy.store import Store
+
+    settings = load_settings(config)
+    Store(settings)
+    identity = IdentityStore(settings)
+    actor = identity.login_user({'open_id': 'ou_ci_owner', 'tenant_key': 'tenant', 'name': 'Owner'})
+    command = ['--config', str(config)]
+    assert main(command + ['api-token-create', '--user-id', actor['id'], '--name', 'build-server',
+                           '--kind', 'source', '--allow-create', '--days', '7']) == 0
+    issued = json.loads(capsys.readouterr().out)
+    assert issued['token'].startswith('adp_')
+    assert ApiCredentialStore(settings).authenticate(issued['token']) is not None
+    assert main(command + ['api-token-list']) == 0
+    listed = capsys.readouterr().out
+    assert issued['id'] in listed and issued['token'] not in listed
+    assert main(command + ['api-token-revoke', '--id', issued['id']]) == 0
+    assert issued['token'] not in capsys.readouterr().out
+    assert ApiCredentialStore(settings).authenticate(issued['token']) is None
+    identity.provider.close()

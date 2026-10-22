@@ -58,6 +58,11 @@ class AccessStore:
                 app_revision INTEGER NOT NULL, action TEXT NOT NULL, request_key TEXT,
                 PRIMARY KEY(kind,id)
             );
+            CREATE TABLE IF NOT EXISTS operation_credentials (
+                kind TEXT NOT NULL, id TEXT NOT NULL, credential_id TEXT NOT NULL,
+                PRIMARY KEY(kind,id),
+                FOREIGN KEY(kind,id) REFERENCES operation_auth(kind,id)
+            );
             CREATE TABLE IF NOT EXISTS access_audit (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL,
                 action TEXT NOT NULL, app_id TEXT, subject_id TEXT,
@@ -243,15 +248,22 @@ class AccessStore:
                    detail={'repository': repository, 'subdomain': subdomain})
 
     @classmethod
-    def record_operation(cls, db, actor, kind, operation_id, app_id, action, request_key=None):
+    def record_operation(cls, db, actor, kind, operation_id, app_id, action, request_key=None,
+                         credential_id=None):
         cls._require(db, actor, app_id, action)
         row = db.execute('SELECT revision FROM app_access WHERE app_id=?', (app_id,)).fetchone()
         # Administrators can manage unassigned legacy applications; no member can.
         app_revision = row['revision'] if row else 0
         db.execute('''INSERT INTO operation_auth
-                   (kind,id,user_id,user_revision,app_id,app_revision,action,request_key) VALUES (?,?,?,?,?,?,?,?)''',
-                   (kind, operation_id, actor['id'], actor['revision'], app_id, app_revision, action, request_key))
-        cls._audit(db, actor['id'], kind + '_accepted', app_id, operation_id)
+                   (kind,id,user_id,user_revision,app_id,app_revision,action,request_key)
+                   VALUES (?,?,?,?,?,?,?,?)''',
+                   (kind, operation_id, actor['id'], actor['revision'], app_id, app_revision,
+                    action, request_key))
+        if credential_id is not None:
+            db.execute('INSERT INTO operation_credentials VALUES (?,?,?)',
+                       (kind, operation_id, credential_id))
+        cls._audit(db, actor['id'], kind + '_accepted', app_id, operation_id,
+                   {'credentialId': credential_id} if credential_id else None)
 
     @classmethod
     def _authorize_operation_local(cls, db, kind, operation_id, *, required=False):
@@ -261,6 +273,16 @@ class AccessStore:
                 raise denied()
             return None
         binding = dict(row)
+        credential_binding = db.execute('SELECT credential_id FROM operation_credentials WHERE kind=? AND id=?',
+                                        (kind, operation_id)).fetchone()
+        if credential_binding:
+            credential = db.execute('SELECT * FROM api_credentials WHERE id=?',
+                                    (credential_binding['credential_id'],)).fetchone()
+            if (not credential or credential['revoked_at'] is not None
+                    or not credential['created_at'] <= time.time() < credential['expires_at']
+                    or credential['owner_user_id'] != binding['user_id']
+                    or credential['owner_revision'] != binding['user_revision']):
+                raise denied()
         user = db.execute('SELECT * FROM auth_users WHERE id=?', (binding['user_id'],)).fetchone()
         if user is None or user['revision'] != binding['user_revision']:
             raise denied()
@@ -281,6 +303,20 @@ class AccessStore:
             elif vault_format['format'] != 1 or vault_format['phase'] != 'active':
                 raise DeployError('VAULT_MAINTENANCE', '密钥库尚未完成维护，暂不执行新任务。')
         return actor
+
+    def require_credential_job(self, actor, credential_id, job):
+        with self._connection() as db:
+            row = db.execute("SELECT credential_id FROM operation_credentials WHERE kind='job' AND id=?",
+                             (job['id'],)).fetchone()
+            if row is None or row['credential_id'] != credential_id:
+                raise denied()
+            credential = db.execute('SELECT * FROM api_credentials WHERE id=?', (credential_id,)).fetchone()
+            if (credential is None or credential['revoked_at'] is not None
+                    or not credential['created_at'] <= time.time() < credential['expires_at']
+                    or credential['owner_user_id'] != actor['id']
+                    or credential['owner_revision'] != actor['revision']):
+                raise denied()
+            self._require(db, actor, job['app_id'], 'detail')
 
     def authorize_operation_local(self, kind, operation_id):
         with self._connection() as db:

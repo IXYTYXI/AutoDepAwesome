@@ -348,23 +348,35 @@ class Store:
         ).fetchone() is not None
         return (owner is None or reset_owner or managed_draft) and not active_release and not generation_data
 
-    def enqueue(self, payload, idempotency_key, *, actor=None):
+    def enqueue(self, payload, idempotency_key, *, actor=None, credential_id=None):
         encoded = _json(payload)
         request_key = idempotency_key
         if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 200:
             raise DeployError("INVALID_IDEMPOTENCY_KEY", "Provide an idempotency key of 1–200 characters.")
         if actor is None and getattr(self.settings, "auth_mode", "basic") == "feishu":
             raise denied()
+        if credential_id is not None and actor is None:
+            raise denied()
         with self._connection(write=True) as db:
             if actor is not None:
                 actor = AccessStore._actor(db, actor)
                 if not actor["can_deploy"]:
                     raise denied()
-                idempotency_key = AccessStore.scoped_key(actor, "job", idempotency_key)
+                if credential_id is not None:
+                    from .api_credentials import ApiCredentialStore
+                    ApiCredentialStore.authorize_scope(db, actor, credential_id, payload.get('appId'))
+                scoped_request_key = (f'api:{credential_id}:{idempotency_key}'
+                                      if credential_id is not None else idempotency_key)
+                idempotency_key = AccessStore.scoped_key(actor, "job", scoped_request_key)
             row = db.execute("SELECT * FROM jobs WHERE idempotency_key=?", (idempotency_key,)).fetchone()
             if row:
                 if actor is not None:
                     AccessStore._authorize_operation_local(db, "job", row["id"], required=True)
+                    if credential_id is not None:
+                        binding = db.execute("SELECT credential_id FROM operation_credentials WHERE kind='job' AND id=?",
+                                             (row['id'],)).fetchone()
+                        if binding is None or binding['credential_id'] != credential_id:
+                            raise denied()
                 if row["input"] != encoded:
                     raise DeployError("IDEMPOTENCY_CONFLICT", "This key already belongs to a different request.")
                 return self._job(row)
@@ -401,7 +413,8 @@ class Store:
                 (job_id, idempotency_key, encoded, app_id if actor is not None else None, now, now),
             )
             if actor is not None:
-                AccessStore.record_operation(db, actor, "job", job_id, app_id, "deploy", request_key)
+                AccessStore.record_operation(db, actor, "job", job_id, app_id, "deploy", request_key,
+                                             credential_id=credential_id)
             return self._get(db, job_id)
 
     def _prepare_vault_generation(self, db, app_id, actor_id):

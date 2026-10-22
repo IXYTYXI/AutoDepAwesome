@@ -167,6 +167,11 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
     app = FastAPI(title="Awesome Deploy", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.store = store
     app.state.identity, app.state.access = identity, access
+    if identity:
+        from .api_credentials import ApiCredentialStore
+        app.state.api_credentials = ApiCredentialStore(settings)
+    else:
+        app.state.api_credentials = None
     app.state.advice = AdviceService(settings)
     app.state.deployment_secrets = DeploymentSecrets(settings, store)
     app.state.vault_service = None
@@ -211,6 +216,24 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
         if not request.headers.get("content-type", "").lower().startswith("application/json"):
             raise HTTPException(415, "请使用 application/json。")
         return actor
+
+    def automation_access(request: Request):
+        if app.state.api_credentials is None:
+            raise HTTPException(404)
+        values = request.headers.getlist('authorization')
+        if len(values) != 1 or not values[0].startswith('Bearer '):
+            raise HTTPException(401, '请提供有效的自动化 API 凭证。')
+        authenticated_credential = app.state.api_credentials.authenticate(values[0][7:])
+        if authenticated_credential is None:
+            raise HTTPException(401, '自动化 API 凭证无效或已失效。')
+        origin = request.headers.get('origin')
+        if (origin is not None and origin != settings.public_url.rstrip('/')
+                or request.headers.get('sec-fetch-site') == 'cross-site'):
+            raise HTTPException(403, '请求来源不被允许。')
+        actor, credential = authenticated_credential
+        actor = identity.authorize_user(actor['id'], expected_revision=actor['revision'])
+        request.state.actor, request.state.credential = actor, credential
+        return actor, credential
 
     def fresh(actor):
         if identity and time.time() - actor["authenticated_at"] > 600:
@@ -533,8 +556,7 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
             "message": "仅完成配置校验；仓库、镜像、秘密、容量和服务器能力由部署执行器继续检查。",
         }
 
-    @app.post("/api/v1/deployments", status_code=202, dependencies=[Depends(write_access)])
-    def submit(body: Submission, request: Request):
+    def deployment_input(body: Submission, request: Request):
         key = request.headers.get("idempotency-key", "")
         if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", key):
             raise HTTPException(400, "必须提供 1–128 字符的 Idempotency-Key。")
@@ -554,7 +576,27 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
         payload = body.model_dump(exclude_none=True)
         payload["repository"] = validate_repository(body.repository, settings)
         payload["ref"] = validate_ref(body.ref)
+        return payload, key
+
+    @app.post("/api/v1/deployments", status_code=202, dependencies=[Depends(write_access)])
+    def submit(body: Submission, request: Request):
+        payload, key = deployment_input(body, request)
         return public_job(store.enqueue(payload, key, **({"actor": request.state.actor} if access else {})))
+
+    @app.post('/api/v1/automation/deployments', status_code=202)
+    def automation_submit(body: Submission, request: Request, identity_and_credential=Depends(automation_access)):
+        if not request.headers.get('content-type', '').lower().startswith('application/json'):
+            raise HTTPException(415, '请使用 application/json。')
+        actor, credential = identity_and_credential
+        payload, key = deployment_input(body, request)
+        return public_job(store.enqueue(payload, key, actor=actor, credential_id=credential['id']))
+
+    @app.get('/api/v1/automation/deployments/{job_id}')
+    def automation_deployment(job_id: str, identity_and_credential=Depends(automation_access)):
+        actor, credential = identity_and_credential
+        job = store.get(job_id)
+        access.require_credential_job(actor, credential['id'], job)
+        return public_job(job)
 
     @app.get("/api/v1/deployments", dependencies=[Depends(authenticated)])
     def deployments(actor=Depends(authenticated)):

@@ -1,0 +1,139 @@
+"""Explicit, narrowly scoped credentials for unattended deployment API callers."""
+
+from contextlib import contextmanager
+import hashlib
+import re
+import secrets
+import sqlite3
+import time
+import uuid
+
+from .access import AccessStore, denied
+from .errors import DeployError
+
+
+TOKEN = re.compile(r'adp_[A-Za-z0-9_-]{43}\Z')
+NAME = re.compile(r'[\w .:/-]{1,80}\Z', re.UNICODE)
+
+
+class ApiCredentialStore:
+    def __init__(self, settings, *, clock=time.time):
+        self.settings, self.clock = settings, clock
+        with self._connection() as db:
+            self.ensure_schema(db)
+
+    @staticmethod
+    def ensure_schema(db):
+        db.executescript('''
+            CREATE TABLE IF NOT EXISTS api_credentials (
+                id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE,
+                owner_user_id TEXT NOT NULL REFERENCES auth_users(id),
+                owner_revision INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL,
+                app_id TEXT REFERENCES apps(id), allow_create INTEGER NOT NULL,
+                created_at REAL NOT NULL, expires_at REAL NOT NULL,
+                revoked_at REAL,
+                CHECK (kind IN ('person','source')),
+                CHECK ((app_id IS NULL AND allow_create=1) OR (app_id IS NOT NULL AND allow_create=0))
+            );
+            CREATE INDEX IF NOT EXISTS api_credentials_owner ON api_credentials(owner_user_id,created_at);
+        ''')
+
+    @contextmanager
+    def _connection(self, *, write=False):
+        db = sqlite3.connect(self.settings.database_path, timeout=30, isolation_level=None)
+        db.row_factory = sqlite3.Row
+        db.execute('PRAGMA foreign_keys=ON')
+        db.execute('PRAGMA busy_timeout=30000')
+        try:
+            if write:
+                db.execute('BEGIN IMMEDIATE')
+            yield db
+            if write:
+                db.commit()
+        except BaseException:
+            if write:
+                db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def issue(self, owner_user_id, name, *, kind, app_id=None, allow_create=False, expires_days=30):
+        if (self.settings.auth_mode != 'feishu' or kind not in {'person', 'source'}
+                or not isinstance(name, str) or not NAME.fullmatch(name)
+                or type(expires_days) is not int or not 1 <= expires_days <= 90
+                or (app_id is None) == (not allow_create)
+                or app_id is not None and not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', app_id)):
+            raise DeployError('INVALID_API_CREDENTIAL', 'API 凭证名称、范围或有效期无效。')
+        token = 'adp_' + secrets.token_urlsafe(32)
+        now, credential_id = self.clock(), uuid.uuid4().hex
+        with self._connection(write=True) as db:
+            row = db.execute('SELECT * FROM auth_users WHERE id=?', (owner_user_id,)).fetchone()
+            if not row:
+                raise denied()
+            actor = AccessStore._actor(db, dict(row))
+            if (actor['app_id'] != self.settings.feishu_app_id
+                    or actor['tenant_key'] != self.settings.feishu_tenant_key or not actor['can_deploy']):
+                raise denied()
+            if app_id is not None:
+                AccessStore._require(db, actor, app_id, 'deploy')
+            if db.execute('SELECT COUNT(*) FROM api_credentials WHERE revoked_at IS NULL AND expires_at>?',
+                          (now,)).fetchone()[0] >= 100:
+                raise DeployError('API_CREDENTIAL_CAPACITY', '有效 API 凭证数量已达上限。')
+            db.execute('''INSERT INTO api_credentials
+                (id,token_hash,owner_user_id,owner_revision,kind,name,app_id,allow_create,created_at,expires_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                (credential_id, hashlib.sha256(token.encode()).hexdigest(), actor['id'], actor['revision'],
+                 kind, name, app_id, int(allow_create), now, now + expires_days * 86400))
+            db.execute('''INSERT INTO auth_audit(actor_id,action,target_id,result,details,created_at)
+                VALUES (?,'api_credential_issued',?,'success','{}',?)''', (actor['id'], credential_id, now))
+        return {'id': credential_id, 'token': token, 'ownerUserId': owner_user_id, 'kind': kind,
+                'name': name, 'appId': app_id, 'allowCreate': bool(allow_create),
+                'expiresAt': now + expires_days * 86400}
+
+    def authenticate(self, token):
+        if not isinstance(token, str) or not TOKEN.fullmatch(token):
+            return None
+        now = self.clock()
+        with self._connection() as db:
+            row = db.execute('SELECT * FROM api_credentials WHERE token_hash=?',
+                             (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+            if not row or row['revoked_at'] is not None or not row['created_at'] <= now < row['expires_at']:
+                return None
+            user = db.execute('SELECT * FROM auth_users WHERE id=?', (row['owner_user_id'],)).fetchone()
+            if (not user or user['revision'] != row['owner_revision']
+                    or not user['enabled'] or not user['eligible'] or not user['can_deploy']
+                    or user['app_id'] != self.settings.feishu_app_id
+                    or user['tenant_key'] != self.settings.feishu_tenant_key):
+                return None
+            return dict(user), dict(row)
+
+    @staticmethod
+    def authorize_scope(db, actor, credential_id, app_id):
+        row = db.execute('SELECT * FROM api_credentials WHERE id=?', (credential_id,)).fetchone()
+        now = time.time()
+        if (not row or row['revoked_at'] is not None or not row['created_at'] <= now < row['expires_at']
+                or row['owner_user_id'] != actor['id'] or row['owner_revision'] != actor['revision']
+                or not (row['allow_create'] if app_id is None else row['app_id'] == app_id)):
+            raise denied()
+        return dict(row)
+
+    def list(self):
+        with self._connection() as db:
+            return [dict(id=row['id'], ownerUserId=row['owner_user_id'], kind=row['kind'], name=row['name'],
+                         appId=row['app_id'], allowCreate=bool(row['allow_create']),
+                         createdAt=row['created_at'], expiresAt=row['expires_at'],
+                         revokedAt=row['revoked_at'])
+                    for row in db.execute('SELECT * FROM api_credentials ORDER BY created_at DESC,id DESC')]
+
+    def revoke(self, credential_id):
+        now = self.clock()
+        with self._connection(write=True) as db:
+            row = db.execute('SELECT owner_user_id,revoked_at FROM api_credentials WHERE id=?',
+                             (credential_id,)).fetchone()
+            if row is None:
+                raise DeployError('NOT_FOUND', 'API 凭证不存在。')
+            if row['revoked_at'] is None:
+                db.execute('UPDATE api_credentials SET revoked_at=? WHERE id=?', (now, credential_id))
+                db.execute('''INSERT INTO auth_audit(actor_id,action,target_id,result,details,created_at)
+                    VALUES (?,'api_credential_revoked',?,'success','{}',?)''',
+                    (row['owner_user_id'], credential_id, now))

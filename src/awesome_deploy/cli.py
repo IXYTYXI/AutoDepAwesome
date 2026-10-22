@@ -147,6 +147,17 @@ def main(argv=None):
     for flag in ("enabled", "can-deploy", "admin"):
         users.add_argument("--" + flag, choices=("true", "false"))
     sub.add_parser("auth-revoke-all", help="注销所有平台会话与在途登录；恢复数据库后必须执行")
+    api_token = sub.add_parser('api-token-create', help='在可信服务器终端为指定用户或来源签发自动化部署凭证')
+    api_token.add_argument('--user-id', required=True, help='负责此凭证的已登录飞书用户 ID')
+    api_token.add_argument('--name', required=True, help='凭证或自动化来源名称')
+    api_token.add_argument('--kind', choices=('person', 'source'), required=True)
+    api_token.add_argument('--days', type=int, default=30, help='有效天数，1–90；默认 30')
+    scope = api_token.add_mutually_exclusive_group(required=True)
+    scope.add_argument('--app-id', help='仅允许更新这个已有应用')
+    scope.add_argument('--allow-create', action='store_true', help='仅允许创建新应用')
+    sub.add_parser('api-token-list', help='列出自动化部署凭证元数据，不显示凭证值')
+    api_revoke = sub.add_parser('api-token-revoke', help='撤销自动化部署凭证')
+    api_revoke.add_argument('--id', required=True, help='凭证 ID')
     secret = sub.add_parser("secret-set", help="安全输入应用秘密配置")
     secret.add_argument("--repository")
     secret.add_argument("--subdomain")
@@ -221,6 +232,27 @@ def main(argv=None):
                 else:
                     identities.revoke_all_sessions()
                     print("全部平台会话及在途登录已撤销。")
+            finally:
+                identities.provider.close()
+        elif args.command in {'api-token-create', 'api-token-list', 'api-token-revoke'}:
+            if settings.auth_mode != 'feishu':
+                raise DeployError('INVALID_CONFIG', '自动化 API 凭证仅在飞书登录模式可用。')
+            from .store import Store
+            from .identity import IdentityStore
+            from .api_credentials import ApiCredentialStore
+            Store(settings)
+            identities = IdentityStore(settings)
+            try:
+                credentials = ApiCredentialStore(settings)
+                if args.command == 'api-token-create':
+                    issued = credentials.issue(args.user_id, args.name, kind=args.kind, app_id=args.app_id,
+                                               allow_create=args.allow_create, expires_days=args.days)
+                    print(json.dumps(issued, ensure_ascii=False))
+                elif args.command == 'api-token-list':
+                    print(json.dumps(credentials.list(), ensure_ascii=False, indent=2))
+                else:
+                    credentials.revoke(args.id)
+                    print('凭证已撤销。')
             finally:
                 identities.provider.close()
         elif args.command == "secret-set":

@@ -250,6 +250,19 @@ secretRefs:
 
 `Idempotency-Key` 必填，1–128 位字母数字或 `._:-`。同键同请求返回同一个任务，适用于响应丢失后的重试；同键不同请求冲突。真实新部署必须换键。当前已绑定域名的应用更新必须提供原 `appId`，且 repository、subdomain 与原应用相同；不能靠新建任务抢占已使用域名。下线完成后，应用的 subdomain 为 null、domainBound 为 false，lastSubdomain 仅表示历史前缀。原应用可以使用原 appId 和原仓库重新认领空闲前缀，数据仍属于原应用；新建应用使用独立身份和数据卷。
 
+### 少数指定调用方的自动化 API 凭证
+
+普通成员继续通过飞书网页登录，不自动获得 API 凭证。可信服务器终端的管理员可以为一位已登录的飞书成员签发独立凭证；`person` 表示指定人员，`source` 表示具名自动化来源。两者都关联该成员的当前平台权限，管理员可按来源单独列出和撤销。每枚凭证只能更新一个已有应用（`--app-id`），或只能创建新应用（`--allow-create`）；有效期 1–90 天，默认 30 天。成员被停用、失去部署权限或应用权限时，凭证不能继续提交或执行未开始的任务。来源系统需要长期运作时，应指定稳定的负责成员并在权限变化后重新签发；本阶段不提供脱离飞书用户的独立服务账号。
+
+```sh
+awesome-deploy --config /etc/awesome-deploy/config.json api-token-create \
+  --user-id MEMBER_ID --name build-server --kind source --app-id APP_ID --days 30
+awesome-deploy --config /etc/awesome-deploy/config.json api-token-list
+awesome-deploy --config /etc/awesome-deploy/config.json api-token-revoke --id CREDENTIAL_ID
+```
+
+签发命令仅输出一次完整凭证；请在可信终端安全保存，不要放入仓库、聊天或命令行参数。数据库只存摘要，列表不显示原值。自动化客户端仅向 `https://awesome.guanghexinzhi.cn/api/v1/automation/deployments` 发送 `Authorization: Bearer <凭证>`、`Content-Type: application/json`、`Idempotency-Key: <唯一键>`，请求体与普通部署 API 相同。返回 `202` 和任务 ID 后，可用同一凭证访问 `GET /api/v1/automation/deployments/{id}` 查询状态；不同凭证不能读取彼此的任务。此凭证不能用于网页管理、密钥、下线或普通浏览器 API。撤销凭证会阻止尚未执行的关联部署继续执行。`202` 只表示任务已经入队，不表示部署成功。
+
 先保存请求文件，避免在命令中包含秘密：
 
 ```json
@@ -261,6 +274,7 @@ secretRefs:
 ```
 
 ```sh
+# 以下示例仅适用于旧的 auth_mode=basic 兼容模式；飞书登录模式请使用上方专用自动化接口。
 # --user 仅给用户名，curl 会交互询问密码；替换入口域名和请求文件路径。
 curl --user operator --fail-with-body \
   -H 'Content-Type: application/json' \
