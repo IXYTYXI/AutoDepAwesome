@@ -398,7 +398,7 @@ def test_readback_accepts_only_implied_ipv4_family_elision(kernel):
 def test_rootless_driver_must_be_slirp_and_nontransparent(monkeypatch, change):
     eg = module()
     info = {"networkDriver": {"driver": "slirp4netns"},
-            "portDriver": {"extra": {"sourceIPTransparentBackend": "none"}}}
+            "portDriver": {"driver": "builtin", "extra": {"sourceIPTransparentBackend": "none"}}}
     if change == "driver":
         info["networkDriver"]["driver"] = "host"
     elif change == "transparent":
@@ -408,6 +408,40 @@ def test_rootless_driver_must_be_slirp_and_nontransparent(monkeypatch, change):
     monkeypatch.setattr(eg.RootlessPortForwarder, "check", lambda self, timeout=5: info)
     guard = eg.EgressGuard(settings())
     if change == "valid":
+        guard._rootless_driver()
+    else:
+        with pytest.raises(DeployError) as error:
+            guard._rootless_driver()
+        assert error.value.code == "EGRESS_NAMESPACE_UNSAFE"
+
+
+@pytest.mark.parametrize("version,api_version,port,network,accepted", [
+    ("3.3.0", "1.1.3", {"driver": "builtin"}, "slirp4netns", True),
+    ("3.2.0", "1.1.3", {"driver": "builtin", "extra": {"sourceIPTransparentBackend": "none"}}, "slirp4netns", True),
+    (None, None, {"driver": "builtin", "extra": {"sourceIPTransparentBackend": "none"}}, "slirp4netns", True),
+    ("3.2.0", "1.1.3", {"driver": "builtin"}, "slirp4netns", False),
+    (None, "1.1.3", {"driver": "builtin"}, "slirp4netns", False),
+    ("3.3.1", "1.1.3", {"driver": "builtin"}, "slirp4netns", False),
+    ("3.4.0", "1.1.3", {"driver": "builtin"}, "slirp4netns", False),
+    ("3.3.0-dev", "1.1.3", {"driver": "builtin"}, "slirp4netns", False),
+    ("3.3.0", "1.1.2", {"driver": "builtin"}, "slirp4netns", False),
+    ("3.3.0", None, {"driver": "builtin"}, "slirp4netns", False),
+    ("3.3.0", "1.1.3", {"driver": "builtin", "extra": {}}, "slirp4netns", False),
+    ("3.3.0", "1.1.3", {"driver": "builtin", "extra": None}, "slirp4netns", False),
+    ("3.3.0", "1.1.3", {"driver": "builtin", "extra": {"sourceIPTransparentBackend": "nft"}}, "slirp4netns", False),
+    ("3.3.0", "1.1.3", {"driver": "builtin", "extra": {"sourceIPTransparentBackend": "none"}}, "slirp4netns", False),
+    ("3.3.0", "1.1.3", {"driver": "builtin"}, "host", False),
+    ("3.3.0", "1.1.3", {"driver": "slirp4netns"}, "slirp4netns", False),
+    ("3.3.0", "1.1.3", {}, "slirp4netns", False),
+    ("3.2.0", "1.1.3", {"driver": "slirp4netns", "extra": {"sourceIPTransparentBackend": "none"}}, "slirp4netns", False),
+])
+def test_rootless_330_explicitly_disabled_transparency(monkeypatch, version, api_version, port, network, accepted):
+    eg = module()
+    info = {"version": version, "apiVersion": api_version,
+            "networkDriver": {"driver": network}, "portDriver": port}
+    monkeypatch.setattr(eg.RootlessPortForwarder, "check", lambda self, timeout=5: info)
+    guard = eg.EgressGuard(settings())
+    if accepted:
         guard._rootless_driver()
     else:
         with pytest.raises(DeployError) as error:
