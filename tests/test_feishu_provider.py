@@ -25,6 +25,7 @@ def settings(tmp_path):
     return SimpleNamespace(
         public_url="https://deploy.example.com/", feishu_app_id="cli_test_app",
         feishu_tenant_key="tenant-1", feishu_app_secret_file=secret,
+        feishu_eligibility_mode="continuous",
     )
 
 
@@ -50,9 +51,15 @@ class FeishuAPI:
         path = request.url.path
         if path in self.override:
             return self.override[path](request)
-        if path == "/oauth/v3/token":
-            body = parse_qs(request.content.decode())
-            token = "tenant-token" if body["grant_type"] == ["client_credentials"] else "user-token"
+        if path in {"/oauth/v3/token", "/open-apis/authen/v2/oauth/token"}:
+            if path == "/oauth/v3/token":
+                body = parse_qs(request.content.decode())
+                assert body["grant_type"] == ["client_credentials"]
+                token = "tenant-token"
+            else:
+                body = json.loads(request.content)
+                assert body["grant_type"] == "authorization_code"
+                token = "user-token"
             return httpx.Response(200, json={"code": 0, "access_token": token,
                 "expires_in": self.token_ttl, "token_type": "Bearer",
                 "scope": " ".join(sorted(APP_SCOPES)) if token == "tenant-token" else "",
@@ -99,13 +106,15 @@ def test_exchange_checks_identity_employment_and_app_visibility(settings):
     client, api = provider(settings)
     assert client.exchange("valid-code", "v" * 43) == {
         "open_id": OPEN_ID, "tenant_key": "tenant-1", "name": "测试成员"}
-    body = parse_qs(api.calls[0].content.decode())
-    assert api.calls[0].url == "https://accounts.feishu.cn/oauth/v3/token"
-    assert api.calls[0].headers["content-type"].startswith("application/x-www-form-urlencoded")
-    assert body == {"grant_type": ["authorization_code"], "client_id": ["cli_test_app"],
-                    "client_secret": ["test-app-secret"], "code": ["valid-code"],
-                    "redirect_uri": ["https://deploy.example.com/auth/feishu/callback"],
-                    "code_verifier": ["v" * 43]}
+    body = json.loads(api.calls[0].content)
+    assert api.calls[0].url == "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
+    assert api.calls[0].headers["content-type"] == "application/json; charset=utf-8"
+    assert body == {"grant_type": "authorization_code", "client_id": "cli_test_app",
+                    "client_secret": "test-app-secret", "code": "valid-code",
+                    "redirect_uri": "https://deploy.example.com/auth/feishu/callback",
+                    "code_verifier": "v" * 43}
+    assert api.calls[2].url == "https://accounts.feishu.cn/oauth/v3/token"
+    assert api.calls[2].headers["content-type"].startswith("application/x-www-form-urlencoded")
     tenant_body = parse_qs(api.calls[2].content.decode())
     assert tenant_body["grant_type"] == ["client_credentials"]
     assert set(tenant_body["scope"][0].split()) == APP_SCOPES
@@ -113,7 +122,50 @@ def test_exchange_checks_identity_employment_and_app_visibility(settings):
     assert "must-not-persist-this" not in repr(vars(client))
 
 
-def test_foreign_tenant_never_uses_tenant_credentials(settings):
+def test_login_mode_only_exchanges_code_and_reads_identity(settings):
+    settings.feishu_eligibility_mode = "login"
+    client, api = provider(settings)
+    assert client.exchange("valid-code", "v" * 43) == {
+        "open_id": OPEN_ID, "tenant_key": "tenant-1", "name": "测试成员"}
+    assert [request.url.path for request in api.calls] == [
+        "/open-apis/authen/v2/oauth/token", "/open-apis/authen/v1/user_info"]
+    body = json.loads(api.calls[0].content)
+    assert body["grant_type"] == "authorization_code"
+    assert body["code_verifier"] == "v" * 43
+    assert "scope" not in body
+    assert client._tenant_token_value is None
+    assert not hasattr(client, "refresh_token")
+    assert "must-not-persist-this" not in repr(vars(client))
+
+
+def test_login_mode_cannot_accidentally_run_remote_eligibility_checks(settings):
+    settings.feishu_eligibility_mode = "login"
+    client, api = provider(settings)
+    with pytest.raises(FeishuUnavailable):
+        client.check_eligible(OPEN_ID)
+    assert api.calls == []
+
+
+def test_unknown_eligibility_mode_cannot_create_provider(settings):
+    settings.feishu_eligibility_mode = "fallback"
+    with pytest.raises(FeishuUnavailable):
+        provider(settings)
+
+
+@pytest.mark.parametrize("mode", ["continuous", "login"])
+def test_invalid_open_id_from_user_info_is_rejected(settings, mode):
+    settings.feishu_eligibility_mode = mode
+    client, api = provider(settings)
+    api.override["/open-apis/authen/v1/user_info"] = lambda request: httpx.Response(200, json={
+        "code": 0, "data": {"open_id": "", "tenant_key": "tenant-1", "name": "Test"}})
+    with pytest.raises(FeishuUnavailable):
+        client.exchange("code", "v" * 43)
+    assert len(api.calls) == 2
+
+
+@pytest.mark.parametrize("mode", ["continuous", "login"])
+def test_foreign_tenant_never_uses_tenant_credentials(settings, mode):
+    settings.feishu_eligibility_mode = mode
     client, api = provider(settings)
     api.identity_tenant = "another-tenant"
     with pytest.raises(FeishuDenied):
@@ -203,15 +255,18 @@ def test_malformed_or_insufficient_tenant_token_is_unavailable(settings, payload
         client.check_eligible(OPEN_ID)
 
 
+@pytest.mark.parametrize("mode", ["continuous", "login"])
 @pytest.mark.parametrize("code", [20003, 20004, 20008, 20010, 20049, 20065, 20066])
-def test_rejected_authorization_code_is_denied_without_leaking_error(settings, code):
+def test_rejected_authorization_code_is_denied_without_leaking_error_or_fallback(settings, mode, code):
+    settings.feishu_eligibility_mode = mode
     client, api = provider(settings)
-    api.override["/oauth/v3/token"] = lambda request: httpx.Response(400, json={
+    api.override["/open-apis/authen/v2/oauth/token"] = lambda request: httpx.Response(400, json={
         "code": code, "error_description": "sensitive upstream echo test-app-secret valid-code"})
     with pytest.raises(FeishuDenied) as caught:
         client.exchange("valid-code", "v" * 43)
     assert "test-app-secret" not in str(caught.value)
     assert caught.value.__suppress_context__
+    assert [request.url.path for request in api.calls] == ["/open-apis/authen/v2/oauth/token"]
 
 
 @pytest.mark.parametrize("kind", ["redirect", "timeout", "server", "json", "oversize", "duplicate"])
@@ -236,6 +291,7 @@ def test_upstream_failure_is_sanitized_and_redirects_are_not_followed(settings, 
         client.exchange("code", "v" * 43)
     assert "test-app-secret" not in str(caught.value)
     assert len(requests) == 1
+    assert requests[0].url.path == "/open-apis/authen/v2/oauth/token"
     assert requests[0].extensions["timeout"]["read"] <= 10
 
 

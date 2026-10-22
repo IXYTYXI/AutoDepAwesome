@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from awesome_deploy.config import Settings
+from awesome_deploy.errors import DeployError
 
 
 class FakeProvider:
@@ -30,12 +31,15 @@ class FakeProvider:
         pass
 
 
-@pytest.fixture
-def web(tmp_path):
+@pytest.fixture(params=["continuous", "login"])
+def web(tmp_path, request):
     from awesome_deploy.api import create_app
     settings = Settings(state_dir=tmp_path, public_url="https://testserver", auth_mode="feishu",
-                        feishu_app_id="cli_test", feishu_tenant_key="tenant", feishu_app_secret_file=tmp_path / "key")
+                        feishu_app_id="cli_test", feishu_tenant_key="tenant", feishu_app_secret_file=tmp_path / "key",
+                        feishu_eligibility_mode=request.param)
     provider = FakeProvider()
+    if request.param == "login":
+        provider.check_eligible = lambda open_id: pytest.fail("login mode must not poll Feishu")
     app = create_app(settings, identity_provider=provider)
     with TestClient(app, base_url="https://testserver", follow_redirects=False) as client:
         yield client, app, provider
@@ -106,6 +110,24 @@ def test_cross_tenant_callback_denied(web):
     state = parse_qs(urlsplit(start.headers["location"]).query)["state"][0]
     result = client.get("/auth/feishu/callback", params={"state": state, "code": "x"})
     assert result.headers["location"] == "/login?error=denied"
+    assert client.get("/auth/session").status_code == 401
+
+
+def test_worker_forced_checks_keep_local_membership_and_user_revocation(web):
+    client, app, provider = web
+    alice = login(client)
+    body = {"repository": "https://github.com/org/repo.git", "ref": "main", "subdomain": "demo"}
+    job = client.post("/api/v1/deployments", json=body, headers=write_headers(alice)).json()
+    with app.state.identity.connection(write=True) as db:
+        db.execute("UPDATE auth_users SET checked_at=checked_at-301")
+    assert app.state.access.authorize_operation("job", job["id"], force=True)["id"] == alice["userId"]
+    assert client.get("/auth/session").status_code == 200
+    with app.state.identity.connection(write=True) as db:
+        db.execute("UPDATE app_members SET enabled=0 WHERE app_id=?", (job["appId"],))
+    with pytest.raises(DeployError) as error:
+        app.state.access.authorize_operation("job", job["id"], force=True)
+    assert error.value.code == "ACCESS_DENIED"
+    app.state.identity.set_user(alice["userId"], enabled=False)
     assert client.get("/auth/session").status_code == 401
 
 

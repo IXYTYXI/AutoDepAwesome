@@ -30,11 +30,19 @@ def config(tmp_path):
     {"auth_mode": "mixed"}, {"auth_mode": "basic"}, {"feishu_app_id": ""}, {"feishu_tenant_key": ""},
     {"feishu_app_secret_file": None}, {"public_url": "http://127.0.0.1:8088"},
     {"public_url": "https://console.example.com/path"}, {"public_url": "https://console.example.com?x=y"},
+    {"feishu_eligibility_mode": "fallback"}, {"feishu_eligibility_mode": None},
+    {"feishu_eligibility_mode": True}, {"feishu_eligibility_mode": []},
 ])
 def test_incomplete_or_ambiguous_login_config_is_rejected(config, patch):
     config.write_text(json.dumps({**json.loads(config.read_text()), **patch}))
     with pytest.raises(DeployError):
         load_settings(config)
+
+
+def test_eligibility_mode_defaults_to_continuous_and_login_is_explicit(config):
+    assert load_settings(config).feishu_eligibility_mode == "continuous"
+    config.write_text(json.dumps({**json.loads(config.read_text()), "feishu_eligibility_mode": "login"}))
+    assert load_settings(config).feishu_eligibility_mode == "login"
 
 
 def test_cli_user_grant_and_revoke_invalidates_sessions(config, capsys):

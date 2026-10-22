@@ -4,13 +4,22 @@
 
 本指南覆盖平台登录及应用访问控制。B 阶段的应用秘密静态加密与旧数据迁移另见 [密钥库运维指南](../docs/vault-operations.md)；审批、业务应用自己的飞书单点登录及 Skill 配对登录仍是后续工作。自动化测试使用模拟飞书响应，不能代替真实租户、授权回调和撤权验收。
 
+`feishu_eligibility_mode` 明确选择身份核验范围，只接受以下两个值；省略时仍为 `continuous`，未知值拒绝启动，权限不足或接口故障不会自动切换模式。
+
+| 模式 | 登录与后续核验 |
+| --- | --- |
+| `login` | 基础飞书登录。通过 OAuth 换码及 `user_info` 核验租户、Open ID；保留 state、浏览器绑定、S256 PKCE、平台会话、CSRF 和本地成员权限。不申请下表三项应用身份权限，不查询员工状态或应用可用名单；登录后暂不主动跟踪飞书账号停用及可用范围变化。 |
+| `continuous` | 既有持续核验模式。登录时查询员工状态与应用可用范围，浏览器资格缓存最多 5 分钟，worker 关键阶段强制远端复核；需要下表对应应用身份权限。 |
+
+两种模式均不保存飞书用户 access/refresh token。`login` 模式下，API 与 worker 仍检查本地账号 enabled/eligible、授权版本、部署能力和应用成员权限；平台本地停用及成员撤权继续生效。平台会话仍受 30 分钟空闲和 8 小时绝对期限约束；只完成一次基础登录不代表持续确认飞书账号状态。
+
 **当前版本需要 OAuth 登录重定向，不需要事件订阅或卡片回调。** 下文的 `/auth/feishu/callback` 是浏览器登录返回的 GET 接口，不是飞书服务器推送事件的请求地址。不要将它填入后台“事件与回调”的事件配置或回调配置。
 
 ## 1. 准备平台专用飞书应用
 
 在组织的飞书开发者后台使用一个受管理员管理的企业自建应用，并完成发布、启用及应用可用范围配置。记录它的 App ID 和预期企业 `tenant_key`，不要按员工邮箱或姓名推断企业身份。
 
-为应用身份开通以下最小权限：
+仅 `continuous` 模式为应用身份开通以下权限；`login` 模式无需为基础登录申请这些权限：
 
 | 权限 | 用途 |
 | --- | --- |
@@ -18,9 +27,9 @@
 | `contact:user.employee:readonly` | 获取激活、冻结、离职、退出、未加入状态 |
 | `application:application:self_manage` | 查询本应用的可用、禁用名单 |
 
-通讯录数据范围应覆盖允许登录的员工。应用可用范围与通讯录数据范围是不同设置；平台分别检查两者，不能用“查得到员工”替代“员工可以使用应用”。状态缺失、权限不足和上游失败不会被视作允许登录。只做登录不需要申请 `offline_access`、邮箱或手机号权限。
+`continuous` 模式的通讯录数据范围应覆盖允许登录的员工。应用可用范围与通讯录数据范围是不同设置；持续模式分别检查两者，不能用“查得到员工”替代“员工可以使用应用”。状态缺失、权限不足和上游失败不会被视作允许登录。`login` 模式只使用授权码和 `user_info` 返回的基础身份，接口失败、错误租户或无效 Open ID 仍拒绝登录。两种模式均不需要申请 `offline_access`、邮箱或手机号权限。
 
-OAuth v3 客户端认证必须允许 `client_secret_post`：服务端以表单发送客户端凭证，不支持该方式时飞书会返回 `20140`。代码使用 S256 PKCE，必须保留校验并完成真实回调验收，不能为绕过配置错误而降级。
+用户授权码固定通过 `https://open.feishu.cn/open-apis/authen/v2/oauth/token` 换码，以 JSON 发送客户端凭证、原回调地址及 `code_verifier`，请求类型为 `application/json; charset=utf-8`。仅 `continuous` 模式获取应用 token 时继续使用 OAuth v3 和表单请求；该应用客户端认证必须允许 `client_secret_post`，不支持时飞书会返回 `20140`。代码保留 S256 PKCE，不会在端点之间自动回退。
 
 在应用安全设置中登记完整回调地址。下文的 `deploy.example.com` 是示例域名，必须替换为自身部署的 `public_url` 主机，示例配置不可直接用于实际接入：
 
@@ -36,8 +45,8 @@ https://deploy.example.com/auth/feishu/callback
 | --- | --- |
 | 应用类型、版本和状态 | 使用平台专用企业自建应用，确认所属企业、已发布版本和启用状态。 |
 | 凭证与基础信息 | 确认 App ID；App Secret 通过下节安全方式安装到服务器。预期 `tenant_key` 由受信任的企业管理员或已核验的企业安装信息确认。 |
-| 权限管理 | 开通上表三项**应用身份**权限，并完成必要的审批和发布；不为纯登录额外申请用户邮箱、手机号或 `offline_access`。 |
-| 通讯录数据范围 | 覆盖允许登录的管理员和员工。 |
+| 权限管理 | `login` 无需上表三项权限；`continuous` 开通对应**应用身份**权限并完成必要的审批和发布。不额外申请邮箱、手机号或 `offline_access`。 |
+| 通讯录数据范围 | 仅 `continuous` 查询员工时需要覆盖允许登录的管理员和员工。 |
 | 应用可用范围 | 包含允许使用平台的人，首次验收优先限定为指定管理员和专用测试成员；与通讯录数据范围分别核对。 |
 | 开发配置 → 安全设置 → 重定向 URL | 登记完整的 `https://deploy.example.com/auth/feishu/callback`。这是 OAuth 配置位置。 |
 | OAuth 客户端认证方式 | 确认支持代码使用的 `client_secret_post`，按后台实际呈现的认证设置核对；不要只因填写了 App Secret 就假定该方式已允许。 |
@@ -53,7 +62,7 @@ https://deploy.example.com/auth/feishu/callback
 | 事件订阅 | 飞书服务器经 Webhook POST 或 SDK 长连接推送异步事件。Webhook 地址需完成 challenge 验证并校验请求来源。 | 未实现事件接收路由、challenge 应答、事件签名/解密与去重处理，也未运行长连接或 CLI 事件消费者。 |
 | 卡片等交互回调 | 用户操作卡片后，飞书经回调订阅通道把交互交给服务端并等待同步响应。 | 未实现卡片操作、审批交互或链接预览回调。没有可供后台填写的卡片回调接口。 |
 
-平台目前通过服务端主动查询员工状态和应用可用范围来核验资格，浏览器资格缓存最长 5 分钟，worker 关键阶段强制复核。尚无员工变更事件驱动的即时失效、用户撤回 OAuth 同意的事件处理、审批卡片或消息事件集成。新增这些能力时，须先实现对应接收与安全处理，再配置订阅；不要提前编造 `/events`、`/webhook` 等地址。平台已有的部署记录 `events` API 只读取内部部署事件，也不是飞书接收端。
+`continuous` 模式通过服务端主动查询员工状态和应用可用范围来核验资格，浏览器资格缓存最长 5 分钟，worker 关键阶段强制复核。`login` 模式的后续检查仅核验本地权限，不进行远端轮询。两种模式均无员工变更事件驱动的即时失效、用户撤回 OAuth 同意的事件处理、审批卡片或消息事件集成。新增这些能力时，须先实现对应接收与安全处理，再配置订阅；不要提前编造 `/events`、`/webhook` 等地址。平台已有的部署记录 `events` API 只读取内部部署事件，也不是飞书接收端。
 
 上述区分依据官方[获取授权码](https://open.feishu.cn/document/authentication-management/access-token/obtain-oauth-code)、[事件发送至开发者服务器](https://open.feishu.cn/document/event-subscription-guide/event-subscriptions/event-subscription-configure-/choose-a-subscription-mode/send-notifications-to-developers-server)、[长连接接收事件](https://open.feishu.cn/document/server-docs/event-subscription-guide/event-subscription-configure-/request-url-configuration-case)与[回调概述](https://open.feishu.cn/document/event-subscription-guide/callback-subscription/callback-overview)。事件 Encrypt Key 与 B 阶段密钥库的独立 KEK 用途不同；不接收飞书事件不代表可以省略密钥库的 KEK。
 
@@ -92,12 +101,15 @@ PY
 ```json
 {
   "auth_mode": "feishu",
+  "feishu_eligibility_mode": "login",
   "public_url": "https://deploy.example.com",
   "feishu_app_id": "cli_REPLACE",
   "feishu_tenant_key": "REPLACE_TENANT_KEY",
   "feishu_app_secret_file": "/var/lib/awesome-deploy/feishu-app-secret"
 }
 ```
+
+上面显式选择基础登录模式；需要持续员工及应用可用范围核验时，先完成对应权限与验收，再显式设置为 `continuous`。`ops/config.example.json` 保留 `continuous` 默认值，不能仅因省略此字段而认为已选择基础模式。
 
 API 和 worker 使用同一份配置及状态数据库。变更生效需要按既有流程重启两个平台服务。管理 API 继续仅监听 loopback，由 HTTPS 入口反向代理。飞书模式不接受 HTTP Basic 作为备用网页入口；应急管理员操作走受控服务器 CLI。不要为了处理飞书暂时故障将公网入口切回共用 Basic 密码。
 
@@ -154,11 +166,11 @@ location = /auth/feishu/callback {
   --user-id LOCAL_USER_ID --can-deploy false
 ```
 
-用户权限变更会撤销其现有平台会话。飞书成员状态及应用可用范围也会复核；平台本地停用可用于立即撤权。撤权不等于停止已经上线的业务应用，业务停服需要单独执行受控操作。
+用户权限变更会撤销其现有平台会话。`continuous` 模式还会复核飞书成员状态及应用可用范围；`login` 模式暂不做此项远端复核。两种模式都可用平台本地停用立即撤权。撤权不等于停止已经上线的业务应用，业务停服需要单独执行受控操作。
 
-浏览器的飞书资格缓存最长 5 分钟，过期核验失败会拒绝请求；worker 在停止旧版、启动和发布等关键阶段强制重新核验。应用成员变更采用保守的整应用授权版本：包括添加成员在内的变更都会使该应用尚未提交成功的旧部署授权失效，需要重新提交。已经写入下线破坏意图的操作仍由系统按原固定范围完成安全清理。
+`continuous` 模式的飞书资格缓存最长 5 分钟，过期核验失败会拒绝请求；worker 在停止旧版、启动和发布等关键阶段强制重新核验。`login` 模式在相同路径保留本地权限检查。两种模式的应用成员变更都采用保守的整应用授权版本：包括添加成员在内的变更都会使该应用尚未提交成功的旧部署授权失效，需要重新提交。已经写入下线破坏意图的操作仍由系统按原固定范围完成安全清理。
 
-员工单独撤回飞书 OAuth 同意，不一定改变员工状态或应用可用范围。当前服务不保存用户 token，也未接入用户撤授权事件，不能承诺该动作会立即撤销平台会话。立即撤权使用平台本地停用；飞书资格变动按上述周期复核。
+员工单独撤回飞书 OAuth 同意，不一定改变员工状态或应用可用范围。当前服务不保存用户 token，也未接入用户撤授权事件，不能承诺该动作会立即撤销平台会话。立即撤权使用平台本地停用；飞书资格变动仅在 `continuous` 模式按上述周期复核。
 
 普通成员新建应用只尝试公开仓库读取。私有仓库先由运维配置 `git_askpass`，再由管理员在该应用的成员管理页明确批准其固定仓库使用平台读取凭证；成员看不到凭证值。变更仓库绑定同样使旧排队授权失效。没有历史任务的预置秘密空间也必须由管理员明确绑定，普通成员不能先占用相同仓库和域名前缀来取得它。
 
@@ -175,7 +187,7 @@ location = /auth/feishu/callback {
 
 ## 5. 用 lark-cli 核验平台应用
 
-这部分是可选运维工具，不是 API/worker 的运行依赖。使用能安全读取 App Secret 的受控运维账号和独立 profile，保留现有默认 profile：
+这部分是 `continuous` 模式的可选运维工具，不是 API/worker 的运行依赖；基础 `login` 模式不需要执行员工或名单查询，也不应为此申请权限。使用能安全读取 App Secret 的受控运维账号和独立 profile，保留现有默认 profile：
 
 ```sh
 lark-cli config init --name awesome-deploy --app-id cli_REPLACE \
@@ -202,11 +214,12 @@ lark-cli --profile awesome-deploy api POST \
 
 - 允许的员工能完成完整 HTTPS 回调；不同企业、无应用可用权限的员工被拒绝。
 - 首次登录不是管理员；管理员 CLI 授权后生效；普通员工不能查看或操作其他人的应用、部署记录及秘密配置。
-- 冻结、离职、移出应用可用范围和平台本地停用都能导致访问被拒；飞书接口不可用时不绕过核验。
+- 两种模式都验证平台本地停用、成员撤权继续拒绝访问；`continuous` 另验证冻结、离职及移出应用可用范围后的持续拒绝访问，远端失败不绕过核验。`login` 验证登录后不产生员工或名单查询，并明确不承诺这类飞书状态变化自动撤销平台会话。
 - 重复回调、过期 state、其他浏览器的回调及伪造跨站修改请求被拒绝；退出后原会话失效，全量注销使已有会话和登录尝试失效。
+- 单独生成新的授权码，换码时传入错误的 `code_verifier`，确认返回 `20049` 且不创建平台会话；成功换码与该负向验证必须分别使用新的授权码。
 - 实际检查会话 Cookie 不含 `Domain`，授权回调及故障重试没有把 code、Cookie 或 App Secret 留在各层日志。
 - 分别验证新应用归属、旧应用显式分配 owner、成员权限撤销，以及有排队部署时的权限变更处理。
 
-当前实现选用 OAuth v3 的 `code_verifier` 与 S256。官方授权页文档仍有“PKCE 暂搭配 v2”的旧说明，而 v3 token 文档已明确列出 PKCE 参数及错误码；必须完成真实回调验收，不应为绕过失败而移除 PKCE 或降级校验。
+用户换码使用 v2 是针对实际环境中 v3 返回 `20049` 的兼容处理；真实对照已确认 v2 JSON 请求可以完成换码。官方已将 v2 标记为历史接口，这不代表官方推荐从 v3 回退。官方文档还说明 v2 会容忍“授权阶段未传 challenge、换码时传 verifier”的请求，因此必须确认授权链接含 S256 challenge，并完成上述错误 verifier 的真实负向验收。应用 token 仍使用 v3；任何换码失败都会拒绝登录，不会尝试其他端点或移除 PKCE。
 
-接口依据：[授权码](https://open.feishu.cn/document/authentication-management/access-token/obtain-oauth-code)、[OAuth v3](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/authentication-management/access-token/get-user-access-token-v3)、[应用 token](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/authentication-management/access-token/tenant_access_token)、[员工信息](https://open.feishu.cn/document/server-docs/contact-v3/user/get)、[应用可用范围](https://open.feishu.cn/document/server-docs/application-v6/admin/check_white_black_list)。
+接口依据：[授权码](https://open.feishu.cn/document/authentication-management/access-token/obtain-oauth-code)、[用户 OAuth v2](https://open.feishu.cn/document/authentication-management/access-token/get-user-access-token)、[用户 OAuth v3](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/authentication-management/access-token/get-user-access-token-v3)、[应用 token](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/authentication-management/access-token/tenant_access_token)、[员工信息](https://open.feishu.cn/document/server-docs/contact-v3/user/get)、[应用可用范围](https://open.feishu.cn/document/server-docs/application-v6/admin/check_white_black_list)。

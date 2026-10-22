@@ -36,6 +36,7 @@
   "feishu_app_id": "",
   "feishu_tenant_key": "",
   "feishu_app_secret_file": null,
+  "feishu_eligibility_mode": "continuous",
   "ai_base_url": null,
   "ai_model": "",
   "ai_api_key_file": null,

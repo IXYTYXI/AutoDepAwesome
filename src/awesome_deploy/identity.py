@@ -159,6 +159,8 @@ class IdentityStore:
         if (not user["enabled"] or not user["eligible"]
                 or expected_revision is not None and user["revision"] != expected_revision):
             raise DeployError("ACCESS_DENIED", "用户权限已失效，请重新获取授权。")
+        if self.settings.feishu_eligibility_mode == "login":
+            return user
         age = self.clock() - user["checked_at"]
         if force or not 0 <= age < ELIGIBILITY_TTL:
             try:

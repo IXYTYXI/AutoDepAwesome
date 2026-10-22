@@ -44,6 +44,7 @@ class Settings:
     feishu_app_id: str = ""
     feishu_tenant_key: str = ""
     feishu_app_secret_file: Path | None = None
+    feishu_eligibility_mode: str = "continuous"
     secret_backend: str = "legacy"
     secret_kek_file: Path | None = None
     ai_base_url: str | None = None
@@ -72,6 +73,8 @@ class Settings:
 def validate_identity_settings(settings: Settings) -> None:
     if settings.auth_mode not in {"basic", "feishu"}:
         raise ValueError("authentication mode")
+    if settings.feishu_eligibility_mode not in ("login", "continuous"):
+        raise ValueError("Feishu eligibility mode")
     if settings.auth_mode == "basic":
         if settings.feishu_app_id or settings.feishu_tenant_key or settings.feishu_app_secret_file is not None:
             raise ValueError("Feishu settings require explicit Feishu mode")

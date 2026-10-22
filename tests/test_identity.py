@@ -1,5 +1,6 @@
 import hashlib
 import sqlite3
+from dataclasses import replace
 
 import pytest
 
@@ -111,6 +112,31 @@ def test_unknown_eligibility_fails_closed_without_permanent_disable(identity):
         identity.authorize_user(actor["id"])
     assert error.value.code == "IDENTITY_UNAVAILABLE"
     assert identity.get_user(actor["id"])["enabled"] == 1
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_login_mode_skips_remote_eligibility_after_ttl_and_when_forced(identity, force):
+    identity.settings = replace(identity.settings, feishu_eligibility_mode="login")
+    actor = user(identity)
+    token = identity.create_session(actor["id"])
+    identity.test_now[0] += 301
+    identity.provider.check_eligible = lambda open_id: pytest.fail("login mode must not poll Feishu")
+    assert identity.authorize_user(actor["id"], actor["revision"], force=force)["id"] == actor["id"]
+    assert identity.session(token)["id"] == actor["id"]
+
+
+@pytest.mark.parametrize("field", ["enabled", "eligible", "revision"])
+def test_login_mode_still_rejects_local_revocation(identity, field):
+    identity.settings = replace(identity.settings, feishu_eligibility_mode="login")
+    actor = user(identity)
+    token = identity.create_session(actor["id"])
+    identity.provider.check_eligible = lambda open_id: pytest.fail("login mode must not poll Feishu")
+    with identity.connection(write=True) as db:
+        db.execute(f"UPDATE auth_users SET {field}=? WHERE id=?", (2 if field == "revision" else 0, actor["id"]))
+    with pytest.raises(DeployError) as error:
+        identity.authorize_user(actor["id"], actor["revision"], force=True)
+    assert error.value.code == "ACCESS_DENIED"
+    assert identity.session(token) is None
 
 
 def test_logout_and_revoke_all(identity):

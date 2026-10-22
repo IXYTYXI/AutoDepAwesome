@@ -1,8 +1,9 @@
 """Server-side Feishu OAuth and eligibility checks; no CLI user session is reused.
 
-Endpoints follow the official OAuth v3, authen v1, contact v3 and application
-v6 contracts. A fresh platform session must be created by the caller only after
-``exchange`` succeeds. User access/refresh tokens are never retained here.
+Login mode uses OAuth v2 and authen v1 only; continuous mode additionally uses
+OAuth v3 for app tokens, contact v3 and application v6. A fresh platform session
+must be created only after ``exchange`` succeeds. User access/refresh tokens are
+never retained here.
 """
 
 import json
@@ -17,7 +18,8 @@ import httpx
 
 
 AUTHORIZE_URL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
-TOKEN_URL = "https://accounts.feishu.cn/oauth/v3/token"
+USER_TOKEN_URL = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
+TENANT_TOKEN_URL = "https://accounts.feishu.cn/oauth/v3/token"
 API_ORIGIN = "https://open.feishu.cn"
 APP_SCOPES = (
     "contact:contact.base:readonly", "contact:user.employee:readonly",
@@ -81,6 +83,8 @@ def _object(value):
 
 class FeishuProvider:
     def __init__(self, settings, *, client: httpx.Client | None = None, clock=time.monotonic):
+        if settings.feishu_eligibility_mode not in ("login", "continuous"):
+            raise FeishuUnavailable() from None
         self.settings = settings
         self._clock = clock
         self._owns_client = client is None
@@ -150,7 +154,7 @@ class FeishuProvider:
             started = self._clock()
             if self._tenant_token_value is not None and started < self._tenant_token_deadline:
                 return self._tenant_token_value
-            body = self._request("POST", TOKEN_URL, data={
+            body = self._request("POST", TENANT_TOKEN_URL, data={
                 "grant_type": "client_credentials", "client_id": self.settings.feishu_app_id,
                 "client_secret": _read_secret(self.settings.feishu_app_secret_file),
                 "scope": " ".join(APP_SCOPES),
@@ -169,7 +173,8 @@ class FeishuProvider:
         if (not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,1024}", code)
                 or not isinstance(verifier, str) or not re.fullmatch(r"[A-Za-z0-9._~-]{43,128}", verifier)):
             raise FeishuDenied() from None
-        token_body = self._request("POST", TOKEN_URL, denied_codes=_DENIED_CODES, data={
+        token_body = self._request("POST", USER_TOKEN_URL, denied_codes=_DENIED_CODES,
+                                  headers={"Content-Type": "application/json; charset=utf-8"}, json={
             "grant_type": "authorization_code", "client_id": self.settings.feishu_app_id,
             "client_secret": _read_secret(self.settings.feishu_app_secret_file),
             "code": code, "redirect_uri": self.callback_url, "code_verifier": verifier,
@@ -187,11 +192,13 @@ class FeishuProvider:
             raise FeishuDenied() from None
         if not isinstance(name, str) or not name or len(name) > 256 or not name.isprintable():
             name = open_id
-        if not self.check_eligible(open_id):
+        if self.settings.feishu_eligibility_mode == "continuous" and not self.check_eligible(open_id):
             raise FeishuDenied() from None
         return {"open_id": open_id, "tenant_key": tenant_key, "name": name}
 
     def check_eligible(self, open_id: str) -> bool:
+        if self.settings.feishu_eligibility_mode != "continuous":
+            raise FeishuUnavailable() from None
         if not isinstance(open_id, str) or OPEN_ID.fullmatch(open_id) is None:
             raise FeishuDenied() from None
         headers = {"Authorization": "Bearer " + self._tenant_token()}
