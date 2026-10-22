@@ -133,8 +133,11 @@ def test_member_self_service_token_creation_and_source_separation(web):
     assert 'token' not in listing[0]
     source = ApiCredentialStore(app.state.store.settings).issue(
         session['userId'], 'source', kind='source', allow_any_app=True)
+    designated_person = ApiCredentialStore(app.state.store.settings).issue(
+        session['userId'], 'designated-person', kind='person', allow_any_app=True)
     assert [row['id'] for row in client.get('/api/v1/api-credentials').json()['items']] == [issued['id']]
     assert client.delete('/api/v1/api-credentials/' + source['id'], headers=csrf).status_code == 403
+    assert client.delete('/api/v1/api-credentials/' + designated_person['id'], headers=csrf).status_code == 403
     new_job = client.post('/api/v1/automation/deployments', json=body(), headers=headers(issued['token']))
     assert new_job.status_code == 202
     app_id = new_job.json()['appId']

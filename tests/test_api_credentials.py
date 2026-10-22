@@ -72,9 +72,12 @@ def test_only_explicit_narrow_scopes_can_be_issued(setup):
 def test_user_can_list_and_revoke_only_own_person_credentials(setup):
     settings, owner, app_id, clock = setup
     service = credentials(settings, clock=clock)
-    own = service.issue(owner['id'], 'my-ci', kind='person', app_id=app_id)
+    own = service.issue(owner['id'], 'my-ci', kind='person', app_id=app_id, self_managed=True)
+    administrator_person = service.issue(owner['id'], 'admin-person', kind='person', app_id=app_id)
     source = service.issue(owner['id'], 'admin-source', kind='source', app_id=app_id)
     assert [item['id'] for item in service.list(owner_user_id=owner['id'])] == [own['id']]
+    with pytest.raises(DeployError):
+        service.revoke(administrator_person['id'], actor=owner)
     with pytest.raises(DeployError):
         service.revoke(source['id'], actor=owner)
     service.revoke(own['id'], actor=owner)

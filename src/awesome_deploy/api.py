@@ -635,7 +635,7 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
         fresh(actor)
         return app.state.api_credentials.issue(
             actor['id'], body.name, kind='person', app_id=body.appId,
-            allow_create=body.allowCreate, allow_any_app=body.allowAnyApp,
+            allow_create=body.allowCreate, allow_any_app=body.allowAnyApp, self_managed=True,
             expires_days=body.days)
 
     @app.delete('/api/v1/api-credentials/{credential_id}')

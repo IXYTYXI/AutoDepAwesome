@@ -39,6 +39,8 @@ class ApiCredentialStore:
         ''')
         if 'allow_any_app' not in {row[1] for row in db.execute('PRAGMA table_info(api_credentials)')}:
             db.execute('ALTER TABLE api_credentials ADD COLUMN allow_any_app INTEGER NOT NULL DEFAULT 0')
+        if 'self_managed' not in {row[1] for row in db.execute('PRAGMA table_info(api_credentials)')}:
+            db.execute('ALTER TABLE api_credentials ADD COLUMN self_managed INTEGER NOT NULL DEFAULT 0')
 
     @contextmanager
     def _connection(self, *, write=False):
@@ -60,11 +62,12 @@ class ApiCredentialStore:
             db.close()
 
     def issue(self, owner_user_id, name, *, kind, app_id=None, allow_create=False,
-              allow_any_app=False, expires_days=30):
+              allow_any_app=False, self_managed=False, expires_days=30):
         if (self.settings.auth_mode != 'feishu' or kind not in {'person', 'source'}
                 or not isinstance(name, str) or not NAME.fullmatch(name)
                 or type(expires_days) is not int or not 1 <= expires_days <= 90
                 or type(allow_create) is not bool or type(allow_any_app) is not bool
+                or type(self_managed) is not bool or self_managed and kind != 'person'
                 or sum((app_id is not None, allow_create, allow_any_app)) != 1
                 or app_id is not None and not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', app_id)):
             raise DeployError('INVALID_API_CREDENTIAL', 'API 凭证名称、范围或有效期无效。')
@@ -81,16 +84,16 @@ class ApiCredentialStore:
             if app_id is not None:
                 AccessStore._require(db, actor, app_id, 'deploy')
             db.execute('''INSERT INTO api_credentials
-                (id,token_hash,owner_user_id,owner_revision,kind,name,app_id,allow_create,allow_any_app,created_at,expires_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+                (id,token_hash,owner_user_id,owner_revision,kind,name,app_id,allow_create,allow_any_app,self_managed,created_at,expires_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (credential_id, hashlib.sha256(token.encode()).hexdigest(), actor['id'], actor['revision'],
-                 kind, name, app_id, int(allow_create or allow_any_app), int(allow_any_app),
+                 kind, name, app_id, int(allow_create or allow_any_app), int(allow_any_app), int(self_managed),
                  now, now + expires_days * 86400))
             db.execute('''INSERT INTO auth_audit(actor_id,action,target_id,result,details,created_at)
                 VALUES (?,'api_credential_issued',?,'success','{}',?)''', (actor['id'], credential_id, now))
         return {'id': credential_id, 'token': token, 'ownerUserId': owner_user_id, 'kind': kind,
                 'name': name, 'appId': app_id, 'allowCreate': bool(allow_create),
-                'allowAnyApp': bool(allow_any_app),
+                'allowAnyApp': bool(allow_any_app), 'selfManaged': bool(self_managed),
                 'expiresAt': now + expires_days * 86400}
 
     def authenticate(self, token):
@@ -127,12 +130,12 @@ class ApiCredentialStore:
 
     def list(self, *, owner_user_id=None):
         with self._connection() as db:
-            query = ("SELECT * FROM api_credentials WHERE owner_user_id=? AND kind='person' "
+            query = ("SELECT * FROM api_credentials WHERE owner_user_id=? AND self_managed=1 "
                      'ORDER BY created_at DESC,id DESC' if owner_user_id is not None else
                      'SELECT * FROM api_credentials ORDER BY created_at DESC,id DESC')
             return [dict(id=row['id'], ownerUserId=row['owner_user_id'], kind=row['kind'], name=row['name'],
                          appId=row['app_id'], allowCreate=bool(row['allow_create'] and not row['allow_any_app']),
-                         allowAnyApp=bool(row['allow_any_app']),
+                         allowAnyApp=bool(row['allow_any_app']), selfManaged=bool(row['self_managed']),
                          createdAt=row['created_at'], expiresAt=row['expires_at'],
                          revokedAt=row['revoked_at'])
                     for row in db.execute(query, (owner_user_id,) if owner_user_id is not None else ())]
@@ -140,13 +143,13 @@ class ApiCredentialStore:
     def revoke(self, credential_id, *, actor=None):
         now = self.clock()
         with self._connection(write=True) as db:
-            row = db.execute('SELECT owner_user_id,kind,revoked_at FROM api_credentials WHERE id=?',
+            row = db.execute('SELECT owner_user_id,self_managed,revoked_at FROM api_credentials WHERE id=?',
                              (credential_id,)).fetchone()
             if row is None:
                 raise DeployError('NOT_FOUND', 'API 凭证不存在。')
             if actor is not None:
                 fresh = AccessStore._actor(db, actor)
-                if fresh['id'] != row['owner_user_id'] or row['kind'] != 'person':
+                if fresh['id'] != row['owner_user_id'] or not row['self_managed']:
                     raise denied()
             if row['revoked_at'] is None:
                 db.execute('UPDATE api_credentials SET revoked_at=? WHERE id=?', (now, credential_id))
