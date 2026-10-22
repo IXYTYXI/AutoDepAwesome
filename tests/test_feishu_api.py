@@ -54,10 +54,21 @@ def login(client):
     return client.get("/auth/session").json()
 
 
+def test_api_access_login_returns_to_requested_page(web):
+    client, _, _ = web
+    start = client.get("/auth/feishu/start", params={"return": "/api-access"})
+    query = parse_qs(urlsplit(start.headers["location"]).query)
+    result = client.get("/auth/feishu/callback", params={"state": query["state"][0], "code": "test-code"})
+    assert result.status_code == 303
+    assert result.headers["location"] == "/api-access"
+    assert client.get("/api-access").status_code == 200
+
+
 def test_login_session_headers_and_basic_cannot_bypass(web):
     client, app, provider = web
     assert client.get("/").status_code == 303
-    assert client.get("/document").headers["location"] == "/login?error=session"
+    assert client.get("/document").headers["location"] == "/login?error=session&return=%2Fdocument"
+    assert client.get("/api-access").headers["location"] == "/login?error=session&return=%2Fapi-access"
     assert client.get("/document/deployment-guide.txt").status_code == 401
     assert client.get("/login").status_code == 200
     assert client.get("/api/v1/apps", auth=("operator", "password")).status_code == 401

@@ -14,6 +14,10 @@
   if(Object.prototype.hasOwnProperty.call(errors,code)){error.textContent=errors[code];error.hidden=false;}
   const button=document.getElementById('feishu-login');
   const label=document.getElementById('feishu-login-label');
+  const returnPath=new URLSearchParams(window.location.search).get('return');
+  if(['/manage','/members','/document','/api-access'].includes(returnPath)){
+    button.href='/auth/feishu/start?return='+encodeURIComponent(returnPath);
+  }
   let leaving=false;
   button.addEventListener('click',event=>{
     if(event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)return;

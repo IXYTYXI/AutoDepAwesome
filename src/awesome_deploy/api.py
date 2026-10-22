@@ -9,7 +9,7 @@ import re
 import time
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -262,8 +262,14 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request, error):
-        if identity and error.status_code == 401 and request.url.path in {"/", "/manage", "/members", "/document"}:
-            return RedirectResponse("/login?error=session", status_code=303)
+        if identity and error.status_code == 401 and request.url.path in {
+            "/", "/manage", "/members", "/document", "/api-access"
+        }:
+            return_path = request.url.path
+            login_url = "/login?error=session"
+            if return_path != "/":
+                login_url += "&return=" + quote(return_path, safe="")
+            return RedirectResponse(login_url, status_code=303)
         return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=error.headers)
 
     @app.get("/login")

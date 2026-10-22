@@ -98,6 +98,13 @@ test('login errors are an allowlist and never reflect query input',()=>{
   assert.equal(denied.get('login-error').hidden,false);assert.match(denied.get('login-error').textContent,/联系管理员/);
 });
 
+test('login returns to an allowed page after authentication and ignores external destinations',()=>{
+  const page=harness({script:'login.js',search:'?error=session&return=%2Fapi-access'});
+  assert.equal(page.get('feishu-login').href,'/auth/feishu/start?return=%2Fapi-access');
+  const external=harness({script:'login.js',search:'?return=https%3A%2F%2Fevil.example'});
+  assert.equal(external.get('feishu-login').href,undefined);
+});
+
 test('login navigation has loading feedback, blocks duplicate clicks, and resets on back navigation',()=>{
   const h=harness({script:'login.js'});let prevented=0;
   const event={button:0,preventDefault(){prevented++;}};
