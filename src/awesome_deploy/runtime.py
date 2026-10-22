@@ -937,7 +937,9 @@ class DeploymentBackend:
                 generation = (volumes.get(name) or {}).get("generation", "new")
                 volumes[name] = storage.ensure(job["app_id"], name, service["storage"], volumes.get(name),
                                                operation_id=f"ensure:{job['id']}:{name}:{generation}")
-                checkpoint({"storage_volumes": dict(volumes)})
+                persisted = {key: storage.migrations.persisted_reference(
+                    job['app_id'], key, services[key]['storage'], value) for key, value in volumes.items()}
+                checkpoint({"storage_volumes": persisted})
                 job["execution"]["storage_volumes"] = dict(volumes)
 
     @contextmanager
@@ -1041,6 +1043,8 @@ class DeploymentBackend:
             VaultRuntime(self.settings).validate(job)
 
     def start(self, job, checkpoint):
+        from .storage_migration import resolve_job
+        job = resolve_job(self.settings, job)
         self._validate_runtime_secrets(job)
         validate_policy(job)
         try:
@@ -1130,6 +1134,8 @@ class DeploymentBackend:
             return "unknown-boot"  # Periodic checks still work if the boot identifier is unavailable.
 
     def recover_active(self, job, checkpoint):
+        from .storage_migration import resolve_job
+        job = resolve_job(self.settings, job)
         self._validate_runtime_secrets(job)
         validate_policy(job)
         try:
@@ -1273,6 +1279,8 @@ class DeploymentBackend:
         return {"restarted": restarted}
 
     def _stop_owned_containers(self, job, *, require_existing):
+        from .storage_migration import resolve_job
+        job = resolve_job(self.settings, job)
         """Stop by inspected ID, then confirm exit before another release may use its data."""
         self._ids(job)
         services = job["snapshot"]["manifest"]["services"]
@@ -1322,14 +1330,44 @@ class DeploymentBackend:
                 ManagedStorage(self._docker, self.settings).retire(row["Id"])
 
     def stop_for_storage_handoff(self, previous):
+        from .storage_migration import resolve_job
+        previous = resolve_job(self.settings, previous)
         if previous.get("status") != "succeeded" or previous["execution"].get("resources_released"):
             raise DeployError("STORAGE_HANDOFF_STATE", "Only the existing active release can hand off storage")
         self._runtime_preflight()
         self._stop_owned_containers(previous, require_existing=True)
 
     def quiesce_storage_candidate(self, candidate):
+        from .storage_migration import resolve_job
+        candidate = resolve_job(self.settings, candidate)
         self._runtime_preflight()
         self._stop_owned_containers(candidate, require_existing=False)
+
+    def _runtime_resources(self, job):
+        """Apply today's application cap to a copy of historical declarations."""
+        services = job['snapshot']['manifest']['services']
+        result = {name: dict(service['resources']) for name, service in services.items()}
+        memory = {name: limits['memoryMiB'] for name, limits in result.items()}
+        budget = self.settings.max_app_memory_mib
+        minimum = 6  # Docker's minimum legal hard limit; this is not a reservation.
+        if (type(budget) is not int or budget < minimum * len(memory)
+                or any(type(amount) is not int or amount < minimum for amount in memory.values())):
+            raise DeployError('RESOURCE_QUOTA', 'Application memory budget cannot provide Docker\'s minimum 6 MiB hard limit per service')
+        total = sum(memory.values())
+        if total <= budget:
+            return result
+        assigned = {name: max(minimum, amount * budget // total) for name, amount in memory.items()}
+        # Docker's legal minimum can over-allocate very small proportional shares.
+        while sum(assigned.values()) > budget:
+            donor = min((name for name in assigned if assigned[name] > minimum), key=lambda name: (-assigned[name], name))
+            assigned[donor] -= 1
+        remainder = budget - sum(assigned.values())
+        order = sorted(memory, key=lambda name: (-(memory[name] * budget % total), name))
+        for name in order[:remainder]:
+            assigned[name] += 1
+        for name, amount in assigned.items():
+            result[name]['memoryMiB'] = amount
+        return result
 
     def _create_container(self, job, name, service, image, networks):
         environment = dict(service.get("env") or {})
@@ -1358,7 +1396,7 @@ class DeploymentBackend:
                     "UNSUPPORTED_ENVIRONMENT", "Environment values must be single-line strings in phase one"
                 )
         with EnvironmentFiles(self.settings).create(job["id"], environment) as env_path:
-            limits = service["resources"]
+            limits = self._runtime_resources(job)[name]
             args = [
                 "container",
                 "create",
@@ -1557,6 +1595,8 @@ class DeploymentBackend:
         return result
 
     def cleanup(self, job):
+        from .storage_migration import resolve_job
+        job = resolve_job(self.settings, job)
         # Filter is convenience only. Independently inspect ownership before every removal.
         self._ids(job, require_app=False)
         forwards = job.get("execution", {}).get("port_forwards", {})

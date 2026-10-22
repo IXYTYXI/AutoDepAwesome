@@ -15,6 +15,8 @@ from .errors import DeployError
 class ManagedStorage:
     def __init__(self, docker, settings=None, *, quota=None):
         self.docker = docker
+        from .storage_migration import StorageMigrations
+        self.migrations = StorageMigrations(settings)
         self.backend = getattr(settings, "storage_backend", "local")
         self.quota = quota or QuotaClient(getattr(settings, "storage_command", (
             "sudo", "-n", "/usr/local/libexec/awesome-storage")))
@@ -54,6 +56,7 @@ class ManagedStorage:
             raise DeployError("QUOTA_BACKEND_REQUIRED", "Hard-quota storage requires the XFS backend")
 
     def inspect(self, app_id, service, spec, expected, *, timeout=120):
+        expected = self.migrations.resolve(app_id, service, spec, expected)
         self._quota_required(spec, expected)
         self.validate_reference(app_id, service, spec, expected)
         return self._record(app_id, service, spec,
@@ -62,6 +65,7 @@ class ManagedStorage:
     def mount_argument(self, job, service, *, timeout=120):
         spec = job["snapshot"]["manifest"]["services"][service]["storage"]
         expected = job["execution"].get("storage_volumes", {}).get(service)
+        expected = self.migrations.resolve(job['app_id'], service, spec, expected)
         self._quota_required(spec, expected)
         if self.is_quota(expected):
             record = self.inspect(job["app_id"], service, spec, expected, timeout=timeout)
@@ -74,6 +78,9 @@ class ManagedStorage:
     @contextmanager
     def guard(self, job, service, row, *, timeout=120):
         expected = job["execution"].get("storage_volumes", {}).get(service)
+        spec = job['snapshot']['manifest']['services'][service].get('storage')
+        if spec:
+            expected = self.migrations.resolve(job['app_id'], service, spec, expected)
         if not self.is_quota(expected):
             yield None
             return
@@ -87,6 +94,8 @@ class ManagedStorage:
                 raise DeployError("QUOTA_PROTOCOL", "Storage guard did not return its record")
             record = self._record(job["app_id"], service, spec, records[0], expected)
             self._validate_quota_mount(row, record["path"])
+            # Commit intent before any Docker start, including an uncertain start.
+            self.migrations.mark_writes_started(expected)
             yield session
 
     def retire(self, container_id, *, session=None):
@@ -129,6 +138,7 @@ class ManagedStorage:
 
     def ensure(self, app_id, service, spec, expected=None, *, create=True, timeout=120, operation_id=None):
         name, labels = self.identity(app_id, service, spec)
+        expected = self.migrations.resolve(app_id, service, spec, expected)
         self._quota_required(spec, expected)
         if self.backend == "xfs-project":
             if expected is not None:
@@ -296,6 +306,8 @@ class ManagedStorage:
     def validate_mounts(self, job, service, row, *, timeout=120, readiness=True):
         spec = job["snapshot"]["manifest"]["services"][service].get("storage")
         expected = job["execution"].get("storage_volumes", {}).get(service)
+        if spec:
+            expected = self.migrations.resolve(job['app_id'], service, spec, expected)
         if self.is_quota(expected):
             self.validate_reference(job["app_id"], service, spec, expected)
             path = self.inspect(job["app_id"], service, spec, expected, timeout=timeout)["path"] if readiness else None

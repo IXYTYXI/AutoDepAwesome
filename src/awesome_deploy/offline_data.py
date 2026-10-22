@@ -37,7 +37,8 @@ class OfflineDataDeletion:
     def _metadata(self, metadata):
         if (
             not isinstance(metadata, dict)
-            or set(metadata) != {"app_id", "job_ids", "scopes", "volumes"}
+            or not {"app_id", "job_ids", "scopes", "volumes"}.issubset(metadata)
+            or set(metadata) - {"app_id", "job_ids", "scopes", "volumes", "migration_sources"}
             or not isinstance(metadata["job_ids"], list)
             or not all(isinstance(value, str) and value for value in metadata["job_ids"])
             or not isinstance(metadata["volumes"], list)
@@ -45,13 +46,33 @@ class OfflineDataDeletion:
                    for volume in metadata["volumes"])
         ):
             raise DeployError("OFFLINE_DATA_CONFLICT", "Invalid data deletion metadata")
+        sources = metadata.get('migration_sources', [])
+        from .storage_migration import StorageMigrations
+        recorded = StorageMigrations(self.settings).retained_sources(metadata['app_id'], include_removed=True)
+        if (not isinstance(sources, list) or len({json.dumps(item, sort_keys=True) for item in sources}) != len(sources)
+                or any(item not in recorded or not any(
+                    volume['service'] == item['service'] and volume['spec'] == item['spec']
+                    and volume['expected'] == item['target'] for volume in metadata['volumes']) for item in sources)):
+            raise DeployError('OFFLINE_DATA_CONFLICT', 'Retained migration sources do not match their durable transition')
         return self._scopes(metadata["scopes"])
+
+    @staticmethod
+    def _volumes(metadata):
+        return metadata['volumes'] + [{key: item[key] for key in ('service', 'spec', 'expected')}
+                                      for item in metadata.get('migration_sources', [])]
+
+    def _source_removed(self, metadata):
+        from .storage_migration import StorageMigrations
+        migrations = StorageMigrations(self.settings)
+        for item in metadata.get('migration_sources', []):
+            migrations.source_removed(item['operation_id'], item['expected'])
 
     def _check_volumes(self, metadata, *, unused):
         app_id = metadata["app_id"]
         if not isinstance(app_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", app_id):
             raise DeployError("OFFLINE_DATA_CONFLICT", "Invalid application data identity")
         expected_names = set()
+        legacy_names = {item['expected']['name'] for item in metadata.get('migration_sources', [])}
         for volume in metadata["volumes"]:
             expected = volume["expected"]
             name, _ = self.storage.identity(app_id, volume["service"], volume["spec"])
@@ -77,6 +98,7 @@ class OfflineDataDeletion:
             ):
                 raise DeployError("STORAGE_IDENTITY", "Invalid recorded volume identity")
             expected_names.add(name)
+            legacy_names.add(name)
             if unused:
                 self.storage.verify_removal(app_id, **volume)
             else:
@@ -88,8 +110,18 @@ class OfflineDataDeletion:
         found = self.docker([
             "volume", "ls", "--filter", f"label=awesome.app={app_id}", "--format", "{{.Name}}",
         ], timeout=120).split()
-        if set(found) - expected_names:
+        if set(found) - legacy_names:
             raise DeployError("OFFLINE_DATA_CONFLICT", "Unrecorded application volumes require review")
+        for source in metadata.get('migration_sources', []):
+            volume = {key: source[key] for key in ('service', 'spec', 'expected')}
+            if unused:
+                self.storage.verify_removal(app_id, **volume)
+            else:
+                try:
+                    self.storage.verify_legacy(app_id, **volume)
+                except DeployError as error:
+                    if error.code != 'STORAGE_MISSING':
+                        raise
         if self.storage.backend == "xfs-project":
             inventory = self.storage.quota.call("inventory", app_id=app_id)
             recorded = {volume["expected"]["storage_id"] for volume in metadata["volumes"]
@@ -139,8 +171,9 @@ class OfflineDataDeletion:
         for scope in plan["secrets"]:
             self.secrets.verify_deletion(scope)
         checkpoint({"phase": "offline_delete_data", "data_delete_intent": True})
-        for volume in metadata["volumes"]:
+        for volume in self._volumes(metadata):
             self.storage.remove(metadata["app_id"], **volume)
+        self._source_removed(metadata)
         checkpoint({"volumes_deleted": True, "phase": "offline_delete_secrets"})
         for scope in plan["secrets"]:
             self.secrets.delete_scope(scope)
@@ -201,8 +234,9 @@ class OfflineDataDeletion:
             self._vault_operation(db, metadata, plan)
             vault.verify_deletion(db, plan["vault"])
         checkpoint({"phase": "offline_delete_data", "data_delete_intent": True})
-        for volume in metadata["volumes"]:
+        for volume in self._volumes(metadata):
             self.storage.remove(metadata["app_id"], **volume)
+        self._source_removed(metadata)
         checkpoint({"volumes_deleted": True, "phase": "offline_delete_secrets"})
         with store._connection(write=True) as db:
             _, actor_id = self._vault_operation(db, metadata, plan)

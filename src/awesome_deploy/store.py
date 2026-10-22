@@ -59,6 +59,8 @@ class Store:
             """)
             self._migrate_domain_bindings(db, verified_offline_domains)
             AccessStore.ensure_schema(db)
+            from .storage_migration import StorageMigrations
+            StorageMigrations.ensure_schema(db)
             from .secret_vault import SecretVault
             from .vault_runtime import VaultRuntime
             from .vault_service import VaultService
@@ -529,6 +531,8 @@ class Store:
 
     def _deletion_metadata(self, db, app):
         """Freeze confirmed ownership and recorded volume instances, never inferred paths."""
+        from .storage_migration import StorageMigrations
+        migrations = StorageMigrations(self.settings)
         conflict = DeployError("OFFLINE_DATA_CONFLICT", "Historical application data cannot be safely isolated.")
         jobs = [self._job(row) for row in db.execute("SELECT * FROM jobs ORDER BY created_at,id")]
         jobs = [job for job in jobs if not self._data_cleared(job)]
@@ -564,6 +568,7 @@ class Store:
                     if self._storage_may_exist(job):
                         raise conflict
                     continue
+                expected = migrations.resolve(app['id'], service, spec, expected, db=db)
                 if ManagedStorage.is_quota(expected):
                     try:
                         ManagedStorage(None).validate_reference(app["id"], service, spec, expected)
@@ -606,9 +611,13 @@ class Store:
                 selected.add(job["id"])
         for _, domain in (scopes if self.settings.secret_backend != 'encrypted' else {(None, app['subdomain'])}):
             self._check_offline_gate(db, app["id"], domain)
-        return {"app_id": app["id"], "job_ids": sorted(selected),
+        metadata = {"app_id": app["id"], "job_ids": sorted(selected),
                 "scopes": [{"repository": repository, "subdomain": domain} for repository, domain in sorted(scopes)],
                 "volumes": [volumes[name] for name in sorted(volumes)]}
+        sources = migrations.retained_sources(app['id'], db=db)
+        if sources:
+            metadata['migration_sources'] = sources
+        return metadata
 
     def enqueue_offline(self, app_id, expected_release_id, idempotency_key, *, data_policy="retain",
                         delete_confirmation=None, actor=None):
