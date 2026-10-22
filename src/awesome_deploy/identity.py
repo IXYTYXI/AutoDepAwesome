@@ -211,11 +211,14 @@ class IdentityStore:
         return self.get_user(user_id)
 
     def begin_login(self, return_path="/"):
+        allowed_document = isinstance(return_path, str) and re.fullmatch(
+            r"/document\?doc=(overview|api|protocol|audit)", return_path
+        )
         attempt = {"state": secrets.token_urlsafe(32), "browser": secrets.token_urlsafe(32),
                    "verifier": secrets.token_urlsafe(48),
                    "return_path": return_path if return_path in {
                        "/", "/manage", "/members", "/document", "/api-access"
-                   } else "/"}
+                   } or allowed_document else "/"}
         now = self.clock()
         with self.connection(write=True) as db:
             db.execute("DELETE FROM auth_oauth WHERE expires_at<=?", (now,))

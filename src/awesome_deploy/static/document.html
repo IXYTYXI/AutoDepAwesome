@@ -1,84 +1,57 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>使用手册 · Awesome Deploy</title><link rel="stylesheet" href="/assets/app.css?v=0.9.3"><link rel="stylesheet" href="/assets/auth.css?v=0.9.0"><link rel="stylesheet" href="/assets/document.css?v=0.9.3"><script src="/assets/auth.js?v=0.9.0" defer></script><script src="/assets/document.js?v=0.9.3" defer></script></head><body><a class="skip-link" href="#manual-main">跳到使用手册</a><main id="manual-main">
-  <header class="console-header"><span class="brand"><span class="brand-mark" aria-hidden="true">A</span> AWESOME / DEPLOY</span><nav class="console-nav" aria-label="控制台导航"><a href="/">部署控制台</a><a href="/manage">应用管理</a><a href="/api-access">API 凭证</a><a href="https://guanghe.feishu.cn/docx/Zye7dwbe8oCvjrxLnnicujtnnFe" target="_blank" rel="noopener noreferrer">使用手册 ↗</a></nav><div id="auth-session" class="auth-session" aria-label="当前登录账号" aria-busy="true"><div class="auth-identity"><span id="auth-name" class="auth-name">正在检查登录…</span><span id="auth-role" class="auth-role"></span></div><button id="auth-copy-id" class="secondary auth-logout" type="button" hidden>复制成员 ID</button><span id="auth-copy-status" class="sr-only" role="status" aria-live="polite"></span><button id="auth-logout" class="secondary auth-logout" type="button" hidden>退出登录</button></div></header>
-  <section id="auth-notice" class="auth-notice" aria-label="登录状态提示" hidden><p id="auth-notice-text" role="status" aria-live="polite"></p><div class="auth-notice-actions"><a id="auth-login" href="/login" target="_blank" rel="noopener">在新标签页登录 ↗</a><button id="auth-retry" class="secondary" type="button">重新检查登录</button></div></section>
-
-<section class="manual-intro"><div><h1>使用手册</h1><p>从准备仓库到上线管理。部署前的要求，在这里查清楚。</p></div><a class="manual-link primary" href="/document/deployment-guide.txt" download>下载接入说明 · 给 AI / 开发者</a></section>
-<div class="manual-layout">
-<nav class="manual-toc" aria-label="手册目录"><h2>本页目录</h2><a href="#quickstart">快速上手</a><a href="#limits">资源与支持范围</a><a href="#protocol">部署技术协议</a><a href="#secrets">密码与密钥</a><a href="#lifecycle">更新与下线</a><a href="#faq">常见问题</a><a href="#references">文档与字段规范</a></nav>
-<div class="manual-content">
-<section class="panel manual-section" id="quickstart" aria-labelledby="quickstart-title"><h2 id="quickstart-title">快速上手</h2>
-<ol><li><strong>准备仓库。</strong>把 <code>awesome.yaml</code> 放在仓库根目录；使用源码构建时，同时提交 Dockerfile 和构建所需文件。提交并推送到准备部署的分支。</li><li><strong>填写部署信息。</strong>在<a href="/">部署控制台</a>选择「创建新应用」，填写仓库地址、分支或提交版本、域名前缀。前缀须与清单一致。</li><li><strong>补充应用配置。</strong>如页面提示缺少配置，在页面填写登录密码或供应商 API Key；托管主密钥由平台生成并保存。</li><li><strong>等待实际验证。</strong>提交后可查看排队、构建、健康检查和 HTTPS 发布进度；显示「部署成功」后打开应用。</li><li><strong>后续管理。</strong>在<a href="/manage">应用管理</a>查看状态、管理密钥或下线。更新已有应用时，选择原应用以沿用身份和数据。</li></ol>
-<p class="manual-note">无需额外上传 ZIP「交付包」。平台从 GitHub / GitLab 拉取你已经提交的代码和部署文件。</p></section>
-<section class="panel manual-section" id="limits" aria-labelledby="limits-title"><h2 id="limits-title">资源与支持范围</h2>
-<dl class="manual-limits"><div><dt>每应用持久数据</dt><dd id="manual-storage">读取中…</dd></div><div><dt>每应用运行内存</dt><dd id="manual-memory">读取中…</dd></div><div><dt>平台共享存储池</dt><dd id="manual-pool">读取中…</dd></div></dl>
-<p id="manual-status" class="manual-caption" role="status" aria-live="polite">正在读取当前平台配置…</p><button id="manual-retry" class="secondary" type="button" hidden>重新读取配置</button>
-<p><strong>多个服务按应用合计。</strong>内存按需使用，上述数值是上限，不固定预占。存储写满后会拒绝继续写入，内存超限可能终止服务。共享池不是单个应用可用的空间。</p>
-<p>支持 HTTP Web 服务、网页与 API 路径分流，以及每服务一个 <code>/data</code> 持久存储。新建持久存储使用 <code>schemaVersion: 2</code>，声明容量和文件数量上限。</p>
-<p id="manual-network">运行网络能力正在读取；部署前请确认是否允许调用外部模型 API。</p>
-<p>构建命令默认无法访问网络，依赖需在基础镜像或构建上下文中准备好。平台保留正常构建缓存。</p>
-<p class="manual-caption">暂未提供：审批流、业务后台 worker、独立数据库服务、数据库迁移和自动备份。</p></section>
-<section class="panel manual-section" id="protocol" aria-labelledby="protocol-title"><h2 id="protocol-title">部署技术协议</h2>
-<p class="manual-note"><strong>业务逻辑保持原样。</strong>部署准备可以补充清单、容器封装和镜像引用；不能增加、删除或修改用户的业务逻辑。无法部署时说明原因，不通过改业务功能取得部署成功。</p>
-<div class="manual-table-wrap" tabindex="0" role="region" aria-label="部署文件要求，可横向滚动"><table class="manual-table"><thead><tr><th scope="col">文件 / 配置</th><th scope="col">放在哪里</th><th scope="col">必须满足</th></tr></thead><tbody>
-<tr><td><code>awesome.yaml</code></td><td>仓库根目录</td><td>UTF-8，最多 256 KiB。声明 app、services、routes；表单域名前缀与 app.subdomain 一致。</td></tr>
-<tr><td><code>Dockerfile</code> 与构建文件</td><td>清单 build 指定的位置</td><td>保留原业务行为；构建时不依赖外网。每服务在 build 与 image 中二选一。</td></tr>
-<tr><td>端口与健康检查</td><td>services 中</td><td>监听 0.0.0.0，实际端口一致；检查路径或 exec 命令真实可用。</td></tr>
-<tr><td>持久存储</td><td>services 中的 storage</td><td>挂载点固定 /data；v2 必填 sizeMiB、maxInodes。XFS 新存储从空目录开始。</td></tr>
-<tr><td>密码和密钥</td><td>平台补充配置表单</td><td>Git 里只放 secretRefs 引用名，不提交实际密码、API Key 或主密钥。</td></tr>
-</tbody></table></div>
-<p>运行环境为非 root 用户、只读根文件系统。应用需按原有逻辑把持久文件写到声明的 <code>/data</code>，临时文件写到允许的临时目录。桌面客户端不能直接作为 Web 服务部署。</p>
-<h3>清单结构示例</h3><p class="manual-caption">示例仅演示文件结构，不提供或替换业务实现。Dockerfile、端口、健康路径及资源申请须按实际项目填写；无需持久数据时省略 storage。</p>
-<pre class="manual-example" tabindex="0" aria-label="awesome.yaml 示例，可滚动" translate="no"><code>schemaVersion: 2
-app:
-  name: 示例应用
-  description: HTTP Web 服务
-  subdomain: demo
-services:
-  web:
-    kind: web
-    build:
-      context: .
-      dockerfile: Dockerfile
-    port: 8080
-    resources:
-      cpu: 0.5
-      memoryMiB: 128
-    healthcheck:
-      type: http
-      path: /healthz
-    storage:
-      name: appdata
-      mountPath: /data
-      sizeMiB: 50
-      maxInodes: 10000
-routes:
-  - path: /
-    match: prefix
-    service: web
-    stripPrefix: false</code></pre>
-<div class="manual-actions"><a class="manual-link" href="/document/deployment-guide.txt" download>下载当前接入说明</a><a class="manual-link" href="/api/v1/schema?version=2" target="_blank" rel="noopener">查看 v2 字段规范 ↗</a></div>
-<p class="manual-caption">示例容量不是通用配额承诺，部署前仍须满足上方实时限制。字段校验通过不等于构建、健康检查及上线成功。</p></section>
-<section class="panel manual-section" id="secrets" aria-labelledby="secrets-title"><h2 id="secrets-title">密码与密钥</h2>
-<ul><li><strong>应用登录密码：</strong>由你在部署配置表单中设置。初始用户名由业务应用决定，不是平台统一生成。</li><li><strong>外部 API Key：</strong>填写模型或服务供应商给出的真实值，随机字符串无法代替。</li><li><strong>托管 MASTER_KEY：</strong>平台识别后自动生成、加密保存并复用，不要求你先生成、写进 Git 或勾选「已保存」。其他名称的密钥不能一概视为自动托管。</li></ul>
-<p>已保存的密钥不在页面回显。应用管理中可查看名称、版本和状态，并对普通运行密钥进行轮换或吊销；主密钥不支持普通轮换。平台内吊销不会替你撤销外部供应商的凭据。</p>
-<p class="manual-note">控制台使用飞书登录，业务应用仍按自身的登录逻辑运行。两者的账号和密码不是一回事。</p></section>
-<section class="panel manual-section" id="lifecycle" aria-labelledby="lifecycle-title"><h2 id="lifecycle-title">更新与下线</h2>
-<p>更新、下线后重新部署时，选择原应用。保留数据的应用继续使用原数据与配置；不要为了重试创建另一个应用身份。</p>
-<div class="manual-table-wrap" tabindex="0" role="region" aria-label="下线数据选项，可横向滚动"><table class="manual-table"><thead><tr><th scope="col">选项</th><th scope="col">处理结果</th></tr></thead><tbody><tr><td>保留数据</td><td>保留平台受控业务文件、数据库及该应用保存的密码和密钥，供再次部署继续使用。</td></tr><tr><td>删除数据</td><td>清除平台受控业务数据和该应用保存的密码、API Key、密钥，不可恢复。外部数据库不会自动删除。</td></tr></tbody></table></div>
-<p>下线及清理确认完成后释放域名和运行端口。源码、部署历史和构建缓存不因数据选项被删除。</p>
-<p>有持久存储的更新可能短暂停机。版本回退不会撤销新版本已经写入的数据，更新前应确认数据格式兼容。</p></section>
-<section class="panel manual-section" id="faq" aria-labelledby="faq-title"><h2 id="faq-title">常见问题</h2>
-<details><summary>获取代码失败或超时，先查什么？</summary><p>确认仓库地址、分支或提交存在，私有仓库有读取权限；再检查平台到 GitHub / GitLab 的网络和代理。此阶段尚未构建业务服务，反复修改应用密码通常无助于解决拉取失败。</p></details>
-<details><summary>缺少秘密配置，需要去服务器找文件吗？</summary><p>不需要。查看当前进度中的补充配置表单，填写项目登录密码或供应商 API Key，再保存并继续。不要把这些实际值提交到 Git。</p></details>
-<details><summary>健康检查失败，应该改什么？</summary><p>按具体错误检查启动结果、监听地址、端口、健康路径、非 root 和只读文件系统要求。若必须改变业务代码，先明确原因再由业务方决定；不要伪造健康结果。</p></details>
-<details><summary>部署失败，域名和端口一定已经释放了吗？</summary><p>不一定。新部署在分配资源前失败时可能尚未占用；已分配资源须确认清理完成才释放。更新失败也可能保留旧版本的资源。以应用管理中的当前状态为准，待恢复时不要假定资源已可复用。</p></details>
-<details><summary>应用会自动登记到飞书多维表格吗？</summary><p>已支持。应用和部署记录由独立进程同步到专用多维表格；应用表显示当前访问地址、清单声明的访问路径和服务器源码快照路径，应用下线后清空。服务器路径不是容器内工作目录或业务数据目录。平台数据库仍是唯一权威，密钥和原始日志不会上传。<a href="https://guanghe.feishu.cn/base/Ozr8b9j8KakhDOsjCjwcSChlnbe" target="_blank" rel="noopener noreferrer">打开应用登记表 ↗</a></p></details>
-</section>
-<section class="panel manual-section" id="references" aria-labelledby="references-title"><h2 id="references-title">文档与字段规范</h2>
-<p>当前接入说明与字段规范用于实际部署；飞书原文保留完整背景及历史约定。</p>
-<ul class="manual-links"><li><a href="https://guanghe.feishu.cn/base/Ozr8b9j8KakhDOsjCjwcSChlnbe" target="_blank" rel="noopener noreferrer">Awesome Deploy 应用登记 · 飞书多维表格 ↗</a><span>查看应用主表和部署记录表；同步可能比平台状态晚几秒。</span></li><li><a href="/document/deployment-guide.txt" download>当前接入说明 · TXT 下载</a><span>可直接交给 AI 或开发者，包含业务边界、文件要求、构建限制、密钥和验收清单。下载时写入当前资源上限。</span></li><li><a href="https://guanghe.feishu.cn/docx/WaCDdlTg2of7lCxGkY9c2fbQnPf" target="_blank" rel="noopener">接入技术协议 v1.1 · 飞书原文 ↗</a><span>原文基线为 0.5.0，含历史能力描述；资源限制、登录、密钥和下线说明以本手册及当前配置为准。打开需有对应飞书文档权限。</span></li><li><a href="https://guanghe.feishu.cn/docx/OHLpdQMcpoZNvUxrWWlcpSGmnnc" target="_blank" rel="noopener">服务上线审计协议 · 飞书原文 ↗</a><span>审计与报告格式参考，不表示平台已经接入自动审批。</span></li><li><a href="/api/v1/schema?version=2" target="_blank" rel="noopener">JSON Schema v2 · 含存储配额字段 ↗</a><span>新建持久存储使用；字段范围不等于当前服务器的可用额度。</span></li><li><a href="/api/v1/schema?version=1" target="_blank" rel="noopener">JSON Schema v1 · 兼容清单 ↗</a><span>供使用 v1 的项目核对字段；新建 XFS 存储需使用 v2。</span></li><li><a href="/api/v1/openapi.json" target="_blank" rel="noopener">平台 API 定义 ↗</a><span>浏览器登录可查看；自动化部署 API 需管理员为指定人员或来源签发凭证。</span></li></ul>
-<p class="manual-caption">手册更新：2026-10-22 · 平台 0.9.9</p></section>
-</div></div>
-<footer>如文档与实际错误不一致，请保留部署编号，按具体错误定位。</footer>
-</main></body></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f3f5f1">
+  <title>使用手册 · Awesome Deploy</title>
+  <link rel="stylesheet" href="/assets/app.css?v=0.9.13">
+  <link rel="stylesheet" href="/assets/auth.css?v=0.9.0">
+  <link rel="stylesheet" href="/assets/document.css?v=0.9.14">
+  <script src="/assets/auth.js?v=0.9.0" defer></script>
+  <script src="/assets/document.js?v=0.9.14" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#manual-main">跳到使用手册</a>
+<main id="manual-main" class="manual-shell">
+  <header class="console-header">
+    <span class="brand"><span class="brand-mark" aria-hidden="true">A</span> AWESOME / DEPLOY</span>
+    <nav class="console-nav" aria-label="控制台导航">
+      <a href="/">部署控制台</a><a href="/manage">应用管理</a><a href="/api-access">API 凭证</a><a href="/document" aria-current="page">使用手册</a>
+    </nav>
+    <div id="auth-session" class="auth-session" aria-label="当前登录账号" aria-busy="true">
+      <div class="auth-identity"><span id="auth-name" class="auth-name">正在检查登录…</span><span id="auth-role" class="auth-role"></span></div>
+      <button id="auth-copy-id" class="secondary auth-logout" type="button" hidden>复制成员 ID</button>
+      <span id="auth-copy-status" class="sr-only" role="status" aria-live="polite"></span>
+      <button id="auth-logout" class="secondary auth-logout" type="button" hidden>退出登录</button>
+    </div>
+  </header>
+  <section id="auth-notice" class="auth-notice" aria-label="登录状态提示" hidden>
+    <p id="auth-notice-text" role="status" aria-live="polite"></p>
+    <div class="auth-notice-actions"><a id="auth-login" href="/login" target="_blank" rel="noopener">在新标签页登录 ↗</a><button id="auth-retry" class="secondary" type="button">重新检查登录</button></div>
+  </section>
+  <div class="manual-heading"><div><h1>使用手册</h1><p>选择左侧文档，在这里阅读飞书原文。</p></div><a class="manual-download" href="/document/deployment-guide.txt" download>下载接入说明</a></div>
+  <div class="manual-layout">
+    <nav class="manual-sidebar" aria-label="飞书文档导航">
+      <h2>文档目录</h2>
+      <p class="manual-sidebar-note">需要先登录部署平台；飞书文档还会检查你的飞书阅读权限。</p>
+      <a href="/document?doc=overview" data-doc-id="overview" data-title="部署接入使用手册" data-url="https://guanghe.feishu.cn/docx/VBffdzM2do2H8txSOt1cwLsanig"><strong>部署接入使用手册</strong><span>仓库、清单、配置与下线</span></a>
+      <a href="/document?doc=api" data-doc-id="api" data-title="自动化部署 API 使用手册" data-url="https://guanghe.feishu.cn/docx/DxI1dW2LOoDjssxtaAfcrdOCnNg"><strong>自动化部署 API</strong><span>凭证、提交、查询与重试</span></a>
+      <a href="/document?doc=protocol" data-doc-id="protocol" data-title="接入技术协议 v1.1" data-url="https://guanghe.feishu.cn/docx/WaCDdlTg2of7lCxGkY9c2fbQnPf"><strong>接入技术协议 v1.1</strong><span>历史协议，部分能力已变化</span></a>
+      <a href="/document?doc=audit" data-doc-id="audit" data-title="服务上线审计协议" data-url="https://guanghe.feishu.cn/docx/OHLpdQMcpoZNvUxrWWlcpSGmnnc"><strong>服务上线审计协议</strong><span>审计与验收格式参考</span></a>
+    </nav>
+    <section class="manual-reader panel" aria-labelledby="manual-title">
+      <div class="manual-reader-header">
+        <div class="manual-reader-title"><span class="manual-reader-kicker">飞书文档</span><h2 id="manual-title">正在读取文档…</h2></div>
+        <div class="manual-reader-actions"><button id="manual-reload" class="secondary" type="button" disabled>重新载入</button><a id="manual-open" class="manual-open" href="https://guanghe.feishu.cn" target="_blank" rel="noopener noreferrer" aria-label="在飞书打开当前文档">在飞书打开 ↗</a></div>
+      </div>
+      <p class="manual-reader-help">如果正文提示登录或无权访问，请先在飞书登录并确认文档阅读权限，再点“重新载入”。</p>
+      <div class="manual-frame-wrap">
+        <p id="manual-state" class="manual-state" role="status" aria-live="polite">正在确认登录状态…</p>
+        <iframe id="manual-frame" title="飞书文档内容" referrerpolicy="no-referrer" hidden></iframe>
+      </div>
+    </section>
+  </div>
+</main>
+</body>
+</html>

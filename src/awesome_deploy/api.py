@@ -266,6 +266,10 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
             "/", "/manage", "/members", "/document", "/api-access"
         }:
             return_path = request.url.path
+            if return_path == "/document" and request.query_params.get("doc") in {
+                "overview", "api", "protocol", "audit"
+            } and len(request.query_params.getlist("doc")) == 1:
+                return_path += "?doc=" + request.query_params["doc"]
             login_url = "/login?error=session"
             if return_path != "/":
                 login_url += "&return=" + quote(return_path, safe="")
@@ -370,9 +374,13 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+        policy = (
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
         )
+        if request.url.path == "/document":
+            policy += "; frame-src https://guanghe.feishu.cn https://accounts.feishu.cn"
+        response.headers["Content-Security-Policy"] = policy
         return response
 
     @app.exception_handler(DeployError)

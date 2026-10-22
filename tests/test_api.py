@@ -31,20 +31,22 @@ def test_management_endpoints_are_protected(client):
     assert client.post("/api/v1/deployments", json=BODY, headers=headers()).status_code == 401
 
 
-def test_handbook_download_uses_current_limits_and_example_validates(client, monkeypatch):
-    import html
-    import re
-    from awesome_deploy.manifest import load_manifest
-
+def test_handbook_download_uses_current_limits_and_document_viewer_is_protected(client, monkeypatch):
     monkeypatch.setattr("awesome_deploy.storage_status.quota_capability", lambda settings: {
         "configured": True, "enabled": True,
         "limits": {"app_budget_mib": 37, "global_budget_mib": 4096},
     })
     page = client.get("/document", auth=AUTH)
     assert page.status_code == 200
-    example = re.search(r'<pre class="manual-example"[^>]*><code>(.*?)</code>', page.text, re.S)[1]
-    parsed = load_manifest(html.unescape(example), Settings(storage_backend="xfs-project"))
-    assert parsed["services"]["web"]["storage"]["sizeMiB"] == 50
+    assert 'id="manual-frame"' in page.text
+    assert 'data-doc-id="api"' in page.text
+    assert 'data-doc-id="overview"' in page.text
+    assert 'https://guanghe.feishu.cn/docx/DxI1dW2LOoDjssxtaAfcrdOCnNg' in page.text
+    assert 'https://guanghe.feishu.cn/docx/VBffdzM2do2H8txSOt1cwLsanig' in page.text
+    assert "frame-src https://guanghe.feishu.cn https://accounts.feishu.cn" in page.headers[
+        "content-security-policy"
+    ]
+    assert "frame-src" not in client.get("/", auth=AUTH).headers["content-security-policy"]
     guide = client.get("/document/deployment-guide.txt", auth=AUTH)
     assert guide.status_code == 200
     assert "attachment" in guide.headers["content-disposition"]

@@ -1,38 +1,78 @@
 (() => {
   'use strict';
-  const get=id=>document.getElementById(id);
-  const positive=value=>Number.isSafeInteger(value) && value>0;
-  const size=value=>`${new Intl.NumberFormat('zh-CN').format(value)}\u00a0MiB`;
-  function location() {
-    for(const link of document.querySelectorAll('.manual-toc a')) {
-      if(link.hash===(window.location.hash || '#quickstart'))link.setAttribute('aria-current','location');
+  const links = [...document.querySelectorAll('.manual-sidebar [data-doc-id]')];
+  const docs = new Map(links.map(link => [link.dataset.docId, {
+    title: link.dataset.title,
+    url: link.dataset.url,
+    link,
+  }]));
+  const frame = document.getElementById('manual-frame');
+  const state = document.getElementById('manual-state');
+  const title = document.getElementById('manual-title');
+  const open = document.getElementById('manual-open');
+  const reload = document.getElementById('manual-reload');
+  let selected = null;
+  let loggedIn = false;
+
+  function requestedId() {
+    const id = new URLSearchParams(window.location.search).get('doc');
+    return docs.has(id) ? id : 'overview';
+  }
+
+  function show(id) {
+    const doc = docs.get(id);
+    if (!doc) return;
+    const changed = selected !== id;
+    selected = id;
+    title.textContent = doc.title;
+    open.href = doc.url;
+    for (const link of links) {
+      if (link.dataset.docId === id) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     }
-  }
-  async function load() {
-    get('manual-storage').textContent='读取中…';get('manual-memory').textContent='读取中…';get('manual-pool').textContent='读取中…';
-    get('manual-status').textContent='正在读取当前平台配置…';get('manual-retry').hidden=true;
-    get('manual-network').textContent='正在读取运行网络配置…';
-    try {
-      const response=await window.AwesomeAuth.fetch('/api/v1/capabilities');
-      if(!response.ok)throw new Error('capabilities unavailable');
-      const data=await response.json(),quota=data.storageHardQuota;
-      const storage=quota?.limits?.app_budget_mib,memory=data.resourceLimits?.maxAppMemoryMiB,pool=quota?.limits?.global_budget_mib;
-      get('manual-storage').textContent=quota?.configured===false?'未启用硬配额':positive(storage)?size(storage):'暂未确认';
-      get('manual-memory').textContent=positive(memory)?size(memory):'暂未确认';
-      get('manual-pool').textContent=positive(pool)?(pool%1024===0?`${new Intl.NumberFormat('zh-CN').format(pool/1024)}\u00a0GiB`:size(pool)):'暂未确认';
-      const ready=positive(storage) && positive(memory) && positive(pool) && quota?.enabled===true;
-      get('manual-status').textContent=ready?'以上为当前服务器配置。MiB / GiB 为二进制容量单位。':'部分限制或存储配额状态暂未确认，请重新读取或联系管理员。';
-      get('manual-retry').hidden=ready;
-      get('manual-network').textContent=data.runtimeNetwork?.enabled===true?'当前运行网络允许受限公网 HTTPS（TCP 443）访问，可调用外部模型 API；不等于所有端口或私网直通。':'当前未确认允许公网 HTTPS 访问。需要外部模型 API 时，请先确认平台运行网络配置。';
-    } catch {
-      for(const id of ['manual-storage','manual-memory','manual-pool'])get(id).textContent='暂未确认';
-      get('manual-status').textContent='暂时无法读取平台配置。使用说明仍可阅读；请重新读取或返回部署页确认限制。';
-      get('manual-network').textContent='运行网络暂未确认；需要外部模型 API 时，请先确认平台运行网络配置。';
-      get('manual-retry').hidden=false;
+    if (!loggedIn) {
+      frame.hidden = true;
+      frame.removeAttribute('src');
+      reload.disabled = true;
+      state.hidden = false;
+      state.textContent = '请先登录部署平台，再查看文档。';
+      return;
     }
+    if (!changed && frame.hasAttribute('src')) return;
+    state.hidden = false;
+    state.textContent = '正在载入飞书文档…';
+    frame.hidden = false;
+    frame.title = doc.title + ' · 飞书文档内容';
+    frame.src = doc.url;
+    reload.disabled = false;
   }
-  get('manual-retry').addEventListener('click',load);
-  window.addEventListener('hashchange',location);
-  location();load();
+
+  for (const link of links) {
+    link.addEventListener('click', event => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      const id = link.dataset.docId;
+      window.history.pushState({ doc: id }, '', link.href);
+      show(id);
+    });
+  }
+  window.addEventListener('popstate', () => show(requestedId()));
+  frame.addEventListener('load', () => {
+    if (loggedIn && frame.getAttribute('src')) state.hidden = true;
+  });
+  reload.addEventListener('click', () => {
+    if (!loggedIn || !selected) return;
+    state.hidden = false;
+    state.textContent = '正在重新载入飞书文档…';
+    frame.src = docs.get(selected).url;
+  });
+  window.AwesomeAuth.onChange(session => {
+    loggedIn = !!session;
+    show(requestedId());
+  });
+  show(requestedId());
+  window.AwesomeAuth.ready.then(session => {
+    loggedIn = !!session;
+    show(requestedId());
+  });
 })();

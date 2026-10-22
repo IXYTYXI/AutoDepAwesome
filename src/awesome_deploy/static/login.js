@@ -15,7 +15,8 @@
   const button=document.getElementById('feishu-login');
   const label=document.getElementById('feishu-login-label');
   const returnPath=new URLSearchParams(window.location.search).get('return');
-  if(['/manage','/members','/document','/api-access'].includes(returnPath)){
+  if(['/manage','/members','/document','/api-access'].includes(returnPath)
+      || /^\/document\?doc=(overview|api|protocol|audit)$/.test(returnPath || '')){
     button.href='/auth/feishu/start?return='+encodeURIComponent(returnPath);
   }
   let leaving=false;

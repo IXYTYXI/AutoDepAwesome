@@ -64,10 +64,22 @@ def test_api_access_login_returns_to_requested_page(web):
     assert client.get("/api-access").status_code == 200
 
 
+def test_document_login_returns_to_selected_document(web):
+    client, _, _ = web
+    start = client.get("/auth/feishu/start", params={"return": "/document?doc=api"})
+    query = parse_qs(urlsplit(start.headers["location"]).query)
+    result = client.get("/auth/feishu/callback", params={"state": query["state"][0], "code": "test-code"})
+    assert result.status_code == 303
+    assert result.headers["location"] == "/document?doc=api"
+
+
 def test_login_session_headers_and_basic_cannot_bypass(web):
     client, app, provider = web
     assert client.get("/").status_code == 303
     assert client.get("/document").headers["location"] == "/login?error=session&return=%2Fdocument"
+    assert client.get("/document?doc=api").headers["location"] == (
+        "/login?error=session&return=%2Fdocument%3Fdoc%3Dapi"
+    )
     assert client.get("/api-access").headers["location"] == "/login?error=session&return=%2Fapi-access"
     assert client.get("/document/deployment-guide.txt").status_code == 401
     assert client.get("/login").status_code == 200
@@ -76,6 +88,7 @@ def test_login_session_headers_and_basic_cannot_bypass(web):
     assert session["role"] == "member" and session["canDeploy"] is True
     assert session["userId"] and session["csrfToken"]
     assert client.get("/document").status_code == 200
+    assert client.get("/document?doc=api").status_code == 200
     assert client.get("/document/deployment-guide.txt").status_code == 200
     assert "open_id" not in session and "access_token" not in session
     cookie = client.cookies.get("__Host-awesome_session")
