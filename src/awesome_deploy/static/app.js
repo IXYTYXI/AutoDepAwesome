@@ -450,13 +450,26 @@ async function refresh() {
 function renderCapabilities(capabilities) {
   if(capabilities.baseDomain)$('domain-suffix').textContent='.'+capabilities.baseDomain;
   aiConfigured=capabilities.aiAdvice?.configured===true;
+  const quota=capabilities.storageHardQuota;
+  const storageLimit=quota?.limits?.app_budget_mib;
+  const memoryLimit=capabilities.resourceLimits?.maxAppMemoryMiB;
+  const poolLimit=quota?.limits?.global_budget_mib;
+  const positive=value=>Number.isSafeInteger(value) && value>0;
+  const capacity=value=>`${new Intl.NumberFormat('zh-CN').format(value)}\u00a0MiB`;
+  $('storage-limit').textContent=quota?.configured===false?'尚未启用硬配额':positive(storageLimit)?capacity(storageLimit):'暂未确认';
+  $('memory-limit').textContent=positive(memoryLimit)?capacity(memoryLimit):'暂未确认';
+  let pool=positive(poolLimit)?`平台共享存储池：${poolLimit%1024===0?`${new Intl.NumberFormat('zh-CN').format(poolLimit/1024)}\u00a0GiB`:capacity(poolLimit)}。`:'';
+  if(quota?.configured===true && quota.enabled!==true)pool+='存储配额状态待确认，请稍后刷新。';
+  else if(!positive(memoryLimit) || (quota?.configured!==false && !positive(storageLimit)))pool+='资源限制暂未读取成功，请刷新页面后确认。';
+  $('resource-pool').textContent=pool || '资源上限以当前平台配置为准。';
   let storage;
   if(capabilities.persistentStorage===true) {
     storage='持久存储已开放。';
     if(typeof capabilities.storage?.mountPath==='string')storage+=`挂载路径为 ${capabilities.storage.mountPath}。`;
     if(Number.isInteger(capabilities.storage?.perService))storage+=`每个服务最多 ${capabilities.storage.perService} 个数据卷。`;
     if(capabilities.storage?.updates==='recreate')storage+='更新采用重建方式，可能短暂中断服务。';
-    storage+='当前没有每个应用的数据卷硬配额和自动备份，请自行规划容量与备份。';
+    storage+=quota?.configured===true?'持久数据受存储硬配额限制，具体上限见部署按钮上方。':'当前未启用数据卷硬配额。';
+    storage+='平台尚未提供自动备份，请自行安排备份。';
   } else if(capabilities.persistentStorage===false)storage='当前平台的持久存储暂未开放，请勿将需要保留的数据仅写入容器。';
   else storage='暂未确认持久存储支持情况，请以平台字段规范和运维配置为准。';
   $('storage-capability').textContent=storage;

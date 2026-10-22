@@ -28,7 +28,14 @@ def _timestamp(value):
 
 def _empty():
     return {"version": 2, "issuedSequence": 0, "acceptedSequence": 0,
-            "status": "unknown", "checkedAt": None, "lastSuccessfulCheckAt": None}
+            "status": "unknown", "checkedAt": None, "lastSuccessfulCheckAt": None, "limits": None}
+
+
+def _limits(value):
+    keys = ("global_budget_mib", "app_budget_mib", "service_budget_mib")
+    if isinstance(value, dict) and all(type(value.get(k)) is int and value[k] > 0 for k in keys):
+        return {k: value[k] for k in keys}
+    return None
 
 
 def _read(settings):
@@ -132,7 +139,8 @@ def record_quota_status(settings, report=None, *, error=None, observation):
         if (sequence <= previous["acceptedSequence"]
                 or previous_checked is not None and checked < previous_checked):
             return False
-        value = {**previous, "acceptedSequence": sequence, "status": status, "checkedAt": checked}
+        value = {**previous, "acceptedSequence": sequence, "status": status, "checkedAt": checked,
+                 "limits": _limits(report.get("budgets"))}
         if status == "ready":
             value["lastSuccessfulCheckAt"] = checked
         _write(settings, value)
@@ -151,6 +159,7 @@ def quota_capability(settings):
     if not configured:
         return result
     value = _read(settings)
+    result["limits"] = _limits(value.get("limits"))
     checked = _timestamp(value.get("checkedAt"))
     result["checkedAt"] = checked
     result["lastSuccessfulCheckAt"] = _timestamp(value.get("lastSuccessfulCheckAt"))

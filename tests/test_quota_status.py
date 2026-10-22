@@ -6,6 +6,23 @@ from awesome_deploy.config import Settings
 from awesome_deploy.errors import DeployError
 
 
+def test_public_limits_follow_helper_budgets_without_leaking_private_fields(tmp_path):
+    from awesome_deploy.storage_status import begin_quota_observation, quota_capability, record_quota_status
+    settings = Settings(state_dir=tmp_path, storage_backend="xfs-project")
+    budgets = {"global_budget_mib": 65536, "app_budget_mib": 50, "service_budget_mib": 50}
+    record_quota_status(settings, {"pool": {"enforced": True},
+                                  "budgets": {**budgets, "private_path": "/private/hidden"}},
+                        observation=begin_quota_observation(settings))
+    assert quota_capability(settings)["limits"] == budgets
+    record_quota_status(settings, {"enforced": True, "budgets": {**budgets, "app_budget_mib": 100}},
+                        observation=begin_quota_observation(settings))
+    assert quota_capability(settings)["limits"]["app_budget_mib"] == 100
+    record_quota_status(settings, error=DeployError("QUOTA_UNAVAILABLE", "private"),
+                        observation=begin_quota_observation(settings))
+    assert quota_capability(settings)["limits"] is None
+
+
+
 def test_quota_capability_distinguishes_support_configuration_and_fresh_verification(tmp_path):
     from awesome_deploy.storage_status import begin_quota_observation, quota_capability, record_quota_status
     disabled = quota_capability(Settings(state_dir=tmp_path))

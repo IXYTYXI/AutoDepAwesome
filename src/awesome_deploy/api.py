@@ -475,6 +475,7 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
             "storage": {"driver": settings.storage_backend, "mountPath": "/data",
                         "perService": 1, "updates": "recreate"},
             "storageHardQuota": quota_capability(settings),
+            "resourceLimits": {"maxAppMemoryMiB": settings.max_app_memory_mib},
             "workers": False,
             "customEgress": False,
             "buildNetwork": settings.build_network,

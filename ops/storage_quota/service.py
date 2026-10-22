@@ -755,6 +755,7 @@ class QuotaService:
                 else:
                     unknown.append({"reference": _ref(row), "reason": exc.code})
         result = {"blocked": blocked, "unknown": unknown, "pool": pool,
+                  "budgets": {key: self.config[key] for key in BUDGET_KEYS},
                   "pool_blocked": self._pool_state(db)["blocked"],
                   "checked_at": datetime.now(timezone.utc).isoformat()}
         if pool_error:

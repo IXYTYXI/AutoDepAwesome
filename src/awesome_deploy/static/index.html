@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Awesome · 自动部署</title>
-  <link rel="stylesheet" href="/assets/app.css?v=0.6.1"><link rel="stylesheet" href="/assets/auth.css?v=0.9.0"><script src="/assets/auth.js?v=0.9.0" defer></script><script src="/assets/app.js?v=0.7.0" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=0.9.2"><link rel="stylesheet" href="/assets/auth.css?v=0.9.0"><script src="/assets/auth.js?v=0.9.0" defer></script><script src="/assets/app.js?v=0.9.2" defer></script>
 </head>
 <body><a class="skip-link" href="#console-main">跳到主要内容</a><main id="console-main">
   <header class="console-header"><span class="brand"><span class="brand-mark" aria-hidden="true">A</span> AWESOME / DEPLOY</span><nav class="console-nav" aria-label="控制台导航"><a href="/" aria-current="page">部署控制台</a><a href="/manage">应用管理</a></nav><div id="auth-session" class="auth-session" aria-label="当前登录账号" aria-busy="true"><div class="auth-identity"><span id="auth-name" class="auth-name">正在检查登录…</span><span id="auth-role" class="auth-role"></span></div><button id="auth-copy-id" class="secondary auth-logout" type="button" hidden>复制成员 ID</button><span id="auth-copy-status" class="sr-only" role="status" aria-live="polite"></span><button id="auth-logout" class="secondary auth-logout" type="button" hidden>退出登录</button></div></header>
@@ -33,7 +33,13 @@
         <div class="form-row"><div><label for="ref">分支或提交版本</label><input id="ref" name="ref" required value="main" autocomplete="off"></div><div><label for="subdomain">域名前缀</label><input id="subdomain" name="subdomain" required pattern="[a-z0-9]([a-z0-9-]{0,5}[a-z0-9])?" maxlength="7" placeholder="demo"></div></div>
         <small class="domain-preview">访问地址：<span id="domain-prefix">你的前缀</span><span id="domain-suffix">.awesome.guanghexinzhi.cn</span></small>
         <small>域名前缀为 1–7 个字符，须与 awesome.yaml 中的配置一致。</small>
-        <button type="submit" id="submit">开始部署 <span aria-hidden="true">↗</span></button>
+        <section class="resource-limits" aria-labelledby="resource-limits-title">
+          <h3 id="resource-limits-title">每应用资源上限</h3>
+          <dl class="resource-limit-values"><div><dt>持久数据</dt><dd id="storage-limit">读取中…</dd></div><div><dt>运行内存</dt><dd id="memory-limit">读取中…</dd></div></dl>
+          <p id="resource-limits-help">多个服务按应用合计。内存按需使用，不固定预占；写满存储会阻止继续写入，内存超限可能终止服务。</p>
+          <p id="resource-pool" aria-live="polite">正在读取平台配置…</p>
+        </section>
+        <button type="submit" id="submit" aria-describedby="resource-limits-help">开始部署 <span aria-hidden="true">↗</span></button>
         <p id="deploy-permission" class="permission-hint" role="status" hidden></p><p class="hint submit-hint">当前直接执行部署，尚未接入审核和审批。</p><p id="form-error" role="alert"></p>
       </form>
       <details class="scope-details"><summary>配置准备与支持范围</summary><p>仓库应包含 awesome.yaml，以及构建所需的 Dockerfile；也可按字段规范使用已有镜像。支持 Web 服务和前端/API 路径分流。</p><p id="storage-capability">正在读取持久存储支持情况…</p><p id="runtime-network-capability">正在读取运行网络支持情况…</p><p>数据库迁移和后台任务（worker）仍未支持。构建命令默认不访问网络，基础镜像由平台获取。</p><p>参考<a href="/api/v1/schema" target="_blank" rel="noopener">字段规范</a>确认端口、健康检查和存储配置。若项目缺少秘密配置，当前进度会列出可直接填写的项目；保存后即可继续部署。值保存在部署服务器，无需写入仓库或自行寻找文件位置。</p></details>
