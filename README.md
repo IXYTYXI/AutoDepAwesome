@@ -161,7 +161,7 @@ routes:
 | 健康检查 | HTTP 路径或容器内 exec 数组；支持 intervalSeconds、timeoutSeconds、retries、startPeriodSeconds |
 | 路由 | `exact`、`prefix` 与 `stripPrefix`；网关实际最多 32 条；支持规范字面路径，含点号（如 `/.well-known/security.txt`）；仅保留 `/.well-known/acme-challenge` 及其子路径；Schema 校验通过后仍须通过网关校验 |
 | 域名 | 前缀 1–7 位小写字母、数字、中划线，首尾不能为中划线；不能使用保留名称或包含禁词子串 |
-| 配额 | 默认总计 6 CPU、6144 MiB；更新时省略的资源字段继承同名服务旧配置，否则默认 0.5 CPU、512 MiB |
+| 配额 | 默认总计 6 CPU、6144 MiB，每应用全部服务合计最多 500 MiB；省略的资源字段继承同名服务旧配置，新服务默认 0.5 CPU、500 MiB。继承后超限须在新提交中显式调整，历史快照不变 |
 | 网络与文件系统 | 默认 internal bridge；可由管理员启用受限公网 TCP 443 直连；RootlessKit builtin 转发仅绑定 `127.0.0.1`；非 root、只读根目录；受限临时空间及显式声明的 `/data` 持久卷 |
 | 持久存储 | 每服务最多一个平台派生名称的本地卷，挂载点固定 `/data`；更新复用，失败与退役清理均不删除卷 |
 | 暂不支持 | 主机挂载、共享卷、任意挂载点、卷 driver/options、数据库迁移、生命周期 hook、非 web worker、定制出站规则、构建秘密或 SSH agent |

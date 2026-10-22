@@ -73,6 +73,30 @@ def ensure(service, name="data", **kwargs):
                             "operation_id": f"ensure-{name}", "limits": {"size_mib": 10, "max_inodes": 100}, **kwargs})
 
 
+def test_deployment_storage_budget_is_shared_by_services(setup):
+    from storage_quota.errors import QuotaError
+
+    service, _, config = setup
+    example = json.loads((Path(__file__).resolve().parents[1] / "ops/storage.example.json").read_text())
+    for key in ("global_budget_mib", "app_budget_mib", "service_budget_mib"):
+        config[key] = example[key]
+    assert config["global_budget_mib"] == 65536
+
+    def allocate(app, name, size):
+        return service.execute({"op": "ensure", "identity": {"app_id": app, "service": name, "name": "data"},
+                                "operation_id": f"{app}-{name}", "limits": {"size_mib": size, "max_inodes": 50}})
+
+    allocate("first", "web", 25)
+    allocate("first", "api", 25)
+    with pytest.raises(QuotaError) as caught:
+        allocate("first", "extra", 1)
+    assert caught.value.code == "QUOTA_BUDGET_EXCEEDED"
+    allocate("second", "web", 50)
+    with pytest.raises(QuotaError) as caught:
+        allocate("third", "web", 51)
+    assert caught.value.code == "QUOTA_BUDGET_EXCEEDED"
+
+
 def test_ensure_readback_is_stable_and_never_shrinks_or_silently_expands(setup):
     service, backend, _ = setup
     row = ensure(service)

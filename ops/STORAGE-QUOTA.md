@@ -24,7 +24,7 @@
 - rootless daemon、worker、patrol 使用同一非 root UID。`runtime_uid/runtime_gid` 与平台 `runtime_user` 一致，映射不可漂移。更改映射须停写并受控修复，不能自动递归 chown。
 - 检查目标机 SELinux/AppArmor、rootless bind 权限、cgroup 与已有 Docker 独立文件系统限制；业务 `/data` 数据池不替代 Docker 数据目录限制。
 
-`storage.example.json` 的 null 和空映射是刻意留空的必填项，直接使用会拒绝启用。各层预算、余量及示例 UID 均须由管理员按现场确认；没有默认承诺容量。全局 inode 预算依据小文件压力验收确定，`df -i` 仅辅助观察，不能作为可超卖的库存。
+`storage.example.json` 的容量策略为总池 65536 MiB（64 GiB）、单应用合计 50 MiB、单服务最多 50 MiB；多服务应用不能各自获得独立的 50 MiB 应用预算。null 和空映射仍是刻意留空的必填项，直接使用会拒绝启用。实际设备、inode 预算、余量及示例 UID 须由管理员按现场确认。池的元数据和空闲余量会减少实际可承诺容量，不能把完整 64 GiB 都承诺给应用。全局 inode 预算依据小文件压力验收确定，`df -i` 仅辅助观察，不能作为可超卖的库存。
 
 管理员审核五个 Python 源文件及入口后，在仓库根目录执行以下安装步骤。正式升级时先停止相关 worker/patrol，避免混用新旧 helper 文件；保持已运行容器的内核配额。
 
@@ -69,11 +69,11 @@ sudo systemctl enable awesome-worker.service
 storage:
   name: appdata
   mountPath: /data
-  sizeMiB: 2048
+  sizeMiB: 50
   maxInodes: 50000
 ```
 
-上面容量仅演示字段，不是已批准默认值。两个额度必须为正整数；实际可申请范围还受 root 策略约束。用户不能提供宿主路径、project ID 或挂载参数。`awesome-deploy schema --version 2` 或 `/api/v1/schema?version=2` 获取完整 schema；省略版本仍返回 v1。
+上面容量使用部署模板的单应用上限，inode 数仅演示字段，须与主机策略核对。两个额度必须为正整数；实际可申请范围还受 root 策略约束。修改模板不会为既有 named volume 增加配额，也不会缩减已有 XFS 配额。用户不能提供宿主路径、project ID 或挂载参数。`awesome-deploy schema --version 2` 或 `/api/v1/schema?version=2` 获取完整 schema；省略版本仍返回 v1。
 
 v1 无存储应用兼容。已有 XFS 稳定引用的服务可使用 v1 清单省略额度并沿用账本；首次申请不能省略双硬限。普通发布请求小于现值时保留现值，并返回 `kept_current_limits`；大于现值时要求先显式扩容。业务回滚不回滚额度、数据或数据格式。稳定引用仅含 backend、storage_id、generation，不把可变额度冻结为身份。
 

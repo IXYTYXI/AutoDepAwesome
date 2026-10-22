@@ -26,7 +26,7 @@ def test_application_memory_limit_defaults_and_can_be_configured(tmp_path):
     path = tmp_path / "config.json"
     path.write_text("{}")
     settings = load_settings(path)
-    assert settings.max_app_memory_mib == 1024
+    assert settings.max_app_memory_mib == 500
     assert settings.max_memory_mib == 6144
     path.write_text('{"max_app_memory_mib": 768}')
     assert load_settings(path).max_app_memory_mib == 768

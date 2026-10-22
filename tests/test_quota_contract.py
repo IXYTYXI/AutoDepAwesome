@@ -38,7 +38,7 @@ def test_v2_manifest_normalizes_with_explicit_quota_without_mutating_input():
     before = copy.deepcopy(data)
     loaded = load_manifest(yaml.safe_dump(data), Settings(storage_backend="xfs-project"))
     assert loaded["services"]["web"]["storage"] == data["services"]["web"]["storage"]
-    assert loaded["services"]["web"]["resources"]["memoryMiB"] == 512
+    assert loaded["services"]["web"]["resources"]["memoryMiB"] == 500
     assert data == before
 
 

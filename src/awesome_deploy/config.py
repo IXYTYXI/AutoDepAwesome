@@ -19,7 +19,7 @@ class Settings:
     port_end: int = 29999
     max_cpu: float = 6.0
     max_memory_mib: int = 6144
-    max_app_memory_mib: int = 1024
+    max_app_memory_mib: int = 500
     build_timeout: int = 900
     health_timeout: int = 180
     docker_host: str = "unix:///run/user/1001/docker.sock"

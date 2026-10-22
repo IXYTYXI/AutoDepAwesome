@@ -97,7 +97,7 @@ def load_manifest(text: str, settings: Settings, previous: dict | None = None) -
     """Validate text and return a detached normalized versioned manifest.
 
     Omitted resources inherit each existing service's last normalized resources,
-    then fall back to 0.5 CPU and 512 MiB. Values and keys never interpolate.
+    then fall back to 0.5 CPU and 500 MiB. Values and keys never interpolate.
     Build context is repository-relative; Dockerfile is relative to that context.
     """
     data = _parse(text)
@@ -135,7 +135,7 @@ def load_manifest(text: str, settings: Settings, previous: dict | None = None) -
                     raise _invalid("Storage hard limits must be positive integers.",
                                    f"{prefix}.storage.{field}")
         old = previous_services.get(name, {}).get("resources", {})
-        resources = {"cpu": old.get("cpu", .5), "memoryMiB": old.get("memoryMiB", 512)}
+        resources = {"cpu": old.get("cpu", .5), "memoryMiB": old.get("memoryMiB", 500)}
         resources.update(service.get("resources", {}))
         cpu, memory = resources["cpu"], resources["memoryMiB"]
         if (isinstance(cpu, bool) or not isinstance(cpu, (int, float)) or not math.isfinite(cpu)
@@ -165,7 +165,11 @@ def load_manifest(text: str, settings: Settings, previous: dict | None = None) -
                 raise _invalid("Dependency references an unknown service.", prefix + ".dependsOn")
     total_memory = sum(service["resources"]["memoryMiB"] for service in data["services"].values())
     if total_memory > settings.max_app_memory_mib:
-        raise _invalid("Application memory allocation exceeds the configured limit.", "services")
+        raise DeployError(
+            "INVALID_MANIFEST", "Application memory allocation exceeds the configured limit.", "services",
+            "请在新提交中显式填写各服务 resources.memoryMiB，"
+            f"使合计不超过 {settings.max_app_memory_mib} MiB；省略字段会继承旧配置，历史快照不会自动修改。",
+        )
     visited, visiting = set(), set()
 
     def visit(name):
