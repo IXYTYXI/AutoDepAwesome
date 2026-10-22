@@ -354,6 +354,8 @@ for _english, _message, _step in (
     ("CPU allocation exceeds the configured limits.", "CPU 配额不在平台允许范围内。", "按平台 CPU 配额范围调整 resources.cpu。"),
     ("Memory allocation exceeds the configured limits.", "内存配额不在平台允许范围内。",
      "按平台内存配额范围调整 resources.memoryMiB，使用整数 MiB。"),
+    ("Application memory allocation exceeds the configured limit.", "应用全部服务的内存合计超过当前单应用上限。",
+     "请在新提交中显式填写各服务 resources.memoryMiB，使合计不超过平台配置上限；省略字段会继承旧配置，历史快照不会自动修改。"),
     ("Healthcheck timeout cannot exceed its interval.", "健康检查超时时间不能大于检查间隔。",
      "将 timeoutSeconds 设置为不大于 intervalSeconds 的值。"),
     ("An environment name cannot also be a secret reference.", "同一环境变量同时出现在 env 与 secretRefs 中。",

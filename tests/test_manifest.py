@@ -29,26 +29,27 @@ def test_schema_module_available():
 
 def test_defaults_and_resource_inheritance():
     result = load(valid())
-    assert result["services"]["web"]["resources"] == {"cpu": .5, "memoryMiB": 512}
+    assert result["services"]["web"]["resources"] == {"cpu": .5, "memoryMiB": 500}
     assert result["services"]["web"]["healthcheck"] == {
         "type": "http", "path": "/", "intervalSeconds": 10,
         "timeoutSeconds": 3, "retries": 3, "startPeriodSeconds": 30,
     }
     assert result["routes"][0]["stripPrefix"] is False
     previous = copy.deepcopy(result)
-    previous["services"]["web"]["resources"] = {"cpu": 1.2, "memoryMiB": 700}
+    previous["services"]["web"]["resources"] = {"cpu": 1.2, "memoryMiB": 400}
     changed = valid()
     changed["services"]["web"]["resources"] = {"cpu": 2}
-    assert load(changed, previous)["services"]["web"]["resources"] == {"cpu": 2, "memoryMiB": 700}
+    assert load(changed, previous)["services"]["web"]["resources"] == {"cpu": 2, "memoryMiB": 400}
 
 
-@pytest.mark.parametrize("second_memory", [512, 513])
+@pytest.mark.parametrize("second_memory", [250, 251])
 def test_application_memory_limit_sums_all_services(second_memory):
     data = valid()
     data["services"]["api"] = copy.deepcopy(data["services"]["web"])
+    data["services"]["web"]["resources"] = {"memoryMiB": 250}
     data["services"]["api"]["resources"] = {"memoryMiB": second_memory}
-    if second_memory == 512:
-        assert sum(service["resources"]["memoryMiB"] for service in load(data)["services"].values()) == 1024
+    if second_memory == 250:
+        assert sum(service["resources"]["memoryMiB"] for service in load(data)["services"].values()) == 500
     else:
         with pytest.raises(DeployError) as caught:
             load(data)
@@ -59,14 +60,34 @@ def test_application_memory_limit_sums_all_services(second_memory):
 def test_application_memory_limit_includes_inherited_resources():
     data = valid()
     data["services"]["api"] = copy.deepcopy(data["services"]["web"])
-    data["services"]["web"]["resources"] = {"memoryMiB": 324}
-    data["services"]["api"]["resources"] = {"memoryMiB": 700}
+    data["services"]["web"]["resources"] = {"memoryMiB": 200}
+    data["services"]["api"]["resources"] = {"memoryMiB": 300}
     previous = load(data)
-    data["services"]["web"]["resources"] = {"memoryMiB": 325}
+    data["services"]["web"]["resources"] = {"memoryMiB": 201}
     del data["services"]["api"]["resources"]
     with pytest.raises(DeployError) as caught:
         load(data, previous)
     assert caught.value.code == "INVALID_MANIFEST"
+
+
+def test_legacy_memory_requires_explicit_new_value_without_mutating_snapshot():
+    from awesome_deploy.diagnostics import localize_error
+
+    previous = valid()
+    previous["services"]["web"]["resources"] = {"cpu": 1, "memoryMiB": 512}
+    frozen = copy.deepcopy(previous)
+    with pytest.raises(DeployError) as caught:
+        load(valid(), previous)
+    assert caught.value.code == "INVALID_MANIFEST"
+    assert "500 MiB" in caught.value.suggestion
+    assert "显式" in caught.value.suggestion
+    localized = localize_error(caught.value.as_dict())
+    assert "内存" in localized["message"]
+    assert "resources.memoryMiB" in localized["suggestion"]
+    changed = valid()
+    changed["services"]["web"]["resources"] = {"memoryMiB": 500}
+    assert load(changed, previous)["services"]["web"]["resources"] == {"cpu": 1, "memoryMiB": 500}
+    assert previous == frozen
 
 
 def test_application_memory_limit_is_configurable():
@@ -136,6 +157,8 @@ def test_dependency_graph_and_healthy_requirement():
     with pytest.raises(DeployError):
         load(data)
     data["services"]["other"] = {"kind": "web", "image": "x", "port": 1234, "healthcheck": {"type": "http", "path": "/"}, "dependsOn": {"web": "started"}}
+    for service in data["services"].values():
+        service["resources"] = {"memoryMiB": 250}
     data["services"]["web"]["dependsOn"] = {"other": "healthy"}
     with pytest.raises(DeployError) as raised:
         load(data)

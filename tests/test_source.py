@@ -172,7 +172,7 @@ def test_resume_uses_persisted_commit_and_exports_no_git(tmp_path):
     assert not (source / ".git").exists()
     assert not any("rev-parse" in call[0] for call in runner.calls)
     assert all("main" not in call[0] for call in runner.calls)
-    assert snapshot["manifest"]["services"]["web"]["resources"] == {"cpu": .5, "memoryMiB": 512}
+    assert snapshot["manifest"]["services"]["web"]["resources"] == {"cpu": .5, "memoryMiB": 500}
     for args, options in runner.calls:
         assert options["env"]["GIT_CONFIG_NOSYSTEM"] == "1"
         assert options["env"]["GIT_CONFIG_GLOBAL"] == "/dev/null"
@@ -303,7 +303,7 @@ def test_bounded_runner_times_out_and_caps_output(tmp_path):
 def test_previous_resource_values_flow_through_source(tmp_path):
     from awesome_deploy.source import GitSource
     prior = {"services": {"web": {"resources": {"cpu": 2, "memoryMiB": 1024}}}}
-    snapshot = GitSource(Settings(state_dir=tmp_path), runner=FakeRunner()).prepare(job(previous_manifest=prior), lambda p: None)
+    snapshot = GitSource(Settings(state_dir=tmp_path, max_app_memory_mib=1024), runner=FakeRunner()).prepare(job(previous_manifest=prior), lambda p: None)
     assert snapshot["manifest"]["services"]["web"]["resources"] == {"cpu": 2, "memoryMiB": 1024}
 
 

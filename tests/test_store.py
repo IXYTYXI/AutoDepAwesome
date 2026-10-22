@@ -22,7 +22,7 @@ def payload(name="demo", app_id=None):
     return result
 
 
-def snapshot(cpu=1, memory=256, names=("web",)):
+def snapshot(cpu=1, memory=250, names=("web",)):
     return {
         "manifest": {"services": {name: {"resources": {"cpu": cpu, "memoryMiB": memory}} for name in names}},
         "commit": "a" * 40,
@@ -112,7 +112,7 @@ def test_active_and_candidate_both_count_against_quota(tmp_path):
 def test_application_memory_limit_rejects_all_services_without_partial_reservation(store):
     job = store.enqueue(payload(), "too-large")
     with pytest.raises(DeployError) as caught:
-        store.reserve(job["id"], snapshot(memory=513, names=("web", "api")))
+        store.reserve(job["id"], snapshot(memory=251, names=("web", "api")))
     assert caught.value.code == "RESOURCE_QUOTA"
     assert store.apps() == []
     assert not store.get(job["id"])["execution"].get("ports")
@@ -120,14 +120,14 @@ def test_application_memory_limit_rejects_all_services_without_partial_reservati
         assert db.execute("SELECT count(*) FROM reservations").fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("candidate_memory", [192, 193])
+@pytest.mark.parametrize("candidate_memory", [100, 101])
 def test_application_memory_limit_includes_active_and_candidate_services(store, candidate_memory):
     first = store.enqueue(payload(), "active")
-    first = store.reserve(first["id"], snapshot(memory=640))
+    first = store.reserve(first["id"], snapshot(memory=300))
     store.finish(first["id"])
     candidate = store.enqueue(payload(app_id=first["app_id"]), "candidate")
     requested = snapshot(memory=candidate_memory, names=("web", "api"))
-    if candidate_memory == 192:
+    if candidate_memory == 100:
         result = store.reserve(candidate["id"], requested)
         assert store.reserve(candidate["id"], requested)["execution"] == result["execution"]
     else:
@@ -136,42 +136,42 @@ def test_application_memory_limit_includes_active_and_candidate_services(store, 
         assert caught.value.code == "RESOURCE_QUOTA"
         assert not store.get(candidate["id"])["execution"].get("ports")
         with sqlite3.connect(store.settings.database_path) as db:
-            assert db.execute("SELECT sum(memory_mib) FROM reservations").fetchone()[0] == 640
+            assert db.execute("SELECT sum(memory_mib) FROM reservations").fetchone()[0] == 300
     assert store.active_release(first["app_id"])["id"] == first["id"]
 
 
 def test_application_memory_limit_is_independent_for_each_application(store):
     for name in ("first", "second"):
         job = store.enqueue(payload(name), name)
-        result = store.reserve(job["id"], snapshot(memory=1024))
-        assert store.reserve(job["id"], snapshot(memory=1024))["execution"] == result["execution"]
+        result = store.reserve(job["id"], snapshot(memory=500))
+        assert store.reserve(job["id"], snapshot(memory=500))["execution"] == result["execution"]
     with sqlite3.connect(store.settings.database_path) as db:
-        assert db.execute("SELECT sum(memory_mib) FROM reservations").fetchone()[0] == 2048
+        assert db.execute("SELECT sum(memory_mib) FROM reservations").fetchone()[0] == 1000
 
 
 def test_application_memory_limit_rechecks_existing_reservations_after_config_change(store):
     first = reserved(store)
     store.finish(first["id"])
     candidate = store.enqueue(payload(app_id=first["app_id"]), "candidate")
-    result = store.reserve(candidate["id"], snapshot(memory=768))
-    restricted = Store(replace(store.settings, max_app_memory_mib=768))
+    result = store.reserve(candidate["id"], snapshot(memory=250))
+    restricted = Store(replace(store.settings, max_app_memory_mib=400))
     with pytest.raises(DeployError) as caught:
-        restricted.reserve(candidate["id"], snapshot(memory=768))
+        restricted.reserve(candidate["id"], snapshot(memory=250))
     assert caught.value.code == "RESOURCE_QUOTA"
     assert restricted.get(candidate["id"])["execution"] == result["execution"]
     with sqlite3.connect(store.settings.database_path) as db:
-        assert db.execute("SELECT sum(memory_mib) FROM reservations").fetchone()[0] == 1024
+        assert db.execute("SELECT sum(memory_mib) FROM reservations").fetchone()[0] == 500
 
 
 def test_concurrent_candidates_cannot_exceed_application_memory_limit(store):
     first = store.enqueue(payload(), "active")
-    first = store.reserve(first["id"], snapshot(memory=512))
+    first = store.reserve(first["id"], snapshot(memory=250))
     store.finish(first["id"])
     candidates = [store.enqueue(payload(app_id=first["app_id"]), f"candidate-{i}") for i in range(2)]
 
     def attempt(job):
         try:
-            store.reserve(job["id"], snapshot(memory=384))
+            store.reserve(job["id"], snapshot(memory=200))
             return "reserved"
         except DeployError as error:
             return error.code
@@ -180,7 +180,7 @@ def test_concurrent_candidates_cannot_exceed_application_memory_limit(store):
         results = list(executor.map(attempt, candidates))
     assert sorted(results) == ["RESOURCE_QUOTA", "reserved"]
     with sqlite3.connect(store.settings.database_path) as db:
-        assert db.execute("SELECT sum(memory_mib) FROM reservations").fetchone()[0] == 896
+        assert db.execute("SELECT sum(memory_mib) FROM reservations").fetchone()[0] == 450
 
 
 def test_finish_switches_atomically_and_only_inactive_cleanup_releases_ports(store):
@@ -249,6 +249,7 @@ def test_pinned_commit_cannot_be_changed_by_later_checkpoint(store):
 
 
 def test_active_recovery_selects_only_current_successful_release_and_legacy_rows(store):
+    store = Store(replace(store.settings, max_app_memory_mib=1024))
     old = reserved(store)
     store.finish(old["id"])
     current = store.enqueue(payload(app_id=old["app_id"]), "new-active")
