@@ -1,0 +1,25 @@
+<h1>Awesome Deploy｜自动化部署 API 使用手册</h1>
+<p>这份手册面向需要从脚本、CI 或指定请求源提交部署的人。日常操作先用飞书登录平台；API 凭证仅用于提交部署和查询由该凭证创建的任务。</p>
+<aside class="manual-callout"><p><strong>最重要的两点：</strong>HTTP 202 只表示任务已进入队列，不表示上线成功。完整凭证只显示一次，不要写进 Git 仓库、请求文件或聊天消息。</p></aside>
+<h2>1. 取得 API 凭证</h2>
+<p>打开 <a href="https://awesome.guanghexinzhi.cn/api-access" target="_blank" rel="noopener noreferrer">API 凭证页面</a>，使用飞书登录。在“创建个人凭证”中填写名称、部署范围和有效期；创建时需要最近 10 分钟内的登录确认。凭证有效期为 1–90 天，默认 30 天。</p>
+<p>范围可选“我有权部署的应用”（可创建新应用并更新当前有权限的应用）、“指定单个应用”（只能更新该应用）、“仅创建新应用”。创建后立即复制完整凭证，存入调用程序的密钥配置，并以环境变量 <code>AWESOME_DEPLOY_TOKEN</code> 注入。页面之后只能查看凭证名称、范围和有效期，不能再次查看完整值。</p>
+<p>少数具名自动化来源由平台管理员单独签发和撤销，并关联一位负责的飞书成员。来源可连续提交多个应用和任务；队列、权限及资源配额照常生效。</p>
+<h2>2. 首次部署</h2>
+<p>先在调用程序的工作目录创建 <code>deployment.json</code>。下面的仓库、分支和域名前缀都要换成真实值。仓库中还必须有符合 <a href="https://guanghe.feishu.cn/docx/Zye7dwbe8oCvjrxLnnicujtnnFe" target="_blank" rel="noopener noreferrer">平台使用手册</a> 要求的 <code>awesome.yaml</code>。</p>
+<pre><code>{<br>  &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,<br>  &quot;ref&quot;: &quot;main&quot;,<br>  &quot;subdomain&quot;: &quot;demo&quot;<br>}</code></pre>
+<p>确认运行环境已经从安全配置注入 <code>AWESOME_DEPLOY_TOKEN</code> 后，提交请求。每次新的部署都要使用新的 <code>Idempotency-Key</code>；示例键只用于演示。</p>
+<pre><code>curl --fail-with-body -sS \<br>  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \<br>  -H &#x27;Content-Type: application/json&#x27; \<br>  -H &#x27;Idempotency-Key: demo-initial-001&#x27; \<br>  --data-binary @deployment.json \<br>  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments</code></pre>
+<p>成功受理时返回 HTTP 202，响应包含任务编号 <code>id</code> 和应用编号 <code>appId</code>。请保存 <code>id</code> 供后续查询。此时任务可能仍在排队。</p>
+<h2>3. 查询任务结果</h2>
+<p>把下面的 <code>JOB_ID</code> 换成提交响应中的 <code>id</code>。查询必须使用提交该任务的同一枚凭证；其他凭证不能读取这条任务。</p>
+<pre><code>curl --fail-with-body -sS \<br>  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \<br>  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments/JOB_ID</code></pre>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>status</p></th><th><p>含义与下一步</p></th></tr></thead><tbody><tr><td><p><code>queued</code></p></td><td><p>已入队；稍后用同一接口查询。</p></td></tr><tr><td><p><code>running</code></p></td><td><p>正在执行；继续查询。</p></td></tr><tr><td><p><code>succeeded</code></p></td><td><p>该次部署成功；再看 <code>active</code> 和 <code>url</code> 确认它是否仍是当前在线版本。</p></td></tr><tr><td><p><code>failed</code></p></td><td><p>部署失败；查看响应中的中文 <code>error</code>，修复原因后用新幂等键重新提交。</p></td></tr><tr><td><p><code>recovery_required</code></p></td><td><p>需要平台管理员检查资源与恢复状态；不要把它当成成功。</p></td></tr></tbody></table>
+<h2>4. 更新已有应用</h2>
+<p>更新时在请求体中加入已有应用的 <code>appId</code>，并保持 <code>repository</code>、<code>subdomain</code> 与该应用一致。可以更换 <code>ref</code>；提交时换用新的幂等键。应用编号可从首次提交响应或应用管理页取得。创建新应用时不要填写 <code>appId</code>。</p>
+<pre><code>{<br>  &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,<br>  &quot;ref&quot;: &quot;main&quot;,<br>  &quot;subdomain&quot;: &quot;demo&quot;,<br>  &quot;appId&quot;: &quot;已有应用编号&quot;<br>}</code></pre>
+<p>“指定单个应用”范围的凭证只能更新那一个应用；如果账号失去该应用的部署权限，凭证也不能继续部署它。</p>
+<h2>5. 重试与常见错误</h2>
+<p>如果提交请求发出后没有收到响应，使用<strong>相同请求体、相同凭证、相同幂等键</strong>重试；平台会返回同一任务。真正的新部署必须换键。同一幂等键对应不同请求会发生冲突。幂等键长度为 1–128，只能使用字母、数字、点、下划线、冒号和中划线。</p>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>HTTP 状态</p></th><th><p>先检查什么</p></th></tr></thead><tbody><tr><td><p>401</p></td><td><p>Bearer 凭证是否填写、过期或已撤销；不要用网页登录 Cookie 代替。</p></td></tr><tr><td><p>403</p></td><td><p>凭证范围、负责人的部署权限及目标应用权限。</p></td></tr><tr><td><p>409</p></td><td><p>幂等键是否复用于不同请求，或应用、域名是否发生冲突。</p></td></tr><tr><td><p>422</p></td><td><p>JSON 字段、类型和格式是否符合接口要求。</p></td></tr></tbody></table>
+<p>API 凭证不能用于网页管理、修改密钥、管理成员或下线应用。撤销凭证后，调用方不能再提交或查询；尚未执行的关联部署也会失去授权。查看凭证或撤销凭证请回到 <a href="https://awesome.guanghexinzhi.cn/api-access" target="_blank" rel="noopener noreferrer">API 凭证页面</a>。</p>

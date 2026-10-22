@@ -378,8 +378,6 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
             "default-src 'self'; script-src 'self'; style-src 'self'; "
             "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
         )
-        if request.url.path == "/document":
-            policy += "; frame-src https://guanghe.feishu.cn https://accounts.feishu.cn"
         response.headers["Content-Security-Policy"] = policy
         return response
 
@@ -495,6 +493,12 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
     @app.get("/document", dependencies=[Depends(authenticated)])
     def document():
         return FileResponse(STATIC / "document.html")
+
+    @app.get("/document/content/{doc_id}", dependencies=[Depends(authenticated)])
+    def document_content(doc_id: str):
+        if doc_id not in {"overview", "api", "protocol", "audit"}:
+            raise HTTPException(404)
+        return FileResponse(STATIC / f"manual-{doc_id}.html", media_type="text/html; charset=utf-8")
 
     @app.get("/document/deployment-guide.txt", dependencies=[Depends(authenticated)])
     def deployment_guide():

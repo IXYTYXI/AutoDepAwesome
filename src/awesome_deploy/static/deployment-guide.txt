@@ -1,5 +1,5 @@
 Awesome Deploy 部署接入说明｜供 AI 与开发者使用
-说明版本：2026-10-22 / 平台 0.9.14；支持 schemaVersion 1、2。
+说明版本：2026-10-22 / 平台 0.9.15；支持 schemaVersion 1、2。
 本文件是当前接入补充说明，完整字段以平台 JSON Schema 和执行器校验为准。
 技术协议原文：https://guanghe.feishu.cn/docx/WaCDdlTg2of7lCxGkY9c2fbQnPf
 原文含 0.5.0 历史基线；资源配额、登录、秘密和下线能力按本说明及当前服务器配置执行。

@@ -22,10 +22,30 @@
 .manual-reader-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
 .manual-reader-actions .secondary{min-height:44px;font-size:12px}
 .manual-reader-help{margin:0;padding:9px 20px;background:#f7f9f5;border-bottom:1px solid var(--border);font-size:11px;color:#607264;line-height:1.6}
-.manual-frame-wrap{position:relative;min-height:600px;height:calc(100vh - 228px);max-height:1100px;background:#fff}
-.manual-frame-wrap iframe{display:block;width:100%;height:100%;border:0;background:#fff}
+.manual-content-wrap{position:relative}
 .manual-state{position:absolute;z-index:1;top:50%;left:50%;transform:translate(-50%,-50%);width:min(350px,calc(100% - 40px));padding:17px 20px;border:1px solid var(--border);border-radius:10px;background:#fff;color:#536958;text-align:center;box-shadow:0 8px 24px #274b3014}
 .manual-sidebar a:focus-visible,.manual-reader a:focus-visible,.manual-reader button:focus-visible,.manual-download:focus-visible{outline:3px solid var(--green);outline-offset:3px}
-@media(max-width:900px){.manual-layout{grid-template-columns:minmax(205px,230px) minmax(0,1fr)}.manual-reader-header{align-items:start;flex-direction:column}.manual-frame-wrap{height:calc(100vh - 255px)}}
-@media(max-width:680px){.manual-heading{align-items:start;flex-direction:column;gap:12px}.manual-layout{grid-template-columns:1fr}.manual-sidebar{position:static;max-height:190px;overflow-y:auto}.manual-sidebar>a{min-height:54px}.manual-frame-wrap{height:70vh;min-height:500px}.manual-reader-header{flex-direction:row}.manual-reader-actions{justify-content:end}}
-@media(max-width:480px){.manual-reader-header{flex-direction:column}.manual-reader-actions{width:100%;justify-content:start}.manual-frame-wrap{min-height:440px}.manual-sidebar{max-height:174px}}
+@media(max-width:900px){.manual-layout{grid-template-columns:minmax(205px,230px) minmax(0,1fr)}.manual-reader-header{align-items:start;flex-direction:column}}
+@media(max-width:680px){.manual-heading{align-items:start;flex-direction:column;gap:12px}.manual-layout{grid-template-columns:1fr}.manual-sidebar{position:static;max-height:190px;overflow-y:auto}.manual-sidebar>a{min-height:54px}.manual-reader-header{flex-direction:row}.manual-reader-actions{justify-content:end}}
+@media(max-width:480px){.manual-reader-header{flex-direction:column}.manual-reader-actions{width:100%;justify-content:start}.manual-sidebar{max-height:174px}}
+/* The authenticated reader displays a safe local rendering of Feishu content. */
+.manual-content-wrap{position:relative;min-height:620px;background:#fff}
+.manual-content{padding:22px clamp(18px,3vw,44px) 48px;max-height:calc(100vh - 218px);min-height:620px;overflow:auto;overscroll-behavior:contain;color:#26382d;font-size:14px;line-height:1.8;overflow-wrap:anywhere}
+.manual-content[hidden]{display:none}
+.manual-content h1{font-size:24px;line-height:1.35;margin:0 0 22px}
+.manual-content h2{font-size:19px;line-height:1.4;margin:30px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.manual-content h3{font-size:16px;margin:24px 0 10px}
+.manual-content h4{font-size:14px;margin:20px 0 8px}
+.manual-content p{margin:0 0 13px}
+.manual-content a{color:var(--green);text-decoration:underline;text-underline-offset:3px}
+.manual-content a:focus-visible{outline:3px solid var(--green);outline-offset:2px}
+.manual-content pre{margin:12px 0 20px;padding:14px 16px;overflow:auto;background:#f3f6f1;border:1px solid var(--border);border-radius:8px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
+.manual-content code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#f3f6f1;padding:1px 4px;border-radius:4px}
+.manual-content pre code{padding:0}
+.manual-content table{display:block;width:100%;overflow:auto;border-collapse:collapse;margin:14px 0 22px;font-size:12px;line-height:1.6}
+.manual-content th,.manual-content td{min-width:100px;border:1px solid #dce5d8;padding:9px 11px;vertical-align:top;text-align:left}
+.manual-content th{background:#f3f6f1;font-weight:700}
+.manual-content .manual-callout{margin:15px 0 21px;padding:13px 16px;border-left:3px solid #84a47d;background:#f5f8f2;border-radius:0 8px 8px 0}
+.manual-content .manual-callout p:last-child{margin-bottom:0}
+.manual-content .manual-checkbox{white-space:nowrap}
+@media(max-width:680px){.manual-content{max-height:none;min-height:500px;padding:20px 18px 32px}.manual-content-wrap{min-height:500px}}

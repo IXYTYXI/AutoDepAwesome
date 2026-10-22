@@ -7,9 +7,9 @@
   <title>使用手册 · Awesome Deploy</title>
   <link rel="stylesheet" href="/assets/app.css?v=0.9.13">
   <link rel="stylesheet" href="/assets/auth.css?v=0.9.0">
-  <link rel="stylesheet" href="/assets/document.css?v=0.9.14">
+  <link rel="stylesheet" href="/assets/document.css?v=0.9.15">
   <script src="/assets/auth.js?v=0.9.0" defer></script>
-  <script src="/assets/document.js?v=0.9.14" defer></script>
+  <script src="/assets/document.js?v=0.9.15" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#manual-main">跳到使用手册</a>
@@ -30,11 +30,11 @@
     <p id="auth-notice-text" role="status" aria-live="polite"></p>
     <div class="auth-notice-actions"><a id="auth-login" href="/login" target="_blank" rel="noopener">在新标签页登录 ↗</a><button id="auth-retry" class="secondary" type="button">重新检查登录</button></div>
   </section>
-  <div class="manual-heading"><div><h1>使用手册</h1><p>选择左侧文档，在这里阅读飞书原文。</p></div><a class="manual-download" href="/document/deployment-guide.txt" download>下载接入说明</a></div>
+  <div class="manual-heading"><div><h1>使用手册</h1><p>选择左侧文档，在右侧阅读。内容于 2026-10-22 从飞书同步。</p></div><a class="manual-download" href="/document/deployment-guide.txt" download>下载接入说明</a></div>
   <div class="manual-layout">
     <nav class="manual-sidebar" aria-label="飞书文档导航">
       <h2>文档目录</h2>
-      <p class="manual-sidebar-note">需要先登录部署平台；飞书文档还会检查你的飞书阅读权限。</p>
+      <p class="manual-sidebar-note">登录部署平台后可阅读；最新版本和编辑功能请在飞书打开。</p>
       <a href="/document?doc=overview" data-doc-id="overview" data-title="部署接入使用手册" data-url="https://guanghe.feishu.cn/docx/VBffdzM2do2H8txSOt1cwLsanig"><strong>部署接入使用手册</strong><span>仓库、清单、配置与下线</span></a>
       <a href="/document?doc=api" data-doc-id="api" data-title="自动化部署 API 使用手册" data-url="https://guanghe.feishu.cn/docx/DxI1dW2LOoDjssxtaAfcrdOCnNg"><strong>自动化部署 API</strong><span>凭证、提交、查询与重试</span></a>
       <a href="/document?doc=protocol" data-doc-id="protocol" data-title="接入技术协议 v1.1" data-url="https://guanghe.feishu.cn/docx/WaCDdlTg2of7lCxGkY9c2fbQnPf"><strong>接入技术协议 v1.1</strong><span>历史协议，部分能力已变化</span></a>
@@ -43,12 +43,12 @@
     <section class="manual-reader panel" aria-labelledby="manual-title">
       <div class="manual-reader-header">
         <div class="manual-reader-title"><span class="manual-reader-kicker">飞书文档</span><h2 id="manual-title">正在读取文档…</h2></div>
-        <div class="manual-reader-actions"><button id="manual-reload" class="secondary" type="button" disabled>重新载入</button><a id="manual-open" class="manual-open" href="https://guanghe.feishu.cn" target="_blank" rel="noopener noreferrer" aria-label="在飞书打开当前文档">在飞书打开 ↗</a></div>
+        <div class="manual-reader-actions"><button id="manual-reload" class="secondary" type="button" disabled>重试读取</button><a id="manual-open" class="manual-open" href="https://guanghe.feishu.cn" target="_blank" rel="noopener noreferrer" aria-label="在飞书打开当前文档">在飞书打开 ↗</a></div>
       </div>
-      <p class="manual-reader-help">如果正文提示登录或无权访问，请先在飞书登录并确认文档阅读权限，再点“重新载入”。</p>
-      <div class="manual-frame-wrap">
+      <p class="manual-reader-help">这里显示只读同步内容；飞书原文可能已有更新，点击“在飞书打开”查看最新版本。</p>
+      <div class="manual-content-wrap">
         <p id="manual-state" class="manual-state" role="status" aria-live="polite">正在确认登录状态…</p>
-        <iframe id="manual-frame" title="飞书文档内容" referrerpolicy="no-referrer" hidden></iframe>
+        <article id="manual-content" class="manual-content" aria-label="当前文档正文" hidden></article>
       </div>
     </section>
   </div>
