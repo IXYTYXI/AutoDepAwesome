@@ -128,10 +128,12 @@ def test_active_app_projects_visit_url_and_server_source_path(tmp_path):
         source = tmp_path / 'sources' / 'j1'
         source.mkdir(parents=True)
         db.execute("UPDATE jobs SET status='succeeded',snapshot=? WHERE id='j1'",
-                   (json.dumps({'source_dir': str(source)}),))
+                   (json.dumps({'source_dir': str(source), 'manifest': {'routes': [
+                       {'path': '/', 'service': 'web'}, {'path': '/abc', 'service': 'api'}]}}),))
         db.execute("UPDATE apps SET active_release_id='j1' WHERE id='a1'")
         app = project_app(db, db.execute('SELECT * FROM apps').fetchone(), base_domain='example.test')
         assert app['访问地址'] == 'https://demo.example.test/'
+        assert app['访问路径'] == '/ · /abc'
         assert app['服务器部署路径'] == str(source)
         source.rmdir()
         app = project_app(db, db.execute('SELECT * FROM apps').fetchone(), base_domain='example.test')
@@ -139,6 +141,7 @@ def test_active_app_projects_visit_url_and_server_source_path(tmp_path):
         db.execute("UPDATE apps SET active_release_id=NULL WHERE id='a1'")
         app = project_app(db, db.execute('SELECT * FROM apps').fetchone(), base_domain='example.test')
         assert app['访问地址'] == ''
+        assert app['访问路径'] == ''
         assert app['服务器部署路径'] == ''
 
 

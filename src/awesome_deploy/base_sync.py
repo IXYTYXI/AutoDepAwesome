@@ -85,12 +85,18 @@ def project_app(db, row, *, base_domain=Settings().base_domain):
     if row['active_release_id']:
         active = db.execute('SELECT status,snapshot FROM jobs WHERE id=? AND app_id=?',
                             (row['active_release_id'], app_id)).fetchone()
-    visit_url = source_dir = ''
+    visit_url = visit_paths = source_dir = ''
     if active and active['status'] == 'succeeded':
         if isinstance(domain, str) and re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,5}[a-z0-9])?', domain):
             visit_url = f'https://{domain}.{base_domain}/'
         try:
             snapshot = json.loads(active['snapshot'])
+            manifest = snapshot.get('manifest') if isinstance(snapshot, dict) else None
+            routes = manifest.get('routes') if isinstance(manifest, dict) else None
+            if isinstance(routes, list):
+                paths = [route.get('path') for route in routes if isinstance(route, dict)]
+                visit_paths = ' · '.join(dict.fromkeys(path for path in paths if isinstance(path, str)
+                                                  and re.fullmatch(r'/[A-Za-z0-9/_.~-]*', path)))
             source = Path(snapshot['source_dir'])
             if (source.is_absolute() and source.parent.name == 'sources'
                     and source.name == row['active_release_id'] and not source.is_symlink()
@@ -113,7 +119,7 @@ def project_app(db, row, *, base_domain=Settings().base_domain):
     return {'应用 ID': app_id, '应用名称': str(domain or app_id[:8]),
             '仓库地址': _safe_repository(row['repository']), '当前域名': str(domain),
             '状态': status, '负责人': _person(db, owner['owner_id'] if owner else None),
-            '访问地址': visit_url, '服务器部署路径': source_dir,
+            '访问地址': visit_url, '访问路径': visit_paths, '服务器部署路径': source_dir,
             '当前部署 ID': str(row['active_release_id'] or ''),
             '创建时间': _ms(row['created_at']), '更新时间': _ms(row['updated_at'])}
 
