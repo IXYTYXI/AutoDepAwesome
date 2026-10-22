@@ -50,9 +50,12 @@ def test_managed_reference_may_be_shared_only_between_known_master_key_uses(setu
     settings, store, client = setup
     job = managed_job(store, password=False)
     snapshot = copy.deepcopy(job["snapshot"])
+    snapshot["manifest"]["services"]["web"]["resources"]["memoryMiB"] = 250
     snapshot["manifest"]["services"]["api"] = copy.deepcopy(snapshot["manifest"]["services"]["web"])
     store.checkpoint(job["id"], snapshot=snapshot)
-    item = client.get(url(job), auth=AUTH).json()["items"][0]
+    response = client.get(url(job), auth=AUTH)
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
     assert item["managed"] is True and len(item["uses"]) == 2
     snapshot["manifest"]["services"]["api"]["secretRefs"] = {"API_KEY": "MASTER_KEY"}
     store.checkpoint(job["id"], snapshot=snapshot)
