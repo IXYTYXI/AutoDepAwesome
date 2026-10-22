@@ -112,3 +112,68 @@ def test_revocation_or_user_disable_prevents_new_calls_and_queued_execution(web)
         db.execute('UPDATE auth_users SET enabled=0,revision=revision+1 WHERE id=?', (session['userId'],))
     assert client.post('/api/v1/automation/deployments', json=body(),
                        headers=headers(second['token'], 'third')).status_code == 401
+
+
+def test_member_self_service_token_creation_and_source_separation(web):
+    client, app, _ = web
+    session = login(client)
+    assert client.get('/api-access').status_code == 200
+    assert client.get('/assets/api-credentials.js').status_code == 200
+    csrf = {'Origin': 'https://testserver', 'Content-Type': 'application/json',
+            'X-CSRF-Token': session['csrfToken']}
+    assert client.post('/api/v1/api-credentials', json={'name': 'my-ci', 'allowAnyApp': True},
+                       headers={'Origin': 'https://testserver'}).status_code == 403
+    response = client.post('/api/v1/api-credentials', json={'name': 'my-ci', 'allowAnyApp': True},
+                           headers=csrf)
+    assert response.status_code == 201
+    issued = response.json()
+    assert issued['kind'] == 'person' and issued['token'].startswith('adp_')
+    listing = client.get('/api/v1/api-credentials').json()['items']
+    assert [row['id'] for row in listing] == [issued['id']]
+    assert 'token' not in listing[0]
+    source = ApiCredentialStore(app.state.store.settings).issue(
+        session['userId'], 'source', kind='source', allow_any_app=True)
+    assert [row['id'] for row in client.get('/api/v1/api-credentials').json()['items']] == [issued['id']]
+    assert client.delete('/api/v1/api-credentials/' + source['id'], headers=csrf).status_code == 403
+    new_job = client.post('/api/v1/automation/deployments', json=body(), headers=headers(issued['token']))
+    assert new_job.status_code == 202
+    app_id = new_job.json()['appId']
+    update = client.post('/api/v1/automation/deployments', json=body(app_id=app_id),
+                         headers=headers(issued['token'], 'update'))
+    assert update.status_code == 202
+    assert client.delete('/api/v1/api-credentials/' + issued['id'], headers=csrf).status_code == 200
+    assert client.post('/api/v1/automation/deployments', json=body(app_id=app_id),
+                       headers=headers(issued['token'], 'later')).status_code == 401
+
+
+def test_other_member_cannot_list_or_revoke_personal_credential(web):
+    client, app, provider = web
+    owner = login(client)
+    issued = ApiCredentialStore(app.state.store.settings).issue(
+        owner['userId'], 'owner-only', kind='person', allow_any_app=True)
+    provider.person = 'ou_other'
+    other = login(client)
+    assert other['userId'] != owner['userId']
+    assert client.get('/api/v1/api-credentials').json()['items'] == []
+    csrf = {'Origin': 'https://testserver', 'Content-Type': 'application/json',
+            'X-CSRF-Token': other['csrfToken']}
+    assert client.delete('/api/v1/api-credentials/' + issued['id'], headers=csrf).status_code == 403
+    assert ApiCredentialStore(app.state.store.settings).authenticate(issued['token']) is not None
+
+
+def test_designated_source_can_submit_multiple_applications_and_updates(web):
+    client, app, _ = web
+    session = login(client)
+    token = ApiCredentialStore(app.state.store.settings).issue(
+        session['userId'], 'trusted-build-source', kind='source', allow_any_app=True)['token']
+    first = client.post('/api/v1/automation/deployments', json=body(subdomain='one'),
+                        headers=headers(token, 'one'))
+    second = client.post('/api/v1/automation/deployments', json=body(subdomain='two'),
+                         headers=headers(token, 'two'))
+    assert first.status_code == second.status_code == 202
+    assert first.json()['appId'] != second.json()['appId']
+    updated = client.post('/api/v1/automation/deployments',
+                          json=body(app_id=first.json()['appId'], subdomain='one'),
+                          headers=headers(token, 'one-update'))
+    assert updated.status_code == 202
+    assert updated.json()['appId'] == first.json()['appId']

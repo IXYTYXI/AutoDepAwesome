@@ -155,6 +155,7 @@ def main(argv=None):
     scope = api_token.add_mutually_exclusive_group(required=True)
     scope.add_argument('--app-id', help='仅允许更新这个已有应用')
     scope.add_argument('--allow-create', action='store_true', help='仅允许创建新应用')
+    scope.add_argument('--all-apps', action='store_true', help='允许创建应用并更新负责人有权限的任意应用')
     sub.add_parser('api-token-list', help='列出自动化部署凭证元数据，不显示凭证值')
     api_revoke = sub.add_parser('api-token-revoke', help='撤销自动化部署凭证')
     api_revoke.add_argument('--id', required=True, help='凭证 ID')
@@ -246,7 +247,8 @@ def main(argv=None):
                 credentials = ApiCredentialStore(settings)
                 if args.command == 'api-token-create':
                     issued = credentials.issue(args.user_id, args.name, kind=args.kind, app_id=args.app_id,
-                                               allow_create=args.allow_create, expires_days=args.days)
+                                               allow_create=args.allow_create, allow_any_app=args.all_apps,
+                                               expires_days=args.days)
                     print(json.dumps(issued, ensure_ascii=False))
                 elif args.command == 'api-token-list':
                     print(json.dumps(credentials.list(), ensure_ascii=False, indent=2))

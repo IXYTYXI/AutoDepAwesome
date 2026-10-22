@@ -1,6 +1,7 @@
 import importlib
 import importlib.util
 import sqlite3
+import time
 
 import pytest
 
@@ -66,3 +67,35 @@ def test_only_explicit_narrow_scopes_can_be_issued(setup):
         db.execute('UPDATE auth_users SET can_deploy=0 WHERE id=?', (owner['id'],))
     with pytest.raises(DeployError):
         service.issue(owner['id'], 'no-rights', kind='person', app_id=app_id)
+
+
+def test_user_can_list_and_revoke_only_own_person_credentials(setup):
+    settings, owner, app_id, clock = setup
+    service = credentials(settings, clock=clock)
+    own = service.issue(owner['id'], 'my-ci', kind='person', app_id=app_id)
+    source = service.issue(owner['id'], 'admin-source', kind='source', app_id=app_id)
+    assert [item['id'] for item in service.list(owner_user_id=owner['id'])] == [own['id']]
+    with pytest.raises(DeployError):
+        service.revoke(source['id'], actor=owner)
+    service.revoke(own['id'], actor=owner)
+    assert service.authenticate(own['token']) is None
+
+
+def test_source_can_have_unbounded_credentials_and_all_accessible_app_scope(setup):
+    settings, owner, app_id, clock = setup
+    clock[0] = time.time()
+    service = credentials(settings, clock=clock)
+    for index in range(101):
+        issued = service.issue(owner['id'], f'source-{index}', kind='source', allow_any_app=True)
+    assert issued['allowAnyApp'] is True
+    with service._connection() as db:
+        service.authorize_scope(db, owner, issued['id'], None)
+        service.authorize_scope(db, owner, issued['id'], app_id)
+    with pytest.raises(DeployError):
+        service.issue(owner['id'], 'bad-scope', kind='source', app_id=app_id, allow_any_app=True)
+    other = user(settings, name='Other')
+    other_app = Store(settings).enqueue(payload(subdomain='other'), 'other-app', actor=other)['app_id']
+    with pytest.raises(DeployError) as denied:
+        Store(settings).enqueue(payload(app_id=other_app, subdomain='other'), 'foreign-update',
+                                actor=owner, credential_id=issued['id'])
+    assert denied.value.code == 'ACCESS_DENIED'

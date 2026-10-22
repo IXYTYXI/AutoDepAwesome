@@ -37,6 +37,8 @@ class ApiCredentialStore:
             );
             CREATE INDEX IF NOT EXISTS api_credentials_owner ON api_credentials(owner_user_id,created_at);
         ''')
+        if 'allow_any_app' not in {row[1] for row in db.execute('PRAGMA table_info(api_credentials)')}:
+            db.execute('ALTER TABLE api_credentials ADD COLUMN allow_any_app INTEGER NOT NULL DEFAULT 0')
 
     @contextmanager
     def _connection(self, *, write=False):
@@ -57,11 +59,13 @@ class ApiCredentialStore:
         finally:
             db.close()
 
-    def issue(self, owner_user_id, name, *, kind, app_id=None, allow_create=False, expires_days=30):
+    def issue(self, owner_user_id, name, *, kind, app_id=None, allow_create=False,
+              allow_any_app=False, expires_days=30):
         if (self.settings.auth_mode != 'feishu' or kind not in {'person', 'source'}
                 or not isinstance(name, str) or not NAME.fullmatch(name)
                 or type(expires_days) is not int or not 1 <= expires_days <= 90
-                or (app_id is None) == (not allow_create)
+                or type(allow_create) is not bool or type(allow_any_app) is not bool
+                or sum((app_id is not None, allow_create, allow_any_app)) != 1
                 or app_id is not None and not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', app_id)):
             raise DeployError('INVALID_API_CREDENTIAL', 'API 凭证名称、范围或有效期无效。')
         token = 'adp_' + secrets.token_urlsafe(32)
@@ -76,18 +80,17 @@ class ApiCredentialStore:
                 raise denied()
             if app_id is not None:
                 AccessStore._require(db, actor, app_id, 'deploy')
-            if db.execute('SELECT COUNT(*) FROM api_credentials WHERE revoked_at IS NULL AND expires_at>?',
-                          (now,)).fetchone()[0] >= 100:
-                raise DeployError('API_CREDENTIAL_CAPACITY', '有效 API 凭证数量已达上限。')
             db.execute('''INSERT INTO api_credentials
-                (id,token_hash,owner_user_id,owner_revision,kind,name,app_id,allow_create,created_at,expires_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                (id,token_hash,owner_user_id,owner_revision,kind,name,app_id,allow_create,allow_any_app,created_at,expires_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
                 (credential_id, hashlib.sha256(token.encode()).hexdigest(), actor['id'], actor['revision'],
-                 kind, name, app_id, int(allow_create), now, now + expires_days * 86400))
+                 kind, name, app_id, int(allow_create or allow_any_app), int(allow_any_app),
+                 now, now + expires_days * 86400))
             db.execute('''INSERT INTO auth_audit(actor_id,action,target_id,result,details,created_at)
                 VALUES (?,'api_credential_issued',?,'success','{}',?)''', (actor['id'], credential_id, now))
         return {'id': credential_id, 'token': token, 'ownerUserId': owner_user_id, 'kind': kind,
                 'name': name, 'appId': app_id, 'allowCreate': bool(allow_create),
+                'allowAnyApp': bool(allow_any_app),
                 'expiresAt': now + expires_days * 86400}
 
     def authenticate(self, token):
@@ -112,26 +115,39 @@ class ApiCredentialStore:
         row = db.execute('SELECT * FROM api_credentials WHERE id=?', (credential_id,)).fetchone()
         now = time.time()
         if (not row or row['revoked_at'] is not None or not row['created_at'] <= now < row['expires_at']
-                or row['owner_user_id'] != actor['id'] or row['owner_revision'] != actor['revision']
-                or not (row['allow_create'] if app_id is None else row['app_id'] == app_id)):
+                or row['owner_user_id'] != actor['id'] or row['owner_revision'] != actor['revision']):
+            raise denied()
+        if app_id is None:
+            allowed = row['allow_any_app'] or row['allow_create']
+        else:
+            allowed = row['allow_any_app'] or row['app_id'] == app_id
+        if not allowed:
             raise denied()
         return dict(row)
 
-    def list(self):
+    def list(self, *, owner_user_id=None):
         with self._connection() as db:
+            query = ("SELECT * FROM api_credentials WHERE owner_user_id=? AND kind='person' "
+                     'ORDER BY created_at DESC,id DESC' if owner_user_id is not None else
+                     'SELECT * FROM api_credentials ORDER BY created_at DESC,id DESC')
             return [dict(id=row['id'], ownerUserId=row['owner_user_id'], kind=row['kind'], name=row['name'],
-                         appId=row['app_id'], allowCreate=bool(row['allow_create']),
+                         appId=row['app_id'], allowCreate=bool(row['allow_create'] and not row['allow_any_app']),
+                         allowAnyApp=bool(row['allow_any_app']),
                          createdAt=row['created_at'], expiresAt=row['expires_at'],
                          revokedAt=row['revoked_at'])
-                    for row in db.execute('SELECT * FROM api_credentials ORDER BY created_at DESC,id DESC')]
+                    for row in db.execute(query, (owner_user_id,) if owner_user_id is not None else ())]
 
-    def revoke(self, credential_id):
+    def revoke(self, credential_id, *, actor=None):
         now = self.clock()
         with self._connection(write=True) as db:
-            row = db.execute('SELECT owner_user_id,revoked_at FROM api_credentials WHERE id=?',
+            row = db.execute('SELECT owner_user_id,kind,revoked_at FROM api_credentials WHERE id=?',
                              (credential_id,)).fetchone()
             if row is None:
                 raise DeployError('NOT_FOUND', 'API 凭证不存在。')
+            if actor is not None:
+                fresh = AccessStore._actor(db, actor)
+                if fresh['id'] != row['owner_user_id'] or row['kind'] != 'person':
+                    raise denied()
             if row['revoked_at'] is None:
                 db.execute('UPDATE api_credentials SET revoked_at=? WHERE id=?', (now, credential_id))
                 db.execute('''INSERT INTO auth_audit(actor_id,action,target_id,result,details,created_at)

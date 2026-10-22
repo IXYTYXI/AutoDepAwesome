@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -96,6 +96,15 @@ class UserPermissionsRequest(BaseModel):
 class RepositoryCredentialsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     approved: StrictBool
+
+
+class ApiCredentialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: StrictStr
+    appId: StrictStr | None = None
+    allowCreate: StrictBool = False
+    allowAnyApp: StrictBool = False
+    days: StrictInt = 30
 
 
 _RUNTIME_NETWORK_TEXT = {
@@ -464,6 +473,11 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
     def manage():
         return FileResponse(STATIC / "manage.html")
 
+    @app.get('/api-access', dependencies=[Depends(authenticated)])
+    def api_access():
+        feishu_only()
+        return FileResponse(STATIC / 'api-credentials.html')
+
     @app.get("/document", dependencies=[Depends(authenticated)])
     def document():
         return FileResponse(STATIC / "document.html")
@@ -499,7 +513,7 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
             authenticated(request, credentials)
         if name not in ("app.js", "app.css", "manage.js", "manage.css", "auth.js", "auth.css",
                         "login.js", "members.js", "members.css", "vault.js", "vault.css",
-                        "document.js", "document.css"):
+                        "document.js", "document.css", "api-credentials.js", "api-credentials.css"):
             raise HTTPException(404)
         return FileResponse(STATIC / name)
 
@@ -609,6 +623,27 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
         if access:
             access.require_job(actor, job)
         return public_job(job)
+
+    @app.get('/api/v1/api-credentials')
+    def own_api_credentials(actor=Depends(authenticated)):
+        feishu_only()
+        return {'items': app.state.api_credentials.list(owner_user_id=actor['id'])}
+
+    @app.post('/api/v1/api-credentials', status_code=201)
+    def create_api_credential(body: ApiCredentialRequest, actor=Depends(write_access)):
+        feishu_only()
+        fresh(actor)
+        return app.state.api_credentials.issue(
+            actor['id'], body.name, kind='person', app_id=body.appId,
+            allow_create=body.allowCreate, allow_any_app=body.allowAnyApp,
+            expires_days=body.days)
+
+    @app.delete('/api/v1/api-credentials/{credential_id}')
+    def revoke_api_credential(credential_id: str, actor=Depends(write_access)):
+        feishu_only()
+        fresh(actor)
+        app.state.api_credentials.revoke(credential_id, actor=actor)
+        return {'ok': True}
 
     @app.get("/api/v1/deployments/{job_id}/events", dependencies=[Depends(authenticated)])
     def events(job_id: str, actor=Depends(authenticated)):

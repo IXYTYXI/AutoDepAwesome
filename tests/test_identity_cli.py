@@ -83,4 +83,8 @@ def test_cli_explicit_automation_credential_issue_list_and_revoke(config, capsys
     assert main(command + ['api-token-revoke', '--id', issued['id']]) == 0
     assert issued['token'] not in capsys.readouterr().out
     assert ApiCredentialStore(settings).authenticate(issued['token']) is None
+    assert main(command + ['api-token-create', '--user-id', actor['id'], '--name', 'unbounded-source',
+                           '--kind', 'source', '--all-apps']) == 0
+    broad = json.loads(capsys.readouterr().out)
+    assert broad['allowAnyApp'] is True
     identity.provider.close()
