@@ -19,7 +19,21 @@
     return docs.has(id) ? id : 'overview';
   }
 
-  async function load(id) {
+  function scrollToSection(fragment) {
+    if (!/^doxcn[A-Za-z0-9]{1,128}$/.test(fragment)) return false;
+    const section = document.getElementById(fragment);
+    if (!section || !content.contains(section)) return false;
+    if (content.scrollHeight > content.clientHeight) {
+      content.scrollTop += section.getBoundingClientRect().top - content.getBoundingClientRect().top - 18;
+    } else {
+      section.scrollIntoView({block: 'start'});
+    }
+    section.focus({preventScroll: true});
+    return true;
+  }
+
+  async function load(id, preserveScroll = false) {
+    const previousScroll = preserveScroll ? {top: content.scrollTop, left: content.scrollLeft} : null;
     const number = ++requestNumber;
     state.hidden = false;
     state.textContent = '正在读取文档…';
@@ -35,11 +49,9 @@
       content.innerHTML = body;
       content.hidden = false;
       state.hidden = true;
-      const fragment = window.location.hash.slice(1);
-      if (/^doxcn[A-Za-z0-9]+$/.test(fragment)) {
-        const section = document.getElementById(fragment);
-        if (section && content.contains(section)) section.scrollIntoView({block: 'start'});
-      }
+      content.scrollTop = previousScroll ? previousScroll.top : 0;
+      content.scrollLeft = previousScroll ? previousScroll.left : 0;
+      if (!previousScroll) scrollToSection(window.location.hash.slice(1));
     } catch (error) {
       if (number !== requestNumber || selected !== id) return;
       state.textContent = error.auth ? '请先登录部署平台，再查看文档。' : '文档暂时无法读取，请重试或在飞书打开。';
@@ -74,7 +86,7 @@
       state.textContent = '请先登录部署平台，再查看文档。';
       return;
     }
-    if (changed || force || content.hidden) load(id);
+    if (changed || force || content.hidden) load(id, !changed && !content.hidden);
   }
 
   for (const link of links) {
@@ -86,7 +98,19 @@
       show(id);
     });
   }
+  content.addEventListener('click', event => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const link = event.target.closest('a[href^="#doxcn"]');
+    if (!link || !content.contains(link)) return;
+    const fragment = link.getAttribute('href').slice(1);
+    if (!scrollToSection(fragment)) return;
+    event.preventDefault();
+    window.history.pushState({doc: selected}, '', '#' + fragment);
+  });
   window.addEventListener('popstate', () => show(requestedId()));
+  window.addEventListener('hashchange', () => {
+    if (!content.hidden) scrollToSection(window.location.hash.slice(1));
+  });
   reload.addEventListener('click', () => { if (loggedIn && selected) show(selected, true); });
   window.AwesomeAuth.onChange(session => {
     loggedIn = !!session;

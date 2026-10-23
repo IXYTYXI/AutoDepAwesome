@@ -8,6 +8,7 @@ import argparse
 import html
 import json
 from pathlib import Path
+import re
 from urllib.parse import urlsplit
 from xml.etree import ElementTree
 
@@ -20,6 +21,12 @@ TAGS = {
     "br": "br", "checkbox": "span", "callout": "aside", "a": "a",
     "ul": "ul", "ol": "ol", "li": "li",
 }
+HEADING_ID = re.compile(r"doxcn[A-Za-z0-9]{1,128}\Z")
+
+
+def heading_id(node: ElementTree.Element) -> str | None:
+    value = node.attrib.get("id", "")
+    return value if HEADING_ID.fullmatch(value) else None
 
 
 def safe_href(value: str) -> str | None:
@@ -36,7 +43,9 @@ def code_text(node: ElementTree.Element) -> str:
 
 def render(node: ElementTree.Element) -> str:
     if node.tag == "pre":
-        return '<pre tabindex="0" aria-label="代码示例"><code>' + html.escape(code_text(node)) + '</code></pre>' + html.escape(node.tail or "")
+        caption = node.attrib.get("caption", "").strip()
+        label = f'<p class="manual-code-caption">{html.escape(caption)}</p>' if caption else ""
+        return label + '<pre tabindex="0" aria-label="代码示例"><code translate="no">' + html.escape(code_text(node)) + '</code></pre>' + html.escape(node.tail or "")
     tag = TAGS.get(node.tag)
     if tag is None:
         # Preserve text in unsupported blocks, without inheriting their markup.
@@ -51,6 +60,12 @@ def render(node: ElementTree.Element) -> str:
         attrs = ' class="manual-callout"'
     elif node.tag == "checkbox":
         attrs = ' class="manual-checkbox"'
+    elif node.tag in {"title", "h1", "h2", "h3"}:
+        anchor = heading_id(node)
+        if anchor:
+            attrs = f' id="{anchor}" tabindex="-1"'
+    elif node.tag == "code":
+        attrs = ' translate="no"'
     if tag in {"br", "col"}:
         body = f"<{tag}{attrs}>"
     else:
@@ -61,21 +76,43 @@ def render(node: ElementTree.Element) -> str:
     return body + html.escape(node.tail or "")
 
 
-def render_document(raw: str) -> str:
+def render_document(raw: str, *, toc: bool = False) -> str:
     root = ElementTree.fromstring("<root>" + raw + "</root>")
-    return "\n".join(render(child) for child in root)
+    # Feishu block IDs can safely serve as stable links; other attributes remain ignored.
+    anchors = set()
+    for node in root.iter():
+        if node.tag not in {"title", "h1", "h2", "h3"}:
+            continue
+        anchor = heading_id(node)
+        if anchor in anchors:
+            node.attrib.pop("id", None)
+        elif anchor:
+            anchors.add(anchor)
+    navigation = ""
+    if toc:
+        sections = [(heading_id(node), "".join(node.itertext()).strip())
+                    for node in root if node.tag == "h1" and heading_id(node)]
+        if sections:
+            items = "".join(f'<li><a href="#{anchor}">{html.escape(label)}</a></li>'
+                            for anchor, label in sections)
+            navigation = '<nav class="manual-toc" aria-label="本文目录"><p><strong>本文目录</strong></p><ol>' + items + '</ol></nav>'
+    blocks = [render(child) for child in root]
+    if navigation:
+        blocks.insert(1 if len(root) and root[0].tag == "title" else 0, navigation)
+    return "\n".join(blocks)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("source", type=Path)
     parser.add_argument("target", type=Path)
+    parser.add_argument("--toc", action="store_true", help="Add a linked table of contents for top-level sections")
     args = parser.parse_args()
     data = json.loads(args.source.read_text())
     if data.get("ok") is not True:
         raise SystemExit("Feishu fetch did not succeed")
     content = data["data"]["document"]["content"]
-    args.target.write_text(render_document(content) + "\n")
+    args.target.write_text(render_document(content, toc=args.toc) + "\n")
 
 
 if __name__ == "__main__":
