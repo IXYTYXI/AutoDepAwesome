@@ -57,6 +57,9 @@ def test_handbook_download_uses_current_limits_and_document_viewer_is_protected(
         assert "<h1>" in content.text
         assert "<script" not in content.text.lower()
         assert content.headers["cache-control"] == "no-store"
+        if doc_id == "catalog":
+            assert 'href="https://guanghe.feishu.cn/base/Ozr8b9j8KakhDOsjCjwcSChlnbe"' in content.text
+            assert "多维表格现已放在项目目录" in content.text
     assert client.get("/document/content/unknown", auth=AUTH).status_code == 404
     assert client.get("/assets/manual-api.html", auth=AUTH).status_code == 404
     guide = client.get("/document/deployment-guide.txt", auth=AUTH)
