@@ -37,7 +37,7 @@ ANALYSIS_POLL_WAIT = 8.0
 class Submission(BaseModel):
     model_config = ConfigDict(extra="forbid")
     repository: StrictStr
-    ref: StrictStr
+    ref: StrictStr = "main"
     subdomain: StrictStr
     appId: StrictStr | None = None
 

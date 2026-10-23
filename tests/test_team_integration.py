@@ -115,6 +115,51 @@ def test_direct_session_required_scope_and_tamper(team, sessions):
     assert call(client, credential['token'], {'deployment': payload(), 'receipt': receipt}, 'bad').status_code == 401
 
 
+def test_deployment_apis_default_omitted_ref_and_preserve_idempotency(team, sessions):
+    client, _, credential, _ = team
+    omitted = {key: value for key, value in payload().items() if key != 'ref'}
+    headers = {'Authorization': 'Bearer ' + credential['token'], 'Idempotency-Key': 'automation-main'}
+    accepted = client.post('/api/v1/automation/deployments', json=omitted, headers=headers)
+    assert accepted.status_code == 202, accepted.text
+    assert accepted.json()['ref'] == 'main'
+    repeated = client.post('/api/v1/automation/deployments', json=payload(), headers=headers)
+    assert repeated.status_code == 202, repeated.text
+    assert repeated.json()['id'] == accepted.json()['id']
+
+    sid = sessions.issue(person())
+    omitted['subdomain'] = 'team'
+    accepted = call(client, credential['token'], {'deployment': omitted, 'sessionId': sid}, 'team-main')
+    assert accepted.status_code == 202, accepted.text
+    assert accepted.json()['ref'] == 'main'
+    repeated = call(client, credential['token'], {'deployment': payload('team'), 'sessionId': sid}, 'team-main')
+    assert repeated.status_code == 202, repeated.text
+    assert repeated.json()['id'] == accepted.json()['id']
+
+
+def test_outbox_defaults_ref_before_persistence_signature_and_retry(tmp_path, sessions, team):
+    client, _, credential, _ = team
+    class Transport:
+        def post(self, request_id, body):
+            assert body['deployment']['ref'] == 'main'
+            assert sessions.verify_receipt(body['receipt'], request_id, body['deployment']) == person()
+            result = call(client, credential['token'], body, request_id)
+            assert result.status_code == 202, result.text
+            assert result.json()['ref'] == 'main'
+            return result.json()
+
+    outbox = TeamOutbox(tmp_path / 'a' / 'db', sessions, Transport())
+    sid = sessions.issue(person())
+    omitted = {key: value for key, value in payload().items() if key != 'ref'}
+    assert outbox.accept('default-main', omitted, sid)['status'] == 'pending'
+    assert 'ref' not in omitted  # Do not change the caller's object.
+    assert outbox.accept('default-main', payload(), sid)['status'] == 'pending'
+    with pytest.raises(SessionError):
+        outbox.accept('default-main', {**payload(), 'ref': 'release-v2'}, sid)
+    sessions.logout(sid)
+    assert outbox.run_once()
+    assert outbox.get('default-main')['status'] == 'submitted'
+
+
 def test_outbox_response_loss_and_restart(tmp_path, sessions, team):
     client, app, credential, credentials = team
     calls = []

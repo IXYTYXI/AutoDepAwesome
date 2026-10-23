@@ -35,11 +35,11 @@ def request_key(value):
 
 def deployment_body(value):
     if (not isinstance(value, dict) or set(value) - {'repository', 'ref', 'subdomain', 'appId'}
-            or not {'repository', 'ref', 'subdomain'} <= set(value)
+            or not {'repository', 'subdomain'} <= set(value)
             or any(not isinstance(v, str) or not 1 <= len(v) <= 4096 for v in value.values())
             or len(canonical(value)) > 8192):
         raise SessionError('部署请求字段无效。')
-    return value
+    return {'ref': 'main', **value}
 
 
 class SharedSessions:
@@ -125,7 +125,7 @@ class SharedSessions:
 
     def admit(self, sid, request_id, deployment):
         request_key(request_id)
-        deployment_body(deployment)
+        deployment = deployment_body(deployment)
         identity = self.read(sid)
         return self._seal(dict(version=1, kind='admission', source=self.source, audience='awesome-deploy',
                                identity=identity, issuedAt=self.clock(), requestId=request_id,

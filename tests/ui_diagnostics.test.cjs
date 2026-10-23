@@ -204,7 +204,7 @@ test('unbound application selection retains its identity but requires a new doma
   assert.ok(h.get('app-picker-help').textContent.includes('当前未绑定域名'));
   assert.ok(h.get('app-picker-help').textContent.includes('已清除的数据不会恢复'));
   assert.ok(h.get('app-picker-help').textContent.includes('alpha'));
-  assert.ok(h.get('app-picker-help').textContent.includes('空闲前缀'));
+  assert.ok(h.get('app-picker-help').textContent.includes('可用的项目名称'));
   assert.ok(h.get('app-picker-help').textContent.includes('awesome.yaml'));
   h.get('subdomain').value='fresh';h.get('subdomain').listeners.input();
   await loadRecords(h,[],[released,apps[1]]);
@@ -272,13 +272,13 @@ test('deployment polling preserves visible history-row focus without stealing ot
 
 test('domain preview follows typed prefixes and selected applications',async()=>{
   const h=harness();await new Promise(setImmediate);await loadRecords(h,[],apps);
-  assert.equal(h.get('domain-prefix').textContent,'你的前缀');
+  assert.equal(h.get('domain-prefix').textContent,'项目名称');
   h.get('subdomain').value='draft';h.get('subdomain').listeners.input();
   assert.equal(h.get('domain-prefix').textContent,'draft');
   h.run("chooseApp('app-beta')");
   assert.equal(h.get('domain-prefix').textContent,'beta');
   h.get('subdomain').value='';h.get('subdomain').listeners.input();
-  assert.equal(h.get('domain-prefix').textContent,'你的前缀');
+  assert.equal(h.get('domain-prefix').textContent,'项目名称');
 });
 
 test('job dates interpret the API timestamp as Unix seconds',async()=>{

@@ -27,7 +27,7 @@ class TeamOutbox(IntakeRelay):
 
     def accept(self, request_id, deployment, session_id):
         request_key(request_id)
-        deployment_body(deployment)
+        deployment = deployment_body(deployment)
         receipt = self.sessions.admit(session_id, request_id, deployment)
         now = self.clock()
         with self._db() as db:

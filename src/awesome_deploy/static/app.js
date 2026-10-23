@@ -228,17 +228,30 @@ function appIdentityLabel(app) {
 function updateAppHelp() {
   const app=allApps.find(item=>item.id===$('appId').value);
   if(app?.domainBound===false) {
-    $('app-picker-help').textContent=`当前未绑定域名${app.lastSubdomain ? '；上次使用：'+app.lastSubdomain : ''}。继续部署此应用；已保留的数据会沿用，已清除的数据不会恢复。请填写空闲前缀，并与自己的 awesome.yaml 保持一致。`;
+    $('app-picker-help').textContent=`当前未绑定域名${app.lastSubdomain ? '；上次使用：'+app.lastSubdomain : ''}。继续部署此应用；已保留的数据会沿用，已清除的数据不会恢复。请填写可用的项目名称，并与 awesome.yaml 的 subdomain 保持一致。`;
   } else if(app) {
-    $('app-picker-help').textContent='更新此应用会沿用仓库和当前域名前缀；请与 awesome.yaml 保持一致。';
-  } else $('app-picker-help').textContent='选择已有应用以沿用应用身份与部署记录；未绑定域名的应用需填写空闲前缀。';
+    $('app-picker-help').textContent='更新此应用会沿用仓库和当前项目名称；名称须与 awesome.yaml 的 subdomain 保持一致。';
+  } else $('app-picker-help').textContent='选择已有应用以沿用应用身份与部署记录；未绑定域名的应用需填写可用的项目名称。';
 }
 function selectedAppLabel() {
   const app=allApps.find(item=>item.id===$('appId').value);
   return app ? `${appIdentityLabel(app)} · ${app.domainBound===false ? '未绑定域名' : '更新已有应用'}` : '创建新应用';
 }
 function updateDomainPreview() {
-  $('domain-prefix').textContent=$('subdomain').value || '你的前缀';
+  $('domain-prefix').textContent=$('subdomain').value || '项目名称';
+}
+function validateProjectName(showError=false) {
+  const input=$('subdomain');
+  const message=!input.value ? '请填写项目名称，例如 demo。' : /^[a-z0-9]([a-z0-9-]{0,5}[a-z0-9])?$/.test(input.value) ? ''
+    : '请使用 1–7 位小写字母、数字或中划线，首尾为字母或数字；不能包含中文、空格或大写字母。';
+  input.setCustomValidity?.(message);
+  const error=$('project-name-error');
+  if(error) {
+    error.hidden=!showError || !message;
+    error.textContent=showError ? message : '';
+    if(showError && message)input.setAttribute('aria-invalid','true');else input.removeAttribute('aria-invalid');
+  }
+  return !message;
 }
 function highlightAppOption() {
   for(let i=0;i<$('app-options').children.length;i++) {
@@ -253,7 +266,7 @@ function highlightAppOption() {
 function renderAppOptions() {
   const query=pickerQuery.trim().toLocaleLowerCase();
   const matching=allApps.filter(app=>app.permissions?.deploy!==false).filter(app=>`${app.subdomain || ''} ${app.lastSubdomain || ''} ${app.repository} ${app.id}`.toLocaleLowerCase().includes(query));
-  appChoices=[{id:'',subdomain:'创建新应用',repository:'使用新的域名前缀部署项目'},...matching];
+  appChoices=[{id:'',subdomain:'创建新应用',repository:'使用新的项目名称部署应用'},...matching];
   activeAppIndex=Math.max(0,Math.min(activeAppIndex,appChoices.length-1));
   $('app-options').replaceChildren();
   appChoices.forEach((app,index)=>{
@@ -302,7 +315,7 @@ function chooseApp(id) {
     if(app.domainBound!==false)$('subdomain').value=app.subdomain || '';
     else if(previousValues[0]!==id)$('subdomain').value='';
   }
-  updateDomainPreview();updateAppHelp();syncDeployPermission();
+  updateDomainPreview();validateProjectName();updateAppHelp();syncDeployPermission();
   if(fields.some((field,index)=>$(field).value!==previousValues[index]))requestKey=crypto.randomUUID();
   closeAppPicker();
   $('app-search').focus();
@@ -344,7 +357,9 @@ $('app-picker').addEventListener('focusout',event=>{
 document.addEventListener('pointerdown',event=>{
   if(pickerOpen && !$('app-picker').contains(event.target))closeAppPicker();
 });
-$('subdomain').addEventListener('input',updateDomainPreview);
+$('subdomain').addEventListener('input',()=>{updateDomainPreview();validateProjectName();});
+$('subdomain').addEventListener('blur',()=>validateProjectName(true));
+$('subdomain').addEventListener('invalid',()=>validateProjectName(true));
 function formatJobTime(value) {
   if(typeof value!=='number' || !Number.isFinite(value))return '时间未记录';
   return new Date(value*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
@@ -488,6 +503,7 @@ form.addEventListener('input',event=>{
 });
 form.addEventListener('submit',async(event)=>{
   event.preventDefault();if(deploymentSubmitting || !mayDeploy()){syncDeployPermission();return;}
+  if(!validateProjectName(true)){$('subdomain').focus();return;}
   deploymentSubmitting=true;$('submit').disabled=true;$('form-error').textContent='';
   if(secretEditor)secretControls(secretEditor);
   try {

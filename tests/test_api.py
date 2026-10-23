@@ -100,6 +100,23 @@ def test_submit_idempotent_and_status_available(client):
     assert "snapshot" not in fetched.json()
 
 
+def test_omitted_ref_defaults_to_main_without_changing_idempotency(client):
+    omitted = {key: value for key, value in BODY.items() if key != "ref"}
+    submitted = client.post("/api/v1/deployments", json=omitted, headers=headers(), auth=AUTH)
+    assert submitted.status_code == 202, submitted.text
+    assert submitted.json()["ref"] == "main"
+    repeated = client.post("/api/v1/deployments", json=BODY, headers=headers(), auth=AUTH)
+    assert repeated.status_code == 202, repeated.text
+    assert repeated.json()["id"] == submitted.json()["id"]
+    explicit = client.post("/api/v1/deployments", json={**BODY, "ref": "release-v2"},
+                           headers=headers("release-v2"), auth=AUTH)
+    assert explicit.status_code == 202, explicit.text
+    assert explicit.json()["ref"] == "release-v2"
+    invalid = client.post("/api/v1/deployments", json={**BODY, "ref": ""},
+                          headers=headers("empty-ref"), auth=AUTH)
+    assert invalid.status_code == 422
+
+
 def test_csrf_and_request_limits(client):
     r = client.post(
         "/api/v1/deployments",

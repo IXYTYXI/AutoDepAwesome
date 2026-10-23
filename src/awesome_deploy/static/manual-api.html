@@ -6,7 +6,7 @@
 <p>范围可选“我有权部署的应用”（可创建新应用并更新当前有权限的应用）、“指定单个应用”（只能更新该应用）、“仅创建新应用”。创建后立即复制完整凭证，存入调用程序的密钥配置，并以环境变量 <code>AWESOME_DEPLOY_TOKEN</code> 注入。页面之后只能查看凭证名称、范围和有效期，不能再次查看完整值。</p>
 <p>少数具名自动化来源由平台管理员单独签发和撤销，并关联一位负责的飞书成员。来源可连续提交多个应用和任务；队列、权限及资源配额照常生效。</p>
 <h2>2. 首次部署</h2>
-<p>先在调用程序工作目录创建 <code>deployment.json</code>，将仓库、分支和域名前缀换成真实值。仓库根目录必须有符合<a href="https://guanghe.feishu.cn/docx/DSUwdxpXhot6fQx2YticNCtWnHe#doxcngimJ5IlzSYkbu6arlZs19d" target="_blank" rel="noopener noreferrer">技术协议清单示例</a>的 <code>awesome.yaml</code>，且 app.subdomain 与请求一致；构建文件也必须推送到同一版本。</p>
+<p>先在调用程序工作目录创建 <code>deployment.json</code>，将仓库和项目名称换成真实值。项目名称仍通过 subdomain 字段提交：1–7 位小写字母、数字或中划线，首尾为字母或数字，不含中文、空格或大写字母。ref 可省略，默认 main；需要其他版本时显式传入真实存在的分支、标签或完整 commit。仓库根目录必须有符合<a href="https://guanghe.feishu.cn/docx/DSUwdxpXhot6fQx2YticNCtWnHe#doxcngimJ5IlzSYkbu6arlZs19d" target="_blank" rel="noopener noreferrer">技术协议清单示例</a>的 <code>awesome.yaml</code>，且 app.subdomain 与请求一致；构建文件也必须推送到同一版本。</p>
 <pre tabindex="0" aria-label="代码示例"><code>{
   &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,
   &quot;ref&quot;: &quot;main&quot;,
@@ -27,7 +27,8 @@
   https://awesome.guanghexinzhi.cn/api/v1/automation/deployments/JOB_ID</code></pre>
 <table><colgroup><col><col></colgroup><thead><tr><th><p>status</p></th><th><p>含义与下一步</p></th></tr></thead><tbody><tr><td><p><code>queued</code></p></td><td><p>已入队；稍后用同一接口查询。</p></td></tr><tr><td><p><code>running</code></p></td><td><p>正在执行；继续查询。</p></td></tr><tr><td><p><code>succeeded</code></p></td><td><p>该次部署成功；再看 <code>active</code> 和 <code>url</code> 确认它是否仍是当前在线版本。</p></td></tr><tr><td><p><code>failed</code></p></td><td><p>部署失败；查看响应中的中文 <code>error</code>，修复原因后用新幂等键重新提交。</p></td></tr><tr><td><p><code>recovery_required</code></p></td><td><p>需要平台管理员检查资源与恢复状态；不要把它当成成功。</p></td></tr></tbody></table>
 <h2>4. 更新已有应用</h2>
-<p>更新时加入已有应用的 <code>appId</code>，repository 须与该应用一致，当前已绑定域名的 subdomain 也须一致。保留数据下线且已释放域名的应用，可填新的空闲前缀，但仍须与新版本 awesome.yaml 一致。可更换 ref；真正的新部署使用新幂等键。创建新应用时不填 appId；失败后若要继续使用已分配的同一应用，也应传回该 appId，并确保凭证范围允许更新。</p>
+<p>应用查询与搜索：控制台通过网页登录会话调用 GET /api/v1/apps 获取当前可见应用，再在浏览器本地按项目名称、仓库地址或应用编号筛选；这不是对外 Bearer 或同组委托凭证接口。目前没有自动化应用搜索接口，调用方应保存提交结果中的 appId，后续更新直接复用。</p>
+<p>更新仍使用 POST /api/v1/automation/deployments，并加入已有应用的 <code>appId</code>，repository 须与该应用一致，当前已绑定域名的 subdomain 也须一致。保留数据下线且已释放域名的应用，可填新的空闲前缀，但仍须与新版本 awesome.yaml 一致。ref 省略时默认 main，也可显式更换为其他版本；真正的新部署使用新幂等键。创建新应用时不填 appId；失败后若要继续使用已分配的同一应用，也应传回该 appId，并确保凭证范围允许更新。</p>
 <pre tabindex="0" aria-label="代码示例"><code>{
   &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,
   &quot;ref&quot;: &quot;main&quot;,
