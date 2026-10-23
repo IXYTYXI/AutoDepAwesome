@@ -1,0 +1,22 @@
+[Unit]
+Description=Awesome Deploy team durable request intake
+After=network.target awesome-team-redis.service
+
+[Service]
+User=awesome-team
+Group=awesome-team
+ExecStart=/opt/awesome-deploy/.venv/bin/awesome-deploy-team --config /etc/awesome-team/intake.json --port 8099
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/awesome-team
+ReadOnlyPaths=/etc/awesome-team
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

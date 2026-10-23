@@ -623,6 +623,10 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
         payload, key = deployment_input(body, request)
         return public_job(store.enqueue(payload, key, actor=actor, credential_id=credential['id']))
 
+    from .team_api import install_team_routes
+    install_team_routes(app, settings, automation_access=automation_access, deployment_input=deployment_input,
+                        submission_model=Submission, public_job=public_job)
+
     @app.get('/api/v1/automation/deployments/{job_id}')
     def automation_deployment(job_id: str, identity_and_credential=Depends(automation_access)):
         actor, credential = identity_and_credential

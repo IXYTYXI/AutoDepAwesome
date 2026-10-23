@@ -30,7 +30,7 @@ def load_settings(path: Path | None) -> Settings:
             raise DeployError("INVALID_CONFIG", "无法读取运维配置 JSON。") from exc
     if not isinstance(values, dict) or set(values) - {f.name for f in dataclasses.fields(Settings)}:
         raise DeployError("INVALID_CONFIG", "运维配置包含未知字段或不是对象。")
-    for key in ("state_dir", "auth_file", "rootlesskit_socket", "ai_api_key_file", "egress_docker_pid_file", "feishu_app_secret_file", "secret_kek_file"):
+    for key in ("state_dir", "auth_file", "rootlesskit_socket", "ai_api_key_file", "egress_docker_pid_file", "feishu_app_secret_file", "secret_kek_file", "shared_sessions_file"):
         if key in values and values[key] is not None:
             try:
                 candidate = Path(values[key]).expanduser()
@@ -151,6 +151,7 @@ def main(argv=None):
     api_token.add_argument('--user-id', required=True, help='负责此凭证的已登录飞书用户 ID')
     api_token.add_argument('--name', required=True, help='凭证或自动化来源名称')
     api_token.add_argument('--kind', choices=('person', 'source'), required=True)
+    api_token.add_argument('--delegation-source', help='仅来源凭证：允许使用此来源的共享会话代理申请人')
     api_token.add_argument('--days', type=int, default=30, help='有效天数，1–90；默认 30')
     scope = api_token.add_mutually_exclusive_group(required=True)
     scope.add_argument('--app-id', help='仅允许更新这个已有应用')
@@ -248,7 +249,7 @@ def main(argv=None):
                 if args.command == 'api-token-create':
                     issued = credentials.issue(args.user_id, args.name, kind=args.kind, app_id=args.app_id,
                                                allow_create=args.allow_create, allow_any_app=args.all_apps,
-                                               expires_days=args.days)
+                                               expires_days=args.days, delegation_source=args.delegation_source)
                     print(json.dumps(issued, ensure_ascii=False))
                 elif args.command == 'api-token-list':
                     print(json.dumps(credentials.list(), ensure_ascii=False, indent=2))

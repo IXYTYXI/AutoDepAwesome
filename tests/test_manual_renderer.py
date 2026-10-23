@@ -50,3 +50,9 @@ def test_protocol_examples_preserve_yaml_whitespace_and_local_section_links():
     assert '<h3 id="doxcnExample">清单示例</h3>' in output
     assert 'services:\n  web:\n    env: {LABEL: &quot;a &amp; b&quot;}' in output
     assert 'class="manual-code-caption">awesome.yaml' in output
+
+
+def test_handbook_code_preserves_copyable_newlines_and_keyboard_scroll():
+    output = renderer()('<pre lang="json"><code>{<br/>  "x": 1<br/>}</code></pre>')
+    assert '{\n  &quot;x&quot;: 1\n}' in output
+    assert 'tabindex="0"' in output

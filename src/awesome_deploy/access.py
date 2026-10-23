@@ -63,6 +63,9 @@ class AccessStore:
                 PRIMARY KEY(kind,id),
                 FOREIGN KEY(kind,id) REFERENCES operation_auth(kind,id)
             );
+            CREATE TABLE IF NOT EXISTS operation_delegations (
+                kind TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(kind,id)
+            );
             CREATE TABLE IF NOT EXISTS access_audit (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL,
                 action TEXT NOT NULL, app_id TEXT, subject_id TEXT,
@@ -249,7 +252,7 @@ class AccessStore:
 
     @classmethod
     def record_operation(cls, db, actor, kind, operation_id, app_id, action, request_key=None,
-                         credential_id=None):
+                         credential_id=None, delegated=False):
         cls._require(db, actor, app_id, action)
         row = db.execute('SELECT revision FROM app_access WHERE app_id=?', (app_id,)).fetchone()
         # Administrators can manage unassigned legacy applications; no member can.
@@ -262,6 +265,8 @@ class AccessStore:
         if credential_id is not None:
             db.execute('INSERT INTO operation_credentials VALUES (?,?,?)',
                        (kind, operation_id, credential_id))
+            if delegated:
+                db.execute('INSERT INTO operation_delegations VALUES (?,?)', (kind, operation_id))
         cls._audit(db, actor['id'], kind + '_accepted', app_id, operation_id,
                    {'credentialId': credential_id} if credential_id else None)
 
@@ -273,16 +278,20 @@ class AccessStore:
                 raise denied()
             return None
         binding = dict(row)
-        credential_binding = db.execute('SELECT credential_id FROM operation_credentials WHERE kind=? AND id=?',
+        credential_binding = db.execute('''SELECT credential_id, EXISTS(SELECT 1 FROM operation_delegations d
+            WHERE d.kind=c.kind AND d.id=c.id) AS delegated FROM operation_credentials c WHERE kind=? AND id=?''',
                                         (kind, operation_id)).fetchone()
         if credential_binding:
             credential = db.execute('SELECT * FROM api_credentials WHERE id=?',
                                     (credential_binding['credential_id'],)).fetchone()
             if (not credential or credential['revoked_at'] is not None
                     or not credential['created_at'] <= time.time() < credential['expires_at']
-                    or credential['owner_user_id'] != binding['user_id']
-                    or credential['owner_revision'] != binding['user_revision']):
+                    or not credential_binding['delegated'] and (credential['owner_user_id'] != binding['user_id']
+                    or credential['owner_revision'] != binding['user_revision'])):
                 raise denied()
+            if credential_binding['delegated']:
+                from .api_credentials import ApiCredentialStore
+                ApiCredentialStore.require_delegation(db, credential)
         user = db.execute('SELECT * FROM auth_users WHERE id=?', (binding['user_id'],)).fetchone()
         if user is None or user['revision'] != binding['user_revision']:
             raise denied()

@@ -42,6 +42,9 @@ class ApiCredentialStore:
         if 'self_managed' not in {row[1] for row in db.execute('PRAGMA table_info(api_credentials)')}:
             db.execute('ALTER TABLE api_credentials ADD COLUMN self_managed INTEGER NOT NULL DEFAULT 0')
 
+        if 'delegation_source' not in {row[1] for row in db.execute('PRAGMA table_info(api_credentials)')}:
+            db.execute('ALTER TABLE api_credentials ADD COLUMN delegation_source TEXT')
+
     @contextmanager
     def _connection(self, *, write=False):
         db = sqlite3.connect(self.settings.database_path, timeout=30, isolation_level=None)
@@ -62,7 +65,7 @@ class ApiCredentialStore:
             db.close()
 
     def issue(self, owner_user_id, name, *, kind, app_id=None, allow_create=False,
-              allow_any_app=False, self_managed=False, expires_days=30):
+              allow_any_app=False, self_managed=False, expires_days=30, delegation_source=None):
         if (self.settings.auth_mode != 'feishu' or kind not in {'person', 'source'}
                 or not isinstance(name, str) or not NAME.fullmatch(name)
                 or type(expires_days) is not int or not 1 <= expires_days <= 90
@@ -71,6 +74,9 @@ class ApiCredentialStore:
                 or sum((app_id is not None, allow_create, allow_any_app)) != 1
                 or app_id is not None and not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', app_id)):
             raise DeployError('INVALID_API_CREDENTIAL', 'API 凭证名称、范围或有效期无效。')
+        if delegation_source is not None and (kind != 'source' or self_managed
+                or not allow_any_app or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,39}', delegation_source)):
+            raise DeployError('INVALID_API_CREDENTIAL', '委托来源必须使用具名来源凭证和所有应用范围。')
         token = 'adp_' + secrets.token_urlsafe(32)
         now, credential_id = self.clock(), uuid.uuid4().hex
         with self._connection(write=True) as db:
@@ -84,15 +90,15 @@ class ApiCredentialStore:
             if app_id is not None:
                 AccessStore._require(db, actor, app_id, 'deploy')
             db.execute('''INSERT INTO api_credentials
-                (id,token_hash,owner_user_id,owner_revision,kind,name,app_id,allow_create,allow_any_app,self_managed,created_at,expires_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (id,token_hash,owner_user_id,owner_revision,kind,name,app_id,allow_create,allow_any_app,self_managed,created_at,expires_at,delegation_source)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (credential_id, hashlib.sha256(token.encode()).hexdigest(), actor['id'], actor['revision'],
                  kind, name, app_id, int(allow_create or allow_any_app), int(allow_any_app), int(self_managed),
-                 now, now + expires_days * 86400))
+                 now, now + expires_days * 86400, delegation_source))
             db.execute('''INSERT INTO auth_audit(actor_id,action,target_id,result,details,created_at)
                 VALUES (?,'api_credential_issued',?,'success','{}',?)''', (actor['id'], credential_id, now))
         return {'id': credential_id, 'token': token, 'ownerUserId': owner_user_id, 'kind': kind,
-                'name': name, 'appId': app_id, 'allowCreate': bool(allow_create),
+                'delegationSource': delegation_source, 'name': name, 'appId': app_id, 'allowCreate': bool(allow_create),
                 'allowAnyApp': bool(allow_any_app), 'selfManaged': bool(self_managed),
                 'expiresAt': now + expires_days * 86400}
 
@@ -114,12 +120,15 @@ class ApiCredentialStore:
             return dict(user), dict(row)
 
     @staticmethod
-    def authorize_scope(db, actor, credential_id, app_id):
+    def authorize_scope(db, actor, credential_id, app_id, *, delegated=False):
         row = db.execute('SELECT * FROM api_credentials WHERE id=?', (credential_id,)).fetchone()
         now = time.time()
         if (not row or row['revoked_at'] is not None or not row['created_at'] <= now < row['expires_at']
-                or row['owner_user_id'] != actor['id'] or row['owner_revision'] != actor['revision']):
+                or not delegated and (row['owner_user_id'] != actor['id']
+                                      or row['owner_revision'] != actor['revision'])):
             raise denied()
+        if delegated:
+            ApiCredentialStore.require_delegation(db, row)
         if app_id is None:
             allowed = row['allow_any_app'] or row['allow_create']
         else:
@@ -128,12 +137,22 @@ class ApiCredentialStore:
             raise denied()
         return dict(row)
 
+    @staticmethod
+    def require_delegation(db, row):
+        if not row or row['kind'] != 'source' or not row['delegation_source'] or not row['allow_any_app']:
+            raise denied()
+        owner = db.execute('SELECT * FROM auth_users WHERE id=?', (row['owner_user_id'],)).fetchone()
+        if (not owner or not owner['enabled'] or not owner['eligible'] or not owner['can_deploy']
+                or owner['revision'] != row['owner_revision']):
+            raise denied()
+        return dict(owner)
+
     def list(self, *, owner_user_id=None):
         with self._connection() as db:
             query = ("SELECT * FROM api_credentials WHERE owner_user_id=? AND self_managed=1 "
                      'ORDER BY created_at DESC,id DESC' if owner_user_id is not None else
                      'SELECT * FROM api_credentials ORDER BY created_at DESC,id DESC')
-            return [dict(id=row['id'], ownerUserId=row['owner_user_id'], kind=row['kind'], name=row['name'],
+            return [dict(id=row['id'], ownerUserId=row['owner_user_id'], kind=row['kind'], name=row['name'], delegationSource=row['delegation_source'],
                          appId=row['app_id'], allowCreate=bool(row['allow_create'] and not row['allow_any_app']),
                          allowAnyApp=bool(row['allow_any_app']), selfManaged=bool(row['self_managed']),
                          createdAt=row['created_at'], expiresAt=row['expires_at'],

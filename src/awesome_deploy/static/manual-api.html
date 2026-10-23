@@ -7,17 +7,33 @@
 <p>少数具名自动化来源由平台管理员单独签发和撤销，并关联一位负责的飞书成员。来源可连续提交多个应用和任务；队列、权限及资源配额照常生效。</p>
 <h2>2. 首次部署</h2>
 <p>先在调用程序工作目录创建 <code>deployment.json</code>，将仓库、分支和域名前缀换成真实值。仓库根目录必须有符合<a href="https://guanghe.feishu.cn/docx/DSUwdxpXhot6fQx2YticNCtWnHe#doxcngimJ5IlzSYkbu6arlZs19d" target="_blank" rel="noopener noreferrer">技术协议清单示例</a>的 <code>awesome.yaml</code>，且 app.subdomain 与请求一致；构建文件也必须推送到同一版本。</p>
-<pre><code>{<br>  &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,<br>  &quot;ref&quot;: &quot;main&quot;,<br>  &quot;subdomain&quot;: &quot;demo&quot;<br>}</code></pre>
+<pre tabindex="0" aria-label="代码示例"><code>{
+  &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,
+  &quot;ref&quot;: &quot;main&quot;,
+  &quot;subdomain&quot;: &quot;demo&quot;
+}</code></pre>
 <p>提交部署使用 <strong>POST</strong> <code>/api/v1/automation/deployments</code>。请求体是 JSON，需带 Bearer 凭证、<code>Content-Type: application/json</code> 和 <code>Idempotency-Key</code>。确认运行环境已从安全配置注入 <code>AWESOME_DEPLOY_TOKEN</code>；每次新的部署使用新幂等键，示例键仅作演示。</p>
-<pre><code>curl --request POST --fail-with-body -sS \<br>  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \<br>  -H &#x27;Content-Type: application/json&#x27; \<br>  -H &#x27;Idempotency-Key: demo-initial-001&#x27; \<br>  --data-binary @deployment.json \<br>  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments</code></pre>
+<pre tabindex="0" aria-label="代码示例"><code>curl --request POST --fail-with-body -sS \
+  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \
+  -H &#x27;Content-Type: application/json&#x27; \
+  -H &#x27;Idempotency-Key: demo-initial-001&#x27; \
+  --data-binary @deployment.json \
+  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments</code></pre>
 <p>成功受理时返回 HTTP 202，包含任务编号 <code>id</code> 和应用编号 <code>appId</code>。两者都应保存；appId 已分配不代表应用已上线。<code>status</code>、<code>phase</code> 是任务状态与阶段；仅当该次成功部署仍为当前在线版本时，<code>active</code> 才为 true，<code>url</code> 才有值。</p>
 <h2>3. 查询任务结果</h2>
 <p>查询任务使用 <strong>GET</strong> <code>/api/v1/automation/deployments/{JOB_ID}</code>，把 JOB_ID 换成提交响应中的 id。查询必须使用提交任务的同一枚有效凭证；同一账号另建的新 Token 也不能查询这枚旧凭证的任务。GET 不创建或重试任务。建议每 3–5 秒查询一次，遇到 succeeded、failed 或 recovery_required 后停止常规轮询；调用方等待超时不等于平台任务失败。</p>
-<pre><code>curl --request GET --fail-with-body -sS \<br>  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \<br>  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments/JOB_ID</code></pre>
+<pre tabindex="0" aria-label="代码示例"><code>curl --request GET --fail-with-body -sS \
+  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \
+  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments/JOB_ID</code></pre>
 <table><colgroup><col><col></colgroup><thead><tr><th><p>status</p></th><th><p>含义与下一步</p></th></tr></thead><tbody><tr><td><p><code>queued</code></p></td><td><p>已入队；稍后用同一接口查询。</p></td></tr><tr><td><p><code>running</code></p></td><td><p>正在执行；继续查询。</p></td></tr><tr><td><p><code>succeeded</code></p></td><td><p>该次部署成功；再看 <code>active</code> 和 <code>url</code> 确认它是否仍是当前在线版本。</p></td></tr><tr><td><p><code>failed</code></p></td><td><p>部署失败；查看响应中的中文 <code>error</code>，修复原因后用新幂等键重新提交。</p></td></tr><tr><td><p><code>recovery_required</code></p></td><td><p>需要平台管理员检查资源与恢复状态；不要把它当成成功。</p></td></tr></tbody></table>
 <h2>4. 更新已有应用</h2>
 <p>更新时加入已有应用的 <code>appId</code>，repository 须与该应用一致，当前已绑定域名的 subdomain 也须一致。保留数据下线且已释放域名的应用，可填新的空闲前缀，但仍须与新版本 awesome.yaml 一致。可更换 ref；真正的新部署使用新幂等键。创建新应用时不填 appId；失败后若要继续使用已分配的同一应用，也应传回该 appId，并确保凭证范围允许更新。</p>
-<pre><code>{<br>  &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,<br>  &quot;ref&quot;: &quot;main&quot;,<br>  &quot;subdomain&quot;: &quot;demo&quot;,<br>  &quot;appId&quot;: &quot;已有应用编号&quot;<br>}</code></pre>
+<pre tabindex="0" aria-label="代码示例"><code>{
+  &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,
+  &quot;ref&quot;: &quot;main&quot;,
+  &quot;subdomain&quot;: &quot;demo&quot;,
+  &quot;appId&quot;: &quot;已有应用编号&quot;
+}</code></pre>
 <p>“指定单个应用”范围的凭证只能更新那一个应用；如果账号失去该应用的部署权限，凭证也不能继续部署它。</p>
 <h2>5. 重试与常见错误</h2>
 <p>提交后未收到响应时，任务可能已经入库。保留原请求并使用<strong>相同请求体、相同凭证、相同幂等键</strong>重试，平台返回同一任务的当前状态，不新建任务。幂等范围绑定凭证，换 Token 或换键可能生成新任务。真正的新部署才换键；同键对应不同请求返回冲突。幂等键长度为 1–128，仅用字母、数字、点、下划线、冒号和中划线。</p>
@@ -25,5 +41,5 @@
 <p>API 凭证不能用于网页管理、修改密钥、管理成员或下线应用。撤销凭证后，调用方不能再提交或查询；尚未执行的关联部署也会失去授权。查看凭证或撤销凭证请回到 <a href="https://awesome.guanghexinzhi.cn/api-access" target="_blank" rel="noopener noreferrer">API 凭证页面</a>。</p>
 <p>若任务因缺少登录密码或供应商 API Key 失败，到控制台相应任务补充配置；不要把秘密值加进部署 JSON。API 提交与网页提交一样，由后台异步同步应用及部署记录到飞书多维表格；表格写入成功不是 202 的前置条件，也不等于部署成功。</p>
 <h3>平台不可达时的请求收据</h3>
-<p>平台任务记录在服务端完成受理事务后产生；客户端即使没收到 202，记录也可能已经存在。平台完全没收到请求时，平台及其后台表格同步都无法替调用方记下该次申请。需要这种保障时，应另行部署独立请求登记服务：先持久保存原请求并返回 requestId，再由服务用同一幂等键自动投递与查询；requestId 不等于平台 id（jobId）或 appId。飞书「部署请求」表已准备，但独立登记服务尚未上线，不能据此认为现在已具备平台不可达时自动收件和恢复投递的能力。既有「应用」「部署记录」表是平台结果的异步镜像。</p>
-<p>完整接入协议见 <a href="https://guanghe.feishu.cn/docx/DWPCdke22oEN8Bxwy70cFX9anXe" target="_blank" rel="noopener noreferrer">同组网页项目接入 Awesome Deploy API｜后端实施手册</a> 的第 9 节。独立接入服务尚未部署到已确定的同组网页主机，启用前请按仓库 <code>docs/intake-relay.md</code> 完成配置与验收。</p>
+<p>平台受理事务完成后即有任务记录，即使客户端没收到 202 也可能已入队；完全没收到的请求则不会由 B 留下记录。0.11.0 提供同组 A 端适配服务：先在本机 SQLite 保存申请并返回 requestId，再以来源凭证和签名身份凭据向 B 投递。它与 B 暂时同机，可应对 B 进程故障和响应丢失；整机故障仍需要异机备份。该链路使用 /api/v1/integrations/deployments，不改变本文原有 /api/v1/automation 接口。具体 A 项目尚未接通。</p>
+<p>新的共享会话、A 端接口、可靠投递与迁移说明见 <a href="https://guanghe.feishu.cn/docx/DWPCdke22oEN8Bxwy70cFX9anXe" target="_blank" rel="noopener noreferrer">同组网页项目接入 Awesome Deploy API｜后端实施手册</a> 第 1—6 节。Redis 保存登录态，数据库保存申请；此方案不将签名受理凭据写入飞书。原有应用和部署记录表在 B 收件后异步同步；旧独立登记模块的部署请求表恢复未自动接入此链路。</p>

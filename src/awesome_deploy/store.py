@@ -348,14 +348,14 @@ class Store:
         ).fetchone() is not None
         return (owner is None or reset_owner or managed_draft) and not active_release and not generation_data
 
-    def enqueue(self, payload, idempotency_key, *, actor=None, credential_id=None):
+    def enqueue(self, payload, idempotency_key, *, actor=None, credential_id=None, delegated=False):
         encoded = _json(payload)
         request_key = idempotency_key
         if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 200:
             raise DeployError("INVALID_IDEMPOTENCY_KEY", "Provide an idempotency key of 1–200 characters.")
         if actor is None and getattr(self.settings, "auth_mode", "basic") == "feishu":
             raise denied()
-        if credential_id is not None and actor is None:
+        if credential_id is not None and actor is None or delegated and credential_id is None:
             raise denied()
         with self._connection(write=True) as db:
             if actor is not None:
@@ -364,13 +364,31 @@ class Store:
                     raise denied()
                 if credential_id is not None:
                     from .api_credentials import ApiCredentialStore
-                    ApiCredentialStore.authorize_scope(db, actor, credential_id, payload.get('appId'))
+                    credential = ApiCredentialStore.authorize_scope(
+                        db, actor, credential_id, payload.get('appId'), delegated=delegated)
                 scoped_request_key = (f'api:{credential_id}:{idempotency_key}'
                                       if credential_id is not None else idempotency_key)
-                idempotency_key = AccessStore.scoped_key(actor, "job", scoped_request_key)
+                if delegated:
+                    # Source-wide keys survive token rotation and cannot be reused by another applicant.
+                    import hashlib
+                    idempotency_key = 'team:' + hashlib.sha256(
+                        _json([credential['delegation_source'], request_key]).encode()).hexdigest()
+                else:
+                    idempotency_key = AccessStore.scoped_key(actor, "job", scoped_request_key)
             row = db.execute("SELECT * FROM jobs WHERE idempotency_key=?", (idempotency_key,)).fetchone()
             if row:
                 if actor is not None:
+                    if delegated:
+                        prior = db.execute("""SELECT a.user_id,c.delegation_source,1 AS delegated FROM operation_auth a
+                            JOIN operation_credentials o ON o.kind=a.kind AND o.id=a.id
+                            JOIN api_credentials c ON c.id=o.credential_id
+                            JOIN operation_delegations d ON d.kind=o.kind AND d.id=o.id WHERE a.kind='job' AND a.id=?""",
+                            (row['id'],)).fetchone()
+                        if (not prior or not prior['delegated'] or prior['user_id'] != actor['id']
+                                or prior['delegation_source'] != credential['delegation_source']):
+                            raise denied()
+                        db.execute("UPDATE operation_credentials SET credential_id=? WHERE kind='job' AND id=?",
+                                   (credential_id, row['id']))
                     AccessStore._authorize_operation_local(db, "job", row["id"], required=True)
                     if credential_id is not None:
                         binding = db.execute("SELECT credential_id FROM operation_credentials WHERE kind='job' AND id=?",
@@ -414,7 +432,7 @@ class Store:
             )
             if actor is not None:
                 AccessStore.record_operation(db, actor, "job", job_id, app_id, "deploy", request_key,
-                                             credential_id=credential_id)
+                                             credential_id=credential_id, delegated=delegated)
             return self._get(db, job_id)
 
     def _prepare_vault_generation(self, db, app_id, actor_id):

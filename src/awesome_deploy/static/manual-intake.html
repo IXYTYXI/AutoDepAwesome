@@ -1,43 +1,49 @@
 <h1>同组网页项目接入 Awesome Deploy API｜后端实施手册</h1>
-<p>适用对象：同组网页项目的开发者及协助开发的 AI。核对日期：2026-10-23。本文描述当前已经上线的接口与调用方需要实现的部分；完整平台协议见文末链接。</p>
-<aside class="manual-callout"><p><strong>先记住两件事：</strong>浏览器不得持有平台 Token，也不能从其他网页域名直接调用当前自动化接口。HTTP 202 仅表示部署任务已入队，不表示应用上线成功。</p></aside>
-<h2>1. 接入边界与数据流</h2>
-<p>推荐链路：同组网页的已登录用户 → 该项目后端 → Awesome Deploy 自动化 API → 平台部署队列。网页只调用自己的后端；后端负责自身用户授权、持久化请求、保存平台任务编号和轮询结果。平台 Token 只放在该后端的密钥配置中。</p>
-<p>当前自动化接口拒绝来自其他网页 Origin 的浏览器请求，即使浏览器携带 Bearer Token 也不能作为接入方案。如果对方项目只有静态页面，应先增加受控后端；不要将 Token 放入 JavaScript、页面配置、前端构建变量或浏览器存储。</p>
-<h2>2. 接入前准备</h2>
-<ol><li>确定调用来源名称和负责的飞书成员；该成员须已登录平台并拥有目标应用的部署权限。</li><li>确定范围：需要创建多个新应用并更新负责人有权部署的应用时，签发 <code>--all-apps</code> 来源凭证；只更新一个已有应用时用 <code>--app-id</code>。同一来源凭证可多次提交，没有“只能部署一次或一个应用”的产品数量上限，执行仍受权限、队列和资源限制。</li><li>由平台管理员在可信服务器终端签发独立来源凭证；完整值只显示一次，有效期为 1–90 天。把它存入调用方后端的密钥管理，再注入环境变量 <code>AWESOME_DEPLOY_TOKEN</code>。不要通过聊天、Git 或前端交付。</li><li>从实际后端运行环境核验能访问平台 HTTPS 地址。若后端也运行在受限容器中，网络放行需按其运行外连策略单独配置；Token 本身不授予网络连通性。</li><li>待部署仓库应包含符合平台使用手册的 <code>awesome.yaml</code> 和部署所需文件。平台读取用户仓库并按原有业务代码部署，接入方不得假设平台会修改业务逻辑。私有仓库的读取权限由平台另行配置；自动化 API 凭证不等于 Git 仓库凭证。</li></ol>
-<pre><code>awesome-deploy --config /etc/awesome-deploy/config.json api-token-create \<br>  --user-id MEMBER_ID --name group-web-backend --kind source --all-apps --days 30</code></pre>
-<p>如需撤销，管理员使用 <code>api-token-list</code> 找到凭证 ID，再执行 <code>api-token-revoke --id CREDENTIAL_ID</code>。撤销、过期或负责人失去权限后，凭证无法继续提交；已绑定该凭证的任务也无法再由它查询。轮换时应先处理未完成任务。</p>
-<h2>3. 平台 API 契约</h2>
-<table><colgroup><col><col><col></colgroup><thead><tr><th><p>方法与地址</p></th><th><p>作用</p></th><th><p>调用条件</p></th></tr></thead><tbody><tr><td><p>POST /api/v1/automation/deployments</p></td><td><p>创建部署任务；成功受理返回 HTTP 202</p></td><td><p>Bearer Token、application/json、Idempotency-Key</p></td></tr><tr><td><p>GET /api/v1/automation/deployments/{id}</p></td><td><p>按任务 id 查询该次部署状态</p></td><td><p>必须使用提交该任务的同一枚 Token；GET 不创建任务</p></td></tr></tbody></table>
-<p>基础地址为 <code>https://awesome.guanghexinzhi.cn</code>。POST 请求体只接受明确字段：<code>repository</code>、<code>ref</code>、<code>subdomain</code>；更新已有应用时另加 <code>appId</code>。已有应用仍绑定域名时，仓库和域名前缀必须与该应用一致。域名前缀为 1–7 位小写字母、数字或中划线，并须与仓库中的配置一致。</p>
-<pre><code>{<br>  &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,<br>  &quot;ref&quot;: &quot;main&quot;,<br>  &quot;subdomain&quot;: &quot;demo&quot;<br>}</code></pre>
-<p><code>Idempotency-Key</code> 必填，长度 1–128，只能含英文字母、数字、点、下划线、冒号和中划线。每一次真正的新部署使用新键；同一请求因超时重试时保持相同 Token、请求体和键。相同键配不同请求会冲突。将上面的 JSON 示例保存为 deployment.json，再运行下面的 curl 命令。</p>
-<pre><code>curl --request POST --fail-with-body -sS \<br>  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \<br>  -H &quot;Content-Type: application/json&quot; \<br>  -H &quot;Idempotency-Key: group-web-request-001&quot; \<br>  --data-binary @deployment.json \<br>  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments</code></pre>
-<p>受理响应包含 <code>id</code>（部署任务编号）、<code>appId</code>（应用编号）、<code>status</code> 等字段。新应用在入队时即分配 appId；应保存这两个编号。此时通常是 <code>queued</code>，appId 存在也不代表已上线。后续更新该应用时在 POST 请求体中传回这个 appId。</p>
-<pre><code>curl --request GET --fail-with-body -sS \<br>  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \<br>  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments/JOB_ID</code></pre>
-<h2>4. 调用方后端必须实现的流程</h2>
-<ol><li>先验证自己网页的登录用户是否允许申请部署，再校验仓库、分支、域名前缀和已有 appId。不要把用户输入直接当作平台授权。</li><li>在自己的数据库先持久化申请记录、规范化请求体和幂等键，然后再发 POST。至少保存：本地申请 ID、申请人、请求体摘要、幂等键、平台任务 id、平台 appId、状态和更新时间。Token 只保存在密钥管理，不写入申请记录或日志。</li><li>收到 202 后持久化平台返回的 id 和 appId，再向网页显示“已受理/排队”；不要显示“部署成功”。</li><li>若 POST 超时或响应丢失，以同一 Token、同一请求体和同一幂等键重试，以取回同一个任务；不要直接换键，以免重复部署。</li><li>后台使用 GET 查询状态，并把结果写回自己的申请记录；网页只读自己后端保存的状态。可以按逐步延长的间隔轮询，避免浏览器关掉后失去追踪能力。</li><li>状态为 succeeded 时，再看 active 和 url；succeeded 说明该次任务曾成功，active 才表示它仍是当前在线版本。failed 时展示平台 error；recovery_required 时提示平台管理员核查，不得自动当成成功或盲目重试。</li></ol>
-<table><colgroup><col><col></colgroup><thead><tr><th><p>平台 status</p></th><th><p>对方网页的处理</p></th></tr></thead><tbody><tr><td><p>queued</p></td><td><p>显示排队，继续后台查询</p></td></tr><tr><td><p>running</p></td><td><p>显示执行中，继续后台查询</p></td></tr><tr><td><p>succeeded</p></td><td><p>显示该次成功；结合 active、url 判断当前是否在线</p></td></tr><tr><td><p>failed</p></td><td><p>保存并展示错误摘要；修复后用新幂等键重新提交</p></td></tr><tr><td><p>recovery_required</p></td><td><p>停止自动重试，交平台管理员处理</p></td></tr></tbody></table>
-<h2>5. 飞书多维表格登记</h2>
-<p>平台已有独立同步进程，将所有平台应用记录和部署任务记录镜像到专用飞书多维表格；API 提交与网页提交走同一平台数据库，因此都参与同步。新应用在受理后可形成应用主表记录，部署任务形成部署记录表记录；负责人和提交人来自凭证关联的飞书成员。</p>
-<p>多维表格同步是异步的，网络故障时会保留待同步项并重试；表格不是部署状态的权威来源，也不应成为对方后端判断成功的依据。对方后端应使用任务 GET 响应。同步内容不包含 Token、业务密钥、原始执行日志或错误详情。</p>
-<h2>6. 常见失败与处理</h2>
-<table><colgroup><col><col></colgroup><thead><tr><th><p>情况</p></th><th><p>应检查什么</p></th></tr></thead><tbody><tr><td><p>401</p></td><td><p>Bearer 凭证缺失、过期、撤销或格式错误</p></td></tr><tr><td><p>403</p></td><td><p>凭证范围、负责人的部署权限、目标应用权限；或误从其他网页 Origin 直接调用</p></td></tr><tr><td><p>400 / 409</p></td><td><p>幂等键格式、同键不同请求，或应用及域名冲突；以实际返回的错误内容为准</p></td></tr><tr><td><p>415 / 422</p></td><td><p>Content-Type 必须是 application/json；检查 JSON 字段、类型和取值</p></td></tr><tr><td><p>网络超时或 5xx</p></td><td><p>保留原申请记录；先用相同请求体与幂等键重试，不能直接生成新键</p></td></tr><tr><td><p>202</p></td><td><p>仅表示任务入队；继续 GET 查询，不应视为成功</p></td></tr></tbody></table>
-<p>自动化凭证当前只可提交部署并查询自己提交的任务，不能用来管理成员、修改业务密钥、下线应用或调用网页登录接口。若业务部署需要密码或外部 API Key，按平台现有密钥配置流程单独处理；不要放进仓库或部署请求。</p>
-<h2>7. 交付验收清单</h2>
-<span class="manual-checkbox">□ 网页前端请求只到本项目后端；抓包和构建产物里均没有平台 Token。</span>
-<span class="manual-checkbox">□ 后端负责人、凭证范围、到期日和撤销方式已记录；实际运行环境可访问平台 HTTPS。</span>
-<span class="manual-checkbox">□ 首次 POST 返回 202、任务 id 和 appId；本地数据库在发请求前已保存申请与幂等键。</span>
-<span class="manual-checkbox">□ 同键同请求重试返回同一任务；真实新部署使用新键；更新已有应用传 appId。</span>
-<span class="manual-checkbox">□ 浏览器关闭或后端重启后仍能继续查询；queued/running/succeeded/failed/recovery_required 均有明确页面状态。</span>
-<span class="manual-checkbox">□ 成功时核对 active 与 url；失败时展示可行动的原因；飞书登记最终可查，但不依赖表格来判定部署成功。</span>
-<h2>8. 给开发者和 AI 的实施说明</h2>
-<p>请以本文的接口契约实现“同组网页后端发起并追踪 Awesome Deploy 部署”。先检查现有项目的身份、数据库和任务执行机制，沿用项目技术栈；实现后端持久化申请、签发的来源凭证安全注入、POST 提交、幂等重试、GET 后台查询、状态展示和必要的权限检查。不要把 Bearer Token 交给浏览器，不要直接修改 Awesome Deploy 或用户业务仓库来适配调用。以第 7 节逐项验收，并明确报告未能在目标环境实测的网络与凭证条件。</p>
-<p>参考：<a href="https://guanghe.feishu.cn/docx/DxI1dW2LOoDjssxtaAfcrdOCnNg" target="_blank" rel="noopener noreferrer">自动化部署 API 使用手册</a>；<a href="https://guanghe.feishu.cn/docx/DSUwdxpXhot6fQx2YticNCtWnHe" target="_blank" rel="noopener noreferrer">当前接入技术协议 v2.0</a>；<a href="https://guanghe.feishu.cn/docx/VBffdzM2do2H8txSOt1cwLsanig" target="_blank" rel="noopener noreferrer">平台使用手册</a>。当文档与实际接口响应不一致时，以当前线上接口和其受控版本说明为准，先核实再改调用方。</p>
-<h2>9. 平台不可达时的独立请求登记</h2>
-<p>如果同组网页需要在部署平台不可达时仍然保留上线申请，应把请求先交给运行在网页后端主机或其他独立主机上的接入服务。不要把接入服务和部署平台放在同一台故障主机。接入服务只有在本地 SQLite 提交成功后才返回 HTTP 202；同时同步尝试将完整、无秘密的部署请求写入专用多维表格「部署请求」。飞书写入失败不会阻止接入服务继续向可用的平台投递，恢复后会补写。</p>
-<p>调用方提交一次请求到接入服务的 <code>POST http://127.0.0.1:8099/requests</code>，携带独立的 Bearer 接入凭证、<code>Content-Type: application/json</code> 和唯一 <code>Idempotency-Key</code>。请求体仍使用平台的 <code>repository</code>、<code>ref</code>、<code>subdomain</code>、可选 <code>appId</code>。接入服务返回的 <code>requestId</code> 是请求收据；此时 <code>status=pending</code> 仅表示已在独立接入端持久保存，不代表部署平台已接收。后端调用 <code>GET /requests/{requestId}</code> 查询后续状态；平台接收后才出现 <code>jobId</code>、<code>appId</code>，状态转为 <code>submitted</code>。</p>
-<p>接入服务后台以原请求 ID 作为平台的幂等键自动投递并查询最终任务状态。平台断网或超时，服务会按有上限的退避继续投递；平台明确返回 HTTP 400、409 或 422 时则记录为 rejected，等待调用方修正请求后用新请求 ID 提交；即使第一次平台已接收但响应丢失，同键同请求也只取回原任务。调用方不需要自行猜测何时重试平台。接入服务重启会继续处理本地未完成项；本地库损坏或丢失时，可从多维表格恢复签名有效的记录，表中已记录最终状态的请求不会再次提交；若表中状态滞后、接入端本地库和平台数据库又同时丢失，不能仅靠表格保证恰好一次，应先恢复平台数据库备份再开放投递。Token、密码、业务密钥、原始日志都不能写进表格。</p>
-<p>现有多维表格已新建独立的「部署请求」表（表 ID：tblgVwWTlwxvQ4Mv），字段为「请求 ID」「请求内容」「完整性签名」「状态」「部署 ID」「应用 ID」「提交时间」「更新时间」。原有「应用」和「部署记录」表仍只镜像平台结果，不能用作待投递队列。完整性签名由接入端保管的独立密钥生成，恢复时拒绝手工改写或签名不符的行；此密钥与接入端数据库都需要备份。若请求连独立接入端也未到达，网页后端必须先持久保存申请意图或明确告诉用户未受理，不能声称已登记。</p>
-<p>独立接入服务的配置、部署方式、故障验收和表字段见项目仓库 <code>docs/intake-relay.md</code>。同组网页项目尚未确定，因此当前代码提供可部署的接入服务及协议，尚未接入具体网页后端，也未在另一台主机上线；在完成独立主机和表格配置前，仍按本手册前文的直接平台 API 流程使用。</p>
+<p>适用版本 0.11.0，更新于 2026-10-23。本文面向同组项目开发者和 AI：A/B 先同机部署，Redis 可迁移。A 业务项目尚未创建，本次交付可接入组件与 B 端能力，不代表 A 已完成真实登录联调。</p>
+<aside class="manual-callout"><p>浏览器只访问 A；内部接入凭证、平台来源凭证、签名受理凭据均不得下发到前端。A 返回 202 表示申请已保存，B 返回 202 表示部署已入队，都不代表上线成功。</p></aside>
+<h2>1. 服务与身份</h2>
+<p>A 后端完成飞书 OAuth 后，以受保护的内部凭证调用本机适配服务签发共享会话。会话存 Redis，默认 8 小时绝对过期，可配置更短时间，无滑动续期。B 验证来源凭证及共享身份，按申请人的本地权限部署。客户端不得决定 openId、角色或负责人。只接受与 B 相同飞书 App ID、tenant_key 的 open_id；不同 App 的 open_id 不能直接互换，不通过姓名匹配。</p>
+<p>现行本机地址：Redis <code>127.0.0.1:6391</code>；A 端适配服务 <code>127.0.0.1:8099</code>；B <code>127.0.0.1:8088</code>，内部 HTTP 设置 Host 为 <code>awesome.guanghexinzhi.cn</code>。浏览器只访问 A，不能访问 8099 或持有内部凭证。容器中的 127.0.0.1 是容器自己；若 A 以后部署在容器，必须先配置受控的宿主机连接，不要直接开放公网端口或使用 host 网络来绕过平台策略。</p>
+<p>A/B 共用登录身份并不等于共用密码或飞书授权。Redis 只保存签名身份和有效期，不保存密码、飞书 access_token 或 refresh_token。若 B 将来需要以用户身份读取/创建飞书文件，那是另一项 OAuth 资源授权；当前部署链路不需要。部署结果登记使用平台已有的飞书应用身份。</p>
+<h2>2. A 后端接入顺序（任何语言均可）</h2>
+<p>四个接口都必须由 A 后端调用，带 <code>Authorization: Bearer &lt;内部接入凭证&gt;</code>。凭证由运行环境安全注入，不能出现在浏览器、Git、聊天或日志。</p>
+<ol><li>OAuth 回调校验成功后，取已验证的飞书身份，调用 <code>POST http://127.0.0.1:8099/sessions</code>。把返回 sessionId 关联到 A 自己的服务端登录会话，不交给用户填写。</li><li>用户提交部署时，A 检查自己的申请权限，从服务端登录态取 sessionId；给此次业务申请生成并保存固定请求 ID，调用 <code>POST /requests</code>。</li><li>返回 202 表示请求已事务落入 A 适配服务数据库。前端显示“已受理”，后台通过 <code>GET /requests/{requestId}</code> 查询。GET 不创建任务。</li><li>用户退出 A 时，调用 <code>POST /sessions/revoke</code>。已持久受理的任务继续处理；后续新申请不能使用旧会话。</li><li>A 自己的请求查询接口必须校验请求属于当前用户；内部接口的凭证属于整个 A 服务，不替代 A 网页的数据权限。</li></ol>
+<p>会话签发请求（identity 必须取自服务器验证的 OAuth 结果）：</p>
+<pre tabindex="0" aria-label="代码示例"><code>{&quot;identity&quot;:{&quot;appId&quot;:&quot;cli_aa04dd8797f8dbd1&quot;,&quot;tenantKey&quot;:&quot;平台约定的企业标识&quot;,&quot;openId&quot;:&quot;ou_实际登录用户&quot;,&quot;name&quot;:&quot;实际显示名&quot;},&quot;ttl&quot;:28800}</code></pre>
+<p>返回 <code>{&quot;sessionId&quot;:&quot;随机不透明标识&quot;,&quot;expiresIn&quot;:28800}</code>。若 A 现有登录剩余有效时间不足 8 小时，ttl 取剩余秒数。退出请求：<code>{&quot;sessionId&quot;:&quot;原会话标识&quot;}</code>。A 重新登录时先撤销旧共享会话，再签发新会话。会话签发、退出不能用前端未经核实的用户信息调用。</p>
+<p>提交部署请求：</p>
+<pre tabindex="0" aria-label="代码示例"><code>POST /requests HTTP/1.1
+Host: 127.0.0.1:8099
+Authorization: Bearer &lt;内部接入凭证&gt;
+Content-Type: application/json
+Idempotency-Key: project-a-request-001
+
+{&quot;deployment&quot;:{&quot;repository&quot;:&quot;https://github.com/your-org/your-repo.git&quot;,&quot;ref&quot;:&quot;main&quot;,&quot;subdomain&quot;:&quot;demo&quot;},&quot;sessionId&quot;:&quot;服务端保存的共享会话标识&quot;}</code></pre>
+<pre tabindex="0" aria-label="代码示例"><code>{&quot;requestId&quot;:&quot;project-a-request-001&quot;,&quot;status&quot;:&quot;pending&quot;,&quot;jobId&quot;:null,&quot;appId&quot;:null,&quot;error&quot;:null,&quot;deployment&quot;:null}</code></pre>
+<p>B 接收后 jobId、appId 非空，状态 submitted；最终为 succeeded、failed、recovery_required。<code>deployment</code> 为最近一次 B 返回的任务视图，包含 id、appId、status、phase、active、url、error 等。只有 succeeded 且 active=true、url 非空才能显示当前在线链接；历史成功不等于当前仍在线。</p>
+<p>更新已有应用：在 deployment 中加入 appId，仓库与当前绑定域名须匹配，申请人必须有该应用的部署权限。域名前缀 1–7 位小写字母/数字/中划线，且与 awesome.yaml 一致。每次新部署新请求 ID；同次超时重试始终保留 ID 和请求内容。请求 ID 为 1–128 位 <code>[A-Za-z0-9._:-]</code>。一次来源凭证可持续创建和更新多个获授权应用，没有累计申请数量上限；现有 worker 仍串行执行，受资源硬配额限制。</p>
+<h2>3. B 端接口与已受理授权</h2>
+<p><code>POST /api/v1/integrations/deployments</code>：Bearer 是专用来源凭证，必须显式签发 <code>--kind source --all-apps --delegation-source project-a</code>。请求 envelope 包含 deployment，并且 sessionId 或 receipt 二选一。直接请求带 sessionId 时 B 实时读 Redis；普通 personal/source Token 不自动获得代理用户的权限。</p>
+<p>推荐由已提供的 A 适配服务生成 receipt。它在受理时校验 Redis，事务保存完整部署内容、申请人、请求 ID 和 HMAC 签名受理凭据。后台向 B 发送 <code>{&quot;deployment&quot;:{...},&quot;receipt&quot;:{...}}</code>。B 校验来源、签名、请求内容、身份命名空间和本地权限，不要求用户此时仍保持登录。receipt 不是飞书 Token，但属于授权材料，必须保存在受限数据库，不能上传飞书表格、前端或普通日志。不要手工构造或修改 receipt，复用组件。</p>
+<p>B 返回 HTTP 202 和 <code>{id,appId,status,phase,...}</code>；GET <code>/api/v1/integrations/deployments/{id}</code> 查询任务。相同来源可用轮换后的有效委托凭证查询和重投同一请求，仍返回原任务。不同来源不能查询；同一来源同请求 ID 不允许换申请人或请求内容。原凭证撤销会阻止其绑定的待执行任务；轮换应先把待投递/未完成请求切到新凭证并用原请求 ID 重放，再撤销旧凭证。签名密钥在待处理请求完成前不能直接换掉，否则旧 receipt 无法核验。</p>
+<p>申请人首次从 A 接入时 B 创建普通成员，不授予管理员角色。既有账号保留本地禁用状态、权限和角色；A 不能传角色覆盖。会话退出不取消已受理任务，明确禁用账号、撤销来源或撤销应用权限仍会阻止未获执行授权的操作。</p>
+<h2>4. 故障、存储和飞书记录</h2>
+<p>A 适配服务在 SQLite 事务提交后才返回 202。B 不可达、响应丢失或 5xx 时，后台按原 ID 退避重试（最长 300 秒）；POST 400/403/409/422 作为明确拒绝，不无限重试。401 可能是来源凭证过期或需维护，保留请求并重试，不换 ID。Redis 不可用时不受理新的共享身份申请，返回 503；已经保存 receipt 的请求仍可继续投递。退出登录、会话过期和 Redis 清空都不会清除已提交数据库记录。</p>
+<p>本机 SQLite 为 A 的待投递底账；B 数据库为部署状态权威。当前共享会话方案不会把 receipt 或会话写入多维表格；B 收件后，原有“应用”“部署记录”两表异步同步，负责人/提交人来自实际申请人。旧独立接入模块的“部署请求”表备份恢复是另一套接口，未自动接入本方案，不能声称新链路在 B 收件前已同步飞书或可以从该表恢复。若需要跨机器故障恢复，应备份 A 数据库、B 数据库及签名密钥，或单独扩展外部请求留痕。</p>
+<p>A/B/Redis 暂时同机，因此 B 进程故障可由 A 保留请求，整机停机仍会影响两者。Redis AOF everysec 可能丢失故障前约一秒的会话写入，用户可重新登录；部署请求以 SQLite 记录为准。当前不承诺吞吐量或并发执行扩容。</p>
+<h2>5. 运维交接和迁移</h2>
+<p>配置示例：<code>ops/team-sessions.example.json</code>、<code>ops/team-intake.example.json</code>；服务：<code>awesome-team-redis.service</code>、<code>awesome-team-intake.service</code>。A 侧路径 <code>/etc/awesome-team</code>、<code>/var/lib/awesome-team/requests.sqlite3</code>；B 侧 <code>/etc/awesome-deploy/team/sessions.json</code>，平台配置 shared_sessions_file 指向它。只有受控服务账号可读密钥。</p>
+<p>Redis 本机专用端口 6391，64 MiB 内存上限，noeviction；A ACL 仅可操作 project-a 会话键的 GET/SET/DEL，B ACL 只可 GET。默认账号禁用，不开放公网。未来迁到异机时，把两侧 registry 的 redis_url 改为 <code>rediss://目标主机:端口/0</code>，配有效 TLS 证书和分别的 ACL 密码文件；代码不允许远端明文 redis://。迁移前暂停会话写入/新申请，迁移数据或让用户重新登录，验证 A/B 指向同一 Redis 后恢复；已经落库的请求不依赖会话迁移。异机 Redis 不是 A/B 数据库备份。</p>
+<p>平台来源凭证有效期 1–90 天，运维需到期前轮换。签发命令仅在可信终端执行，输出直接写入接入服务账号的 0600 文件，不复制到文档：</p>
+<pre tabindex="0" aria-label="代码示例"><code>awesome-deploy --config /etc/awesome-deploy/config.json api-token-create \
+  --user-id PLATFORM_RESPONSIBLE_USER_ID --name project-a --kind source \
+  --all-apps --delegation-source project-a --days 90</code></pre>
+<h2>6. 接入验收</h2>
+<span class="manual-checkbox">□ A OAuth 回调创建共享会话；退出后新请求被拒绝。</span>
+<span class="manual-checkbox">□ 两位用户分别提交，应用负责人正确，不能更新对方应用；普通凭证不能委托。</span>
+<span class="manual-checkbox">□ B 不可达时 A 返回持久请求 ID；恢复后取得 jobId/appId。</span>
+<span class="manual-checkbox">□ B 已接收但响应丢失时，同 ID 重试只有一个任务；重启 A 适配服务继续投递。</span>
+<span class="manual-checkbox">□ 已受理后退出登录仍能部署；本地停用、来源撤销和权限撤销按平台授权规则生效。</span>
+<span class="manual-checkbox">□ 请求最终状态、错误摘要、在线链接可显示，凭证和 receipt 不出现在网页及飞书表格。</span>
+<span class="manual-checkbox">□ Redis 外部端口不可达，A/B ACL 不越权；迁移与数据库备份分开验收。</span>
+<p>参考：<a href="https://guanghe.feishu.cn/docx/DxI1dW2LOoDjssxtaAfcrdOCnNg" target="_blank" rel="noopener noreferrer">自动化部署 API 使用手册</a>；<a href="https://guanghe.feishu.cn/docx/WaCDdlTg2of7lCxGkY9c2fbQnPf" target="_blank" rel="noopener noreferrer">接入技术协议</a>；<a href="https://guanghe.feishu.cn/docx/VBffdzM2do2H8txSOt1cwLsanig" target="_blank" rel="noopener noreferrer">平台使用手册</a>。当文档与实际接口响应不一致时，以当前线上接口和其受控版本说明为准，先核实再改调用方。</p>

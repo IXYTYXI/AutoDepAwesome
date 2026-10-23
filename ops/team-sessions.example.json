@@ -1,0 +1,11 @@
+[
+  {
+    "source": "project-a",
+    "redis_url": "redis://127.0.0.1:6391/0",
+    "redis_username": "awesome_b",
+    "redis_password_file": "/etc/awesome-deploy/team/redis-password",
+    "signing_key_file": "/etc/awesome-deploy/team/signing-key",
+    "feishu_app_id": "cli_REPLACE_WITH_SAME_APP_AS_B",
+    "tenant_key": "REPLACE_WITH_SAME_TENANT_AS_B"
+  }
+]

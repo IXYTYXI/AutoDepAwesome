@@ -29,7 +29,14 @@ def safe_href(value: str) -> str | None:
     return html.escape(value, quote=True)
 
 
+def code_text(node: ElementTree.Element) -> str:
+    return (node.text or "") + "".join(
+        ("\n" if child.tag == "br" else code_text(child)) + (child.tail or "") for child in node)
+
+
 def render(node: ElementTree.Element) -> str:
+    if node.tag == "pre":
+        return '<pre tabindex="0" aria-label="代码示例"><code>' + html.escape(code_text(node)) + '</code></pre>' + html.escape(node.tail or "")
     tag = TAGS.get(node.tag)
     if tag is None:
         # Preserve text in unsupported blocks, without inheriting their markup.

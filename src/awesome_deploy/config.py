@@ -45,6 +45,7 @@ class Settings:
     feishu_tenant_key: str = ""
     feishu_app_secret_file: Path | None = None
     feishu_eligibility_mode: str = "continuous"
+    shared_sessions_file: Path | None = None
     secret_backend: str = "legacy"
     secret_kek_file: Path | None = None
     ai_base_url: str | None = None
