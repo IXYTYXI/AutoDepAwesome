@@ -267,7 +267,7 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
         }:
             return_path = request.url.path
             if return_path == "/document" and request.query_params.get("doc") in {
-                "catalog", "overview", "api", "intake", "protocol", "audit"
+                "catalog", "overview", "api", "intake", "protocol", "protocol-legacy", "audit"
             } and len(request.query_params.getlist("doc")) == 1:
                 return_path += "?doc=" + request.query_params["doc"]
             login_url = "/login?error=session"
@@ -496,7 +496,7 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
 
     @app.get("/document/content/{doc_id}", dependencies=[Depends(authenticated)])
     def document_content(doc_id: str):
-        if doc_id not in {"catalog", "overview", "api", "intake", "protocol", "audit"}:
+        if doc_id not in {"catalog", "overview", "api", "intake", "protocol", "protocol-legacy", "audit"}:
             raise HTTPException(404)
         return FileResponse(STATIC / f"manual-{doc_id}.html", media_type="text/html; charset=utf-8")
 

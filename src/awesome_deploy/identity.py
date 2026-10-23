@@ -212,7 +212,7 @@ class IdentityStore:
 
     def begin_login(self, return_path="/"):
         allowed_document = isinstance(return_path, str) and re.fullmatch(
-            r"/document\?doc=(overview|api|protocol|audit)", return_path
+            r"/document\?doc=(overview|api|protocol|protocol-legacy|audit)", return_path
         )
         attempt = {"state": secrets.token_urlsafe(32), "browser": secrets.token_urlsafe(32),
                    "verifier": secrets.token_urlsafe(48),

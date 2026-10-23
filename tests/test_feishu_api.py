@@ -64,13 +64,14 @@ def test_api_access_login_returns_to_requested_page(web):
     assert client.get("/api-access").status_code == 200
 
 
-def test_document_login_returns_to_selected_document(web):
+@pytest.mark.parametrize("doc_id", ["api", "protocol", "protocol-legacy"])
+def test_document_login_returns_to_selected_document(web, doc_id):
     client, _, _ = web
-    start = client.get("/auth/feishu/start", params={"return": "/document?doc=api"})
+    start = client.get("/auth/feishu/start", params={"return": f"/document?doc={doc_id}"})
     query = parse_qs(urlsplit(start.headers["location"]).query)
     result = client.get("/auth/feishu/callback", params={"state": query["state"][0], "code": "test-code"})
     assert result.status_code == 303
-    assert result.headers["location"] == "/document?doc=api"
+    assert result.headers["location"] == f"/document?doc={doc_id}"
 
 
 def test_login_session_headers_and_basic_cannot_bypass(web):
