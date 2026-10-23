@@ -1,15 +1,16 @@
 <h1>Awesome Deploy｜部署接入技术协议 v2.0（当前可用 · 平台 0.10.0）</h1>
-<h2>1. 协议范围与不可变更的边界</h2>
+<h2 id="doxcnVeJT7kqDF3oti8kS2914zg">1. 协议范围与不可变更的边界</h2>
 <p>本协议面向提交应用的开发者、AI 编程助手和调用部署 API 的同组后端。目标是让交付物通过当前平台的配置、构建、运行和发布检查。本文的“必须”是接入条件，“建议”是实现建议；解析通过不等于应用已经上线。</p>
-<p>协议版本：2.0；适用平台：Awesome Deploy 0.10.0；核对日期：2026-10-23；线上代码基线：0bca08e83671851ec0c8815b2e385a0b339c9d3c。本文协议版本与 awesome.yaml 的 schemaVersion 是两个概念。新接入统一采用 schemaVersion: 2，旧版 1 仍兼容。</p>
+<p>文件示例快速入口：<a href="#doxcnslIqmcDtKOE9miVcMv6yGb">5.1 单服务 awesome.yaml</a>；<a href="#doxcn7bcDkZ2IgHlsM4pGFI9cGg">5.2 持久存储与密钥完整 awesome.yaml</a>；<a href="#doxcneV1KQf1J16cCLOhb9sPlFh">5.3 前端与 API awesome.yaml</a>；<a href="#doxcnlbLI2fpE4PBVwvqN30X79c">6.1 Dockerfile</a>。示例均在本文正文中，可复制后按真实项目调整。</p>
+<p>协议版本：2.0；适用平台：Awesome Deploy 0.10.0；核对日期：2026-10-23；本次核对时线上发布提交：426e11d225cb53558fa59f5b03da0d63504b5687（平台功能版本 0.10.0）。本文协议版本与 awesome.yaml 的 schemaVersion 是两个概念。新接入统一采用 schemaVersion: 2，旧版 1 仍兼容。</p>
 <p>平台入口为 https://awesome.guanghexinzhi.cn；应用访问地址为 https://&lt;subdomain&gt;.awesome.guanghexinzhi.cn。当前应用运行在 awesome 部署服务器的隔离容器中。源码目录、宿主机端口和数据卷路径由平台管理，不能作为应用内固定路径。</p>
 <p>必须完整保留用户业务逻辑。不得为了通过部署而增删功能、替换鉴权、关闭校验、伪造健康结果、改写数据库语义或接入未经用户要求的模型。可提供保持原行为的 Dockerfile、清单、镜像引用及配置映射；如果现有程序无法满足平台约束，说明冲突与所需决策，不能偷偷改业务。</p>
 <p>无需额外制作 ZIP“交付包”。通常交付一个可访问的 Git 仓库、明确的分支或提交、awesome.yaml，以及构建所需的文件；使用现有镜像时仍需仓库中的 awesome.yaml。审批、代码审查门禁、独立请求登记服务不属于当前已上线能力。</p>
-<h2>2. 当前线上能力与资源上限</h2>
+<h2 id="doxcnjovlQ2yab3Azaxvnleyyzc">2. 当前线上能力与资源上限</h2>
 <p>以下是本次读取线上配置确认的值。MiB = 1,048,576 字节，GiB = 1,024 MiB；页面口头所说的 50MB / 500MB 在清单中按 MiB 配置。额度不是可用空间承诺，实际还要通过剩余容量检查。</p>
 <table><thead><tr><th>项目</th><th>当前规则</th></tr></thead><tbody><tr><td>应用类型</td><td>支持 HTTP Web 服务、前端与 API 多服务、/data 持久数据；SQLite 等应用内文件数据可按原程序使用。</td></tr><tr><td>单应用内存</td><td>所有服务 memoryMiB 相加不得超过 500 MiB；按实际用量消耗，不预先固定占满。各容器有声明的硬上限，超限可能被 OOM 终止。</td></tr><tr><td>单服务内存</td><td>整数，至少 32 MiB；受单应用总上限约束。建议显式写出，不能让两个服务各默认 500。</td></tr><tr><td>CPU 与平台内存</td><td>CPU 至少 0.05；全平台部署准入预算当前 4 CPU、6144 MiB。旧版本、候选版本及待清理资源可能同时计入。</td></tr><tr><td>持久存储容量</td><td>全平台承诺额度 65536 MiB（64 GiB）；单应用所有服务合计最多 50 MiB，单服务最多 50 MiB。每服务最多一个 /data 卷。</td></tr><tr><td>持久存储文件数量</td><td>全平台 300000 inode；单应用 100000；单服务 50000。各卷还受自身 maxInodes 限制；文件和目录都会消耗 inode。</td></tr><tr><td>运行临时空间</td><td>/tmp 为 64 MiB、noexec 的临时空间；/dev/shm 为 16 MiB。它们不持久，运行内存仍受容器限制。</td></tr><tr><td>仓库与清单</td><td>源码获取预算 256 MiB、最多 100000 个目录/文件项；awesome.yaml 最大 256 KiB。</td></tr><tr><td>服务与路由</td><td>1–16 个 web 服务；网关实际最多 32 条路由。</td></tr><tr><td>时间限制</td><td>单次 Git 操作 120 秒；构建超时配置 900 秒；健康检查等待上限配置 180 秒。排队时间不等于这些执行时间。</td></tr><tr><td>运行网络</td><td>当前 public-https-v1：可访问公网 IPv4 的 TCP 443 与受控 DNS；不能访问内网、宿主机、元数据地址、IPv6、HTTP 80 或其他端口。</td></tr><tr><td>构建网络</td><td>RUN 阶段禁止联网；基础镜像由平台先拉取并固定摘要。Git 获取已配置平台代理，不等于构建或业务请求自动走该代理。</td></tr><tr><td>平台鉴权与配置</td><td>飞书登录；加密密钥库已启用；成员与应用权限生效；当前不持续轮询飞书员工状态。</td></tr></tbody></table>
 <p>暂不支持独立数据库容器、消息队列、worker 类型、定时任务编排、部署迁移钩子、自定义挂载或自定义出口策略。不要把这些服务改名为 web 规避校验。应用原有逻辑如需外部 HTTPS 模型 API，可以在上述出口范围内调用，仍需有效供应商凭证。</p>
-<h2>3. 仓库、版本与交付文件</h2>
+<h2 id="doxcnolXiOqh6kNpC6sfj0ocldf">3. 仓库、版本与交付文件</h2>
 <table><thead><tr><th>交付项</th><th>必须满足的条件</th></tr></thead><tbody><tr><td>仓库 URL</td><td>使用允许的 HTTPS GitHub / GitLab 仓库地址，例如 https://github.com/org/repo.git；不接受 SSH URL、用户名/密码/Token、查询参数、片段、额外端口、末尾斜线或编码路径。</td></tr><tr><td>仓库权限</td><td>服务器必须实际能够读取。当前未配置私有仓库读取凭证；私有项目需管理员先配置授权。飞书登录不自动授予 GitHub 权限。</td></tr><tr><td>ref</td><td>真实存在的字面分支、标签或完整 commit SHA，例如 main、codex/model-studio；不要传 URL、HEAD~1 等表达式。建议正式交付记录完整 SHA。</td></tr><tr><td>awesome.yaml</td><td>位于所选版本的仓库根目录。表单/API 中 subdomain 必须与 app.subdomain 完全一致。</td></tr><tr><td>Dockerfile 与构建文件</td><td>采用 build 时必须提交；context 相对仓库根，dockerfile 相对 context，所有 COPY 源必须在上下文中。</td></tr><tr><td>依赖和产物</td><td>锁定依赖版本，准备离线可构建内容或可拉取的预构建镜像。不要依赖服务器 Git 凭证、开发电脑上的绝对路径或 Mac 平台二进制。</td></tr><tr><td>秘密值</td><td>不提交 .env 真值、登录密码、API Key、MASTER_KEY 或部署 Token；只提交变量说明和 secretRefs 引用。</td></tr><tr><td>不支持的源码形态</td><td>Git submodule、符号链接不支持；Git LFS 不自动下载内容，不得把 LFS 指针当作模型、依赖或静态文件。</td></tr></tbody></table>
 <pre><code class="language-text">project/
   awesome.yaml
@@ -18,13 +19,13 @@
   &lt;原有业务源码与锁文件&gt;
   &lt;项目需要的离线依赖或构建产物&gt;</code></pre>
 <p>平台先固定本次 commit，再处理清单、镜像和密钥版本。一次任务恢复时不会自动跟随分支的新提交；要部署后续提交，创建新的部署任务。固定行为不修改仓库业务文件。</p>
-<h2>4. awesome.yaml 字段契约</h2>
+<h2 id="doxcniNfMpPzz5P5QHul66AX7Od">4. awesome.yaml 字段契约</h2>
 <p>只允许协议声明的字段；不支持 ${VAR} 等插值。YAML 禁止重复键、锚点、别名及显式标签。布尔/数字环境变量也必须写成字符串。以下采用解析器、运行器、密钥库和网关共同可执行的范围。</p>
 <table><thead><tr><th>字段</th><th>类型与要求</th></tr></thead><tbody><tr><td>schemaVersion</td><td>必填整数 2；兼容 1，但新的持久配额清单使用 2。</td></tr><tr><td>app</td><td>必填对象：name 为 1–100 字符；description 为最多 2000 字符的字符串，可以为空；subdomain 为 1–7 位小写字母/数字/中划线，首尾为字母/数字，并避开平台保留名。</td></tr><tr><td>services.&lt;服务名&gt;</td><td>1–16 项；服务名匹配 [a-z][a-z0-9-]{0,30}。必填 kind: web、port、healthcheck，以及 image/build 之一。</td></tr><tr><td>image / build</td><td>必须二选一。image 为真实可拉取的镜像引用（最长 512 字符）；build 必填 context、dockerfile，可选 target 与 args。</td></tr><tr><td>build 路径与参数</td><td>context 可为 .；禁止绝对路径、..、.git、反斜杠和空路径段。args 最多 128 项，值为字符串且每项最多 4096 字符；禁止 BUILDKIT_/BUILDX_ 前缀。不能用 args 传秘密。</td></tr><tr><td>port</td><td>必填整数 1–65535，表示容器内部 HTTP 端口；建议 8080 等非特权端口。必须与真实监听一致；宿主机映射端口由平台分配。</td></tr><tr><td>env</td><td>最多 128 项；键匹配 [A-Za-z_][A-Za-z0-9_]*；值为单行字符串且每项最多 4096 字符，仅用于非秘密配置。</td></tr><tr><td>secretRefs</td><td>键为容器环境变量名，值为平台秘密引用名；最多 128 项，不能与 env 同名。当前引用名实际采用 [A-Za-z][A-Za-z0-9_-]{0,63}。</td></tr><tr><td>command / entrypoint</td><td>可选字符串数组，各 1–128 项，每项最长 4096 字符；分别覆盖 CMD/入口程序，不自动作为 shell 脚本解析。必须保留项目原启动语义。</td></tr><tr><td>workingDir</td><td>可选容器内绝对路径，最长 512 字符，仅字母/数字与 /_.-，禁止 .. 路径段；设置它不会授予写权限。</td></tr><tr><td>resources</td><td>可选 cpu 数值、memoryMiB 整数，受第 2 节线上限制。省略时先按同名旧服务逐字段继承，再默认 0.5 CPU / 500 MiB。多服务必须合理分配总量。</td></tr><tr><td>dependsOn</td><td>服务名映射到 started 或 healthy；目标必须存在，禁止自环和循环。按声明建立内部服务连通，可用服务名与容器端口通信。</td></tr><tr><td>storage</td><td>schemaVersion 2 下必填 name、mountPath: /data、sizeMiB 正整数、maxInodes 正整数；详情见第 7 节。</td></tr><tr><td>routes</td><td>必填 1–32 项。每项必填 path、match: exact|prefix、service；stripPrefix 为可选布尔值，默认 false。</td></tr></tbody></table>
 <p>路由 path 以 / 开头，只用字母、数字及 /_.~-，最长 512 字符；不得有 //、. 或 .. 路径段，同 path+match 不能重复。目标必须是现有服务。/.well-known/acme-challenge 及其子路径由证书校验保留，不可声明为业务路由。/api 路由是否去除前缀必须与现有后端路由匹配，不能靠修改业务路由蒙混通过。</p>
 <p>JSON Schema 的部分范围比执行器宽：routes 写了 128，网关只接受 32；secretRefs 的 Schema 允许点号和更长名称，密钥库实际不允许；env 的 Schema 不完全禁止换行，运行时禁止。只通过 JSON Schema 不能证明可以部署。</p>
-<h2>5. 可复制的清单示例</h2>
-<h3>5.1 单个已有 Web 服务</h3>
+<h2 id="doxcngimJ5IlzSYkbu6arlZs19d">5. 可复制的清单示例</h2>
+<h3 id="doxcnslIqmcDtKOE9miVcMv6yGb">5.1 单个已有 Web 服务</h3>
 <p>下面假设原应用已经监听 0.0.0.0:8080，并确有可用的 /healthz。请替换名称、域名前缀、端口和健康路径，使其对应真实程序；PORT 只有程序本来读取时才有作用。本例不会生成新的业务功能。</p>
 <pre><code class="language-yaml">schemaVersion: 2
 app:
@@ -55,17 +56,46 @@ routes:
     match: prefix
     service: web
     stripPrefix: false</code></pre>
-<h3>5.2 在同一服务上声明持久数据与秘密引用</h3>
-<p>以下是插入 services.web 下的片段，不是独立清单。只有原应用确实使用 /data、BOOTSTRAP_PASSWORD、MASTER_KEY 时才加入；不要给不需要登录或加密的应用添加这些功能。50 MiB 是整个应用的总预算，多卷须拆分。</p>
-<pre><code class="language-yaml">    storage:
+<h3 id="doxcn7bcDkZ2IgHlsM4pGFI9cGg">5.2 在同一服务上声明持久数据与秘密引用</h3>
+<p>下面是完整 awesome.yaml，仅适用于原应用确实使用 /data、BOOTSTRAP_PASSWORD 和 MASTER_KEY 的情况。端口、健康路径和启动行为必须符合原程序；无需登录、持久存储或加密的应用请使用 5.1 的模板，不增加无关功能。50 MiB 是整个应用的总预算，多卷须拆分。</p>
+<p class="manual-code-caption">awesome.yaml（单服务＋持久存储和密钥）</p><pre><code class="language-yaml">schemaVersion: 2
+app:
+  name: 示例应用
+  description: 使用项目已有的 HTTP 服务
+  subdomain: demo
+services:
+  web:
+    kind: web
+    build:
+      context: .
+      dockerfile: Dockerfile
+    storage:
       name: data
       mountPath: /data
       sizeMiB: 50
       maxInodes: 10000
     secretRefs:
       BOOTSTRAP_PASSWORD: BOOTSTRAP_PASSWORD
-      MASTER_KEY: MASTER_KEY</code></pre>
-<h3>5.3 前端与 API 共用域名</h3>
+      MASTER_KEY: MASTER_KEY
+    port: 8080
+    env:
+      PORT: &quot;8080&quot;
+    resources:
+      cpu: 0.5
+      memoryMiB: 128
+    healthcheck:
+      type: http
+      path: /healthz
+      intervalSeconds: 10
+      timeoutSeconds: 3
+      retries: 3
+      startPeriodSeconds: 30
+routes:
+  - path: /
+    match: prefix
+    service: web
+    stripPrefix: false</code></pre>
+<h3 id="doxcneV1KQf1J16cCLOhb9sPlFh">5.3 前端与 API 共用域名</h3>
 <p>本例有 frontend/ 与 api/ 两个构建上下文，两服务合计 384 MiB。后端已有 /api 路由，因此保留前缀；如果真实后端路径不同，应正确映射，而非修改其业务接口。内部调用可使用 http://api:8080；浏览器调用同域名 /api。</p>
 <pre><code class="language-yaml">schemaVersion: 2
 app:
@@ -94,8 +124,8 @@ routes:
   - {path: /api, match: prefix, service: api, stripPrefix: false}
   - {path: /, match: prefix, service: frontend, stripPrefix: false}</code></pre>
 <p>以上完整清单及持久化变体已通过当前版本的本地清单解析检查。它们是接入模板，不代表你的仓库、基础镜像、第三方服务或业务健康检查已经完成线上验收。</p>
-<h2>6. 构建、启动、网络与健康检查</h2>
-<h3>6.1 构建必须可离线执行</h3>
+<h2 id="doxcn0z5SjCJKhNQZjrjYL3Bzyc">6. 构建、启动、网络与健康检查</h2>
+<h3 id="doxcnlbLI2fpE4PBVwvqN30X79c">6.1 构建必须可离线执行</h3>
 <p>平台先拉取基础镜像并固定摘要，然后以 --network=none 构建。Dockerfile 中直接 npm install、pip install、apt-get 等在线下载通常失败。可选择预装依赖的基础镜像、提交目标 Linux 架构可用的离线依赖，或在外部 CI 构建镜像并在清单中使用 image；都必须保持同一业务实现。镜像必须真实存在、可拉取。</p>
 <p>Dockerfile 允许 FROM、RUN、COPY、ENV、WORKDIR、USER、EXPOSE、LABEL、CMD、ENTRYPOINT、ARG、STOPSIGNAL。当前不支持反斜杠续行、heredoc、自定义 parser 指令、FROM 变量或 flags、RUN flags（包括 --mount）、ADD、VOLUME、ONBUILD、HEALTHCHECK；COPY 只允许 --from=已命名阶段 这一类 flag，FROM 前不能有其他指令。多阶段构建可以使用命名阶段。</p>
 <p>示例仅适用于已有 server.py、只依赖 Python 标准库的项目。已有依赖、静态资源、工作目录与启动参数必须按真实项目保留；不能把这个最简镜像直接套给任意项目。</p>
@@ -106,29 +136,29 @@ USER 65532:65532
 EXPOSE 8080
 CMD [&quot;python&quot;, &quot;-u&quot;, &quot;/app/server.py&quot;]</code></pre>
 <p>正常构建缓存保留。平台固定源码和输入版本，按输入重用兼容缓存；不应把永久关闭缓存作为常规部署要求。构建时不应把密码或 Token 烘焙进镜像层。</p>
-<h3>6.2 运行环境</h3>
+<h3 id="doxcnoTLUFtYGGiD99GcuT1nymg">6.2 运行环境</h3>
 <p>容器以 65532:65532 非 root 身份运行，根文件系统只读，禁止新增权限并移除 Linux capabilities；进程数上限 128，文件描述符上限 1024，无额外 swap。程序必须在此前提下运行。写入使用 /tmp 或已声明的 /data；不能写 /app、/root、系统目录或未挂载的相对路径。/tmp 不可执行且重建后丢失。</p>
 <p>程序必须前台持续运行，监听 0.0.0.0 与清单 port；不要只监听 127.0.0.1，不要把 EXPOSE 当成真正启动服务。日志使用 stdout/stderr。平台发出停止信号时应按原程序行为结束，持久数据须保持可恢复。</p>
 <p>public-https-v1 支持常见外部模型 HTTPS API，但只放行符合规则的公网 IPv4:443；不保证某供应商可达，不支持 HTTP 80、私有地址或任意端口。平台未提供按域名的信任校验或 TLS 解密代理。业务需要有效 API Key；部署平台自己的诊断 AI 配置不会自动注入业务应用。</p>
-<h3>6.3 健康与发布验收</h3>
+<h3 id="doxcnthWMsgV61PQLY0ivfesUdc">6.3 健康与发布验收</h3>
 <table><thead><tr><th>健康类型/字段</th><th>要求</th></tr></thead><tbody><tr><td>HTTP</td><td>type: http，path 必须以 / 开头；平台访问声明端口，HTTP 200–399 视为成功。应选原应用真实可用、无需登录的就绪检查；重定向到登录页不应被开发者当成业务就绪证明。</td></tr><tr><td>Exec</td><td>type: exec，command 为字符串数组；容器内退出码 0 视为成功。检查命令及依赖工具必须已在镜像内。</td></tr><tr><td>可选时序</td><td>intervalSeconds 1–300（默认10）；timeoutSeconds 1–60（默认3且不大于 interval）；retries 1–30（默认3）；startPeriodSeconds 0–600（默认30）。</td></tr><tr><td>平台等待窗口</td><td>线上 health_timeout 为180秒。把 startPeriod 写成600不会自动让平台等待10分钟。应在实际等待窗口内完成启动。</td></tr></tbody></table>
 <p>健康检查通过后，还要完成 HTTPS、路由切换及公开访问验证才会标记 succeeded。平台发布检查不替代业务验收：登录、上传、数据写入、外部模型调用等仍须按原项目功能验证，不能用固定返回 200 的假接口掩盖异常。</p>
-<h2>7. 密码、密钥、持久数据与配额</h2>
-<h3>7.1 哪些值由谁提供</h3>
+<h2 id="doxcn388Jt8jO6ojdESjAs35L7c">7. 密码、密钥、持久数据与配额</h2>
+<h3 id="doxcnAdxeR0EUrWCFnLokVxbZqe">7.1 哪些值由谁提供</h3>
 <table><thead><tr><th>配置种类</th><th>来源及交付方式</th></tr></thead><tbody><tr><td>公开配置</td><td>例如 PORT、已公开的 API Base URL，写在 env；值必须与原程序配置协议一致。</td></tr><tr><td>业务登录密码</td><td>如果原程序有 BOOTSTRAP_PASSWORD 等初始密码，由用户在控制台安全输入；平台不会替应用创造默认用户名或密码。具体用户名由原程序决定。</td></tr><tr><td>MASTER_KEY</td><td>原程序明确使用 MASTER_KEY 作为数据主密钥时，用 secretRefs 引用。当前加密后端识别该用途，由平台生成32字节随机值（64位十六进制）并保存，已有值复用。不是所有包含 KEY 的变量都会自动生成。</td></tr><tr><td>外部供应商凭证</td><td>模型 API Key、第三方授权等必须由真实供应商提供，用户通过控制台补配；平台与 AI 不能生成替代的有效供应商凭证。</td></tr><tr><td>部署 API Token</td><td>在平台 API 凭证页面签发，存入调用方后端密钥配置，以 AWESOME_DEPLOY_TOKEN 使用；与业务登录密码、MASTER_KEY 分开。</td></tr></tbody></table>
 <p>secretRefs 只映射“应用环境变量名 → 平台配置引用名”，不携带真值。线上密钥库加密保存并按应用和版本隔离。数据主密钥不进入 Git；不能为恢复旧数据而随机换一个新密钥，也不能在部署时临时修改加密逻辑。平台原有密钥损坏时须恢复原记录。</p>
 <p>缺少配置时，任务可能以 SECRET_NOT_FOUND 结束。进入该任务的“补充配置”区域，填写实际需要的登录密码/外部密钥；平台托管的 MASTER_KEY 自动生成保存，无需强制勾选“已保存密码和密钥”。“保存并继续部署”会再提交任务，旧失败记录保留。自动化 Bearer 接口不提供秘密写入或明文读取，首次需要人工补配的项目应先在控制台完成。</p>
-<h3>7.2 持久存储契约</h3>
+<h3 id="doxcnQAh51DLXmAd96VtcDrNhhg">7.2 持久存储契约</h3>
 <p>新卷采用 schemaVersion: 2，并显式声明 name、mountPath: /data、sizeMiB、maxInodes。XFS 同时执行空间和 inode 硬配额；sizeMiB 计算实际分配的磁盘块，不能用业务文件的逻辑大小替代。应用应处理空间或文件数用尽时的写入失败。</p>
 <p>应用所有卷声明额度合计不得超过 50 MiB。保留数据的下线应用继续占用存储预算；待删除/待清理资源在确认完成前也占额度。/tmp 不算持久卷，不能用它规避持久数据限制。</p>
 <p>保留数据更新时，存储名称、所属服务和挂载点必须稳定，不能删除、改名或移动已有存储。仅把 YAML 的 sizeMiB/maxInodes 改大不会自动扩容，会要求独立扩容操作；写小或回退旧清单不会缩容，仍使用账本中的有效额度。扩容也不能超过线上上限。</p>
 <p>保留数据后重新部署，必须选择原应用或传原 appId；新建应用不会继承旧应用数据和秘密。平台没有为每个应用自动提供业务备份，也不保证数据库写入能随代码回滚撤销。数据恢复与密钥恢复需要配套，删除应用数据不会删除外部服务或独立备份。</p>
-<h2>8. 控制台与自动化 API 接入</h2>
-<h3>8.1 身份和 Token</h3>
+<h2 id="doxcnVERZHhHnAQ2cygTBDB1ELf">8. 控制台与自动化 API 接入</h2>
+<h3 id="doxcn0p8YMPwKtrfKVdi5beesNJ">8.1 身份和 Token</h3>
 <p><a href="https://awesome.guanghexinzhi.cn/api-access" target="_blank" rel="noopener noreferrer">打开 API 凭证页面（需飞书登录）</a></p>
 <p>普通有部署权限的成员可创建个人凭证；创建时需最近10分钟内的登录确认。范围分为指定单个应用、仅创建新应用、当前有权部署的应用及新建。有效期1–90天，默认30天，完整值仅签发时显示。少数指定来源由管理员单独签发/撤销，并绑定负责的飞书成员。</p>
 <p>允许多应用的同一 Token 可以连续部署多个应用，没有“仅能部署一次/一个应用”的计数限制；仍受账号权限、凭证范围、排队及资源上限约束。撤销凭证或成员失去权限会阻断后续调用，执行前也会复核授权。将 Token 放在调用方后端，不能放浏览器前端、公开仓库或日志。</p>
-<h3>8.2 POST 提交部署</h3>
+<h3 id="doxcnyZpp5d12pN7NTR6r83uyJe">8.2 POST 提交部署</h3>
 <p>请求 POST /api/v1/automation/deployments；必需 Authorization: Bearer、Content-Type: application/json、Idempotency-Key。首次部署 JSON 只含下面三个字段；更新原应用时增加 appId。未知字段会拒绝，不在请求里提交源码、密码或 awesome.yaml。</p>
 <pre><code class="language-json">{
   &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,
@@ -145,25 +175,25 @@ CMD [&quot;python&quot;, &quot;-u&quot;, &quot;/app/server.py&quot;]</code></pre
   --data-binary @deployment.json</code></pre>
 <p>接收成功返回 HTTP 202。响应字段如下；应直接保存 id 和 appId，不能用域名猜测应用编号。新任务在代码和资源准备完成前，部分字段可能为 null。</p>
 <table><thead><tr><th>字段</th><th>含义</th></tr></thead><tbody><tr><td>id</td><td>本次部署任务 ID；用于查询这次部署。</td></tr><tr><td>appId</td><td>应用 ID；后续更新同一应用时使用，提交新任务时不要凭空生成。</td></tr><tr><td>status / phase</td><td>任务状态与当前阶段；202通常 queued，并非成功。</td></tr><tr><td>repository / ref / subdomain</td><td>规范化后的提交输入。</td></tr><tr><td>commit</td><td>已固定的 commit，尚未固定时为 null。</td></tr><tr><td>active / url</td><td>只有该成功版本当前仍为在线版本时 active=true 且 url 非空；历史成功任务可能已被新版本替换或已下线。</td></tr><tr><td>error / createdAt</td><td>安全错误对象或 null，以及创建时间。</td></tr></tbody></table>
-<h3>8.3 GET 查询最终结果与更新</h3>
+<h3 id="doxcnMJNQagrTboMGoYIIAttEgb">8.3 GET 查询最终结果与更新</h3>
 <p>用创建该任务的同一凭证 GET /api/v1/automation/deployments/{id}。GET 只查询，POST 才创建；不能把任务 id 当成 appId。建议从2秒开始轮询，逐步退避到10秒并设置调用方总等待期限；这是客户端建议，不是平台新的接口字段。</p>
 <pre><code class="language-bash">curl --silent --show-error --fail-with-body \
   &quot;https://awesome.guanghexinzhi.cn/api/v1/automation/deployments/${JOB_ID}&quot; \
   --header &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot;</code></pre>
 <table><thead><tr><th>status</th><th>调用方处理</th></tr></thead><tbody><tr><td>queued</td><td>已持久入队，继续查询。</td></tr><tr><td>running</td><td>正在执行，继续查询。</td></tr><tr><td>succeeded</td><td>本次发布成功；结合 active/url 判断它是否仍为当前在线版本。</td></tr><tr><td>failed</td><td>本次失败，读取 error；完成修复后创建新的业务尝试。</td></tr><tr><td>recovery_required</td><td>需要恢复或清理确认，不能盲目不断新建任务；保留记录并通知负责人处理。</td></tr></tbody></table>
 <p>更新请求仍使用同一 POST 路径，增加 &quot;appId&quot;:&quot;原应用编号&quot;，使用新的幂等键。在线应用须保持原仓库和已绑定前缀；保留数据的已下线应用也要传原 appId，并选用可用前缀及一致清单。</p>
-<h3>8.4 不确定响应与错误处理</h3>
+<h3 id="doxcn2PCyMeoj54cn1mkOrDo9VL">8.4 不确定响应与错误处理</h3>
 <p>Idempotency-Key 为1–128位字母、数字、点、下划线、冒号或中划线，按用户及凭证隔离。同一凭证+同键+相同规范化请求返回原任务；同键不同请求报409 IDEMPOTENCY_CONFLICT。超时、断网、5xx 或丢失202响应后，应使用原凭证、原键、原请求重试；真正的新部署或修复后的新尝试使用新键。换 Token 也会改变幂等命名空间，不能无记录切换。</p>
 <table><thead><tr><th>HTTP</th><th>含义与处理</th></tr></thead><tbody><tr><td>400 / 415 / 422</td><td>缺少幂等键、Content-Type错误或字段/参数不合法；修正请求，不盲目重发。</td></tr><tr><td>401</td><td>Token缺失、过期或撤销；重新确认凭证。</td></tr><tr><td>403</td><td>来源、部署范围或用户/应用权限不足。</td></tr><tr><td>404</td><td>任务不存在，或在该身份范围内不可查询。</td></tr><tr><td>409</td><td>幂等冲突、域名/应用冲突、容量不足或恢复状态，查看机器错误码。</td></tr><tr><td>5xx / 超时 / 断连</td><td>结果可能不确定；保留请求与原幂等键，按上述规则确认，不能假设没有创建任务。</td></tr></tbody></table>
 <p>业务错误一般为 {&quot;error&quot;:{...}}，包含 code 及中文安全诊断；部分 HTTP 错误为 {&quot;detail&quot;:...}。调用方要同时处理 HTTP 状态和响应结构。HTTP 202后的异步失败在查询响应的 error 中，不会反过来改变最初的202。</p>
 <p>自动化 Bearer 当前只用于提交部署和查询其任务，不能用于网页登录、写密钥、成员管理或下线。控制台配置接口与自动化接口不能混用。</p>
-<h2>9. 排队、登记、更新、下线与失败后的资源</h2>
+<h2 id="doxcngzUeND2OHHgbr0Eexa2zcf">9. 排队、登记、更新、下线与失败后的资源</h2>
 <p>平台直接 API 先将请求和幂等关系写入 SQLite 队列，随后由 worker 执行；当前执行器通过全局锁串行处理部署。网页关闭不取消已接收任务，worker与网页进程分开；平台不可达且没有收到请求时，不能声称已经受理。调用方应保存自己这次业务申请的输入、键和收到的任务ID。</p>
 <p>应用与部署结果会由后台同步到项目飞书多维表格，网页和 API 发起的部署均进入同一登记机制。登记包含负责人、状态与应用/部署定位信息，不上传密码、密钥或原始日志。飞书同步失败不阻断部署，由后台重试；这是结果镜像，不是“所有请求在到达平台之前都已有收据”的保证。</p>
 <p>独立请求登记与自动投递组件已有代码，但本次核对的线上主机没有启用独立 intake 服务，也没有可供当前接入者直接调用的正式地址。它属于待上线方案，本文不把其 requestId 接口算成当前服务。不能靠飞书结果表自动补回平台从未收到、也未由独立入口记录的请求。</p>
 <table><thead><tr><th>场景</th><th>实际行为与资源处理</th></tr></thead><tbody><tr><td>无持久卷更新</td><td>先准备候选并检查，再切换路由；候选与旧版可能同时占资源，不保证任何情况下都无中断。</td></tr><tr><td>含持久卷更新</td><td>为交接数据可能先停旧版本，存在停机窗口；不能承诺零停机。</td></tr><tr><td>下线并保留数据</td><td>停路由/容器并确认清理后释放域名、宿主机端口及运行资源；保留业务卷和保存的密码/密钥，卷仍占存储额度。</td></tr><tr><td>下线并删除数据</td><td>确认后清除受平台管理的业务数据卷及该应用保存的全部秘密版本；保留应用与部署历史。不会删除Git、外部数据库、外部对象存储或独立备份。</td></tr><tr><td>失败且尚未分配资源</td><td>没有对应域名/端口/候选资源需要释放；已保存的任务记录仍保留。</td></tr><tr><td>失败且已分配资源</td><td>只有回滚和清理确认完成后才释放相应预留；旧成功版本如仍在线，保留其运行资源。</td></tr><tr><td>清理或回滚无法确认</td><td>进入recovery_required，相关资源继续占用并阻止冲突操作；不能宣称“失败就已释放”。</td></tr></tbody></table>
 <p>下线从应用管理页执行，可选择保留或删除数据；删除是不可逆操作，应核对目标应用与数据策略。保持同一应用身份再次部署才能复用保留数据。二进制版本恢复不等于数据库事务回滚：候选启动后写入的数据不会被自动倒退，现有迁移逻辑必须与旧版本兼容或由项目负责人另行处理。</p>
-<h2>10. 交付验收与常见失败定位</h2>
+<h2 id="doxcnC8S102V55La7EMqzUxM4kd">10. 交付验收与常见失败定位</h2>
 <p>完成下列检查后再提交。只写“文件已生成”或“Schema通过”不足以证明应用可用；未实测的项目必须明确列出。测试使用平台或用户明确授权的环境，不自动启动用户本机 Docker。</p>
 <p class="manual-check-item">☐ 确认没有增加、删除或修改用户业务逻辑；部署差异可审查，端口、健康路径、启动命令来自真实源码。</p>
 <p class="manual-check-item">☐ 仓库和ref实际存在，服务器可读，awesome.yaml在根目录，提交前缀与清单一致。</p>
@@ -177,7 +207,7 @@ CMD [&quot;python&quot;, &quot;-u&quot;, &quot;/app/server.py&quot;]</code></pre
 <p class="manual-check-item">☐ API调用方保存请求、幂等键、id和appId，并正确处理超时、失败、凭证撤销以及历史成功已下线。</p>
 <table><thead><tr><th>错误/现象</th><th>定位与正确处理</th></tr></thead><tbody><tr><td>GIT_TIMEOUT / GIT_FAILED</td><td>检查仓库、ref、访问授权及平台Git代理连通性。不是通过生成业务密码解决。</td></tr><tr><td>INVALID_MANIFEST / UNSUPPORTED_CAPABILITY</td><td>按错误path检查字段、格式或不支持的服务；不能静默删除用户功能来绕过。</td></tr><tr><td>SECRET_NOT_FOUND</td><td>本次固定清单声明的配置缺值，到该任务补配；MASTER_KEY由平台按约定管理。</td></tr><tr><td>秘密归属或完整性冲突</td><td>核对appId及原数据归属；恢复原记录，不跨应用复制或随机换主密钥。</td></tr><tr><td>构建失败</td><td>检查受限Dockerfile语法、离线依赖、基础镜像、构建上下文与真实输出，不默认永久关闭缓存。</td></tr><tr><td>健康检查失败</td><td>看实际启动错误、监听地址/端口、权限、只读目录、内存与真实健康路径。</td></tr><tr><td>QUOTA_BUDGET_EXCEEDED / QUOTA_EXPANSION_REQUIRED</td><td>检查所有卷的有效额度、遗留保留卷与扩容流程；改大YAML或反复新建任务不能绕过。</td></tr><tr><td>recovery_required</td><td>由平台处理未完成回滚/清理；确认前不要释放或抢用同一资源。</td></tr></tbody></table>
 <p>AI诊断只提供建议，不自动修改业务代码；外部AI接口失败也不会改变实际错误原因。排障时先使用任务错误码、阶段、固定commit和应用ID，不把通用建议当作已确认根因。</p>
-<h2>11. 可交给 AI 的任务说明与版本维护</h2>
+<h2 id="doxcnsjGwl97Q3uBaw9B5Fp7IFf">11. 可交给 AI 的任务说明与版本维护</h2>
 <p>将本协议链接与目标仓库一起交给开发者或AI，可复制以下任务说明。它要求先读取真实项目，避免根据模板猜测应用行为。</p>
 <pre><code class="language-text">请依据《Awesome Deploy 部署接入技术协议 v2.0》为当前仓库准备部署文件。
 先检查真实入口、依赖、监听地址与端口、健康检查、写入路径、外部调用和所需秘密；不要猜测。

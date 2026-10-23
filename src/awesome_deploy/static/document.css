@@ -40,6 +40,8 @@
 .manual-content h2{font-size:19px;line-height:1.4;margin:30px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
 .manual-content h3{font-size:16px;margin:24px 0 10px}
 .manual-content h4{font-size:14px;margin:20px 0 8px}
+.manual-content [id]{scroll-margin-top:18px}
+.manual-content .manual-code-caption{font-weight:650;margin-bottom:6px}
 .manual-content p{margin:0 0 13px}
 .manual-content a{color:var(--green);text-decoration:underline;text-underline-offset:3px}
 .manual-content a:focus-visible{outline:3px solid var(--green);outline-offset:2px}

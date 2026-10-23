@@ -16,7 +16,8 @@ import xml.etree.ElementTree as ET
 
 DOC_ID = "DSUwdxpXhot6fQx2YticNCtWnHe"
 ALLOWED_LINK = re.compile(
-    r"(?:https://guanghe\.feishu\.cn/(?:docx|drive/folder)/[A-Za-z0-9]+"
+    r"(?:https://guanghe\.feishu\.cn/docx/[A-Za-z0-9]+(?:#doxcn[A-Za-z0-9]+)?"
+    r"|https://guanghe\.feishu\.cn/drive/folder/[A-Za-z0-9]+"
     r"|https://awesome\.guanghexinzhi\.cn/api-access)\Z"
 )
 
@@ -32,7 +33,11 @@ def text(element: ET.Element) -> str:
             href = child.get("href", "")
             if not ALLOWED_LINK.fullmatch(href):
                 raise ValueError("unexpected document link")
-            result += f'<a href="{escape(href, quote=True)}" target="_blank" rel="noopener noreferrer">'
+            if href.startswith(f"https://guanghe.feishu.cn/docx/{DOC_ID}#"):
+                fragment = href.split("#", 1)[1]
+                result += f'<a href="#{escape(fragment, quote=True)}">'
+            else:
+                result += f'<a href="{escape(href, quote=True)}" target="_blank" rel="noopener noreferrer">'
             result += text(child) + "</a>"
         else:
             raise ValueError(f"unsupported inline element: {child.tag}")
@@ -53,7 +58,11 @@ def render(element: ET.Element) -> str:
         return "<h1>" + text(element) + "</h1>"
     if tag in ("h1", "h2"):
         level = "h2" if tag == "h1" else "h3"
-        return f"<{level}>{text(element)}</{level}>"
+        block_id = element.get("id", "")
+        if block_id and not re.fullmatch(r"doxcn[A-Za-z0-9]+", block_id):
+            raise ValueError("invalid heading anchor")
+        anchor = f' id="{block_id}"' if block_id else ""
+        return f"<{level}{anchor}>{text(element)}</{level}>"
     if tag == "p":
         return "<p>" + text(element) + "</p>"
     if tag == "checkbox":
@@ -67,7 +76,9 @@ def render(element: ET.Element) -> str:
         language = element.get("lang", "text")
         if not re.fullmatch(r"[a-z0-9-]{1,20}", language):
             raise ValueError("invalid code language")
-        return f'<pre><code class="language-{language}">{escape(plain(element[0]))}</code></pre>'
+        caption = element.get("caption", "").strip()
+        label = f'<p class="manual-code-caption">{escape(caption)}</p>' if caption else ""
+        return label + f'<pre><code class="language-{language}">{escape(plain(element[0]))}</code></pre>'
     if tag == "table":
         rows = []
         for part in element:

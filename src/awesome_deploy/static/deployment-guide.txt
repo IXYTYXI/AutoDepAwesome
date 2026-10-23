@@ -22,7 +22,7 @@ Awesome Deploy 部署接入说明｜供 AI 与开发者使用
 2. 填写真实存在的分支、标签或完整 commit。所有部署文件都要提交并推送到该版本。
 3. 仓库根目录放置 UTF-8 awesome.yaml，最大 256 KiB。YAML 不使用重复键、锚点、别名或显式标签。
 4. 源码构建提交 Dockerfile 和完整构建上下文；使用已有镜像时在 image 与 build 中二选一。
-5. 不依赖 Git submodule、Git LFS 下载或仓库符号链接。私有仓库需平台具备对应的读取权限。
+5. 不依赖 Git submodule、Git LFS 下载或仓库符号链接。当前线上 Git 拉取已配置平台代理，但尚未配置私有仓库读取凭证；私有仓库须由管理员先配置授权。飞书登录不自动授予 GitHub/GitLab 权限。
 6. 不需要额外提交 ZIP“交付包”；平台从仓库读取已提交的文件。
 
 四、清单契约
@@ -44,7 +44,7 @@ HTTP 健康检查填写真实可用的路径；exec 健康检查使用容器内�
 构建 RUN 默认不能访问外网。所需依赖应已在所选基础镜像或仓库构建上下文中；不能假设构建时可执行联网 npm/pip/apt 安装。
 平台保持正常构建缓存。基础镜像会固定到摘要；不得通过禁用所有缓存作为常规部署方案。
 Dockerfile 支持显式 FROM、RUN、COPY、ENV、WORKDIR、USER、EXPOSE、LABEL、CMD、ENTRYPOINT、ARG、STOPSIGNAL。
-当前不支持续行、heredoc、自定义 frontend/parser、动态 FROM、RUN flags/mounts、ADD、VOLUME、ONBUILD；COPY flags 仅允许引用之前命名阶段的 --from=。
+当前不支持续行、heredoc、自定义 frontend/parser、动态 FROM、RUN flags/mounts、ADD、VOLUME、ONBUILD、HEALTHCHECK；COPY flags 仅允许引用之前命名阶段的 --from=。
 运行时网络由平台配置决定，见 /api/v1/capabilities；构建网络和运行网络是两个不同的限制。受限公网 HTTPS 模式允许公网 IPv4 TCP 443，不表示任意端口和私网均可访问。
 不支持独立数据库/消息队列服务、后台 worker、数据库迁移钩子、主机目录挂载或任意 TCP/UDP 暴露。应用自身使用 /data 保存 SQLite 等文件不等于平台托管数据库。
 
@@ -64,15 +64,59 @@ Dockerfile 支持显式 FROM、RUN、COPY、ENV、WORKDIR、USER、EXPOSE、LABE
 下线可选择保留数据，或清除平台受控业务数据及该应用保存的密码、API Key、密钥。删除不可恢复，外部数据库不会自动删除。
 确认下线与清理完成后才释放域名和运行端口。失败或待恢复状态可能继续占用资源；不能仅凭“部署失败”判断已释放。
 部署失败时查看具体错误和当前应用状态，不自动修改用户源码，也不为重试随意删除已有数据或替换主密钥。
-当前已提供飞书多维表格应用与部署记录同步；审批流、业务后台 worker 或自动备份仍未提供。
+网页与自动化 API 提交的应用和部署任务均进入平台记录，由后台异步同步到飞书多维表格。负责人关联实际提交身份或凭证绑定的飞书成员；表格不是实时部署队列，飞书同步失败不使已受理部署失效。独立请求登记服务尚未上线；审批门禁、业务后台 worker 和自动备份仍未提供。
 
 八、AI 交付检查清单
 请先检查原项目，再提供实际所需的部署文件和简短操作说明。不要创建与业务无关的演示程序。
 说明每个文件放置位置、端口、健康路径、所需引用名称及数据目录；不要在说明中放秘密值。
 说明哪些限制已满足、哪些需要业务方决定，禁止把未验证事项写成通过。
-登录平台后获取 /api/v1/schema?version=2 核对字段；无存储旧项目可使用 version=1。
-可调用 POST /api/v1/preflight 做配置预检，但预检不会拉代码、构建、预留资源或保证最终上线。
+飞书登录平台后，可通过网页登录会话访问 /api/v1/schema?version=2 核对字段；无存储旧项目可使用 version=1。这是控制台接口，不接受自动化 Bearer 凭证。
+控制台接口 POST /api/v1/preflight 用于配置预检，请求体为 {"manifest":"清单 YAML 字符串"}，需网页登录会话、同源 Origin 和有效 X-CSRF-Token；自动化 Bearer 凭证不能调用。预检不会拉代码、构建、预留资源或保证最终上线。
 自动化提交部署使用 POST /api/v1/automation/deployments，请求体为 JSON，并携带 Bearer 凭证和 Idempotency-Key；返回 HTTP 202 仅代表任务入队。
 使用同一凭证调用 GET /api/v1/automation/deployments/{任务ID} 查询结果。GET 只读取任务状态，不创建或重试部署；每次新的部署要换幂等键。
 实际构建与运行使用既有远端部署平台；未经用户要求，不自动启动本机 Docker Desktop。
 验收应覆盖真实页面/API、真实健康路径、重部署及所声明的数据持久化行为。只做与本次交付相关的检查。
+
+九、可复制的文件示例
+以下两份文件仅适用于原项目已有 server.py、仅依赖 Python 标准库，并实际监听 0.0.0.0:8080、提供 /healthz 的情况。它们不是新增业务功能的授权，其他项目应保持真实入口、依赖与运行行为。
+更多完整模板（持久存储与密钥、前端与 API）见技术协议第 5 章：
+https://guanghe.feishu.cn/docx/DSUwdxpXhot6fQx2YticNCtWnHe#doxcngimJ5IlzSYkbu6arlZs19d
+
+文件：仓库根目录 awesome.yaml
+schemaVersion: 2
+app:
+  name: 示例应用
+  description: 使用项目已有的 HTTP 服务
+  subdomain: demo
+services:
+  web:
+    kind: web
+    build:
+      context: .
+      dockerfile: Dockerfile
+    port: 8080
+    env:
+      PORT: "8080"
+    resources:
+      cpu: 0.5
+      memoryMiB: 128
+    healthcheck:
+      type: http
+      path: /healthz
+      intervalSeconds: 10
+      timeoutSeconds: 3
+      retries: 3
+      startPeriodSeconds: 30
+routes:
+  - path: /
+    match: prefix
+    service: web
+    stripPrefix: false
+
+文件：仓库根目录 Dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+COPY server.py /app/server.py
+USER 65532:65532
+EXPOSE 8080
+CMD ["python", "-u", "/app/server.py"]

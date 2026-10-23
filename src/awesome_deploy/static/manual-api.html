@@ -1,28 +1,29 @@
 <h1>Awesome Deploy｜自动化部署 API 使用手册</h1>
-<p>这份手册面向需要从脚本、CI 或指定请求源提交部署的人。日常操作先用飞书登录平台；API 凭证仅用于提交部署和查询由该凭证创建的任务。</p>
+<p>这份手册面向脚本、CI 和同组网页项目的后端，适用平台 0.10.0，核对日期 2026-10-23。API 凭证仅用于提交部署和查询由同一凭证创建的任务；完整仓库与清单要求见<a href="https://guanghe.feishu.cn/docx/DSUwdxpXhot6fQx2YticNCtWnHe" target="_blank" rel="noopener noreferrer">部署接入技术协议 v2.0</a>。Token 必须保存在后端密钥配置中，不能放进网页 JavaScript；当前接口不开放跨站浏览器调用。</p>
 <aside class="manual-callout"><p><strong>最重要的两点：</strong>HTTP 202 只表示任务已进入队列，不表示上线成功。完整凭证只显示一次，不要写进 Git 仓库、请求文件或聊天消息。</p></aside>
 <h2>1. 取得 API 凭证</h2>
 <p>打开 <a href="https://awesome.guanghexinzhi.cn/api-access" target="_blank" rel="noopener noreferrer">API 凭证页面</a>，使用飞书登录。在“创建个人凭证”中填写名称、部署范围和有效期；创建时需要最近 10 分钟内的登录确认。凭证有效期为 1–90 天，默认 30 天。</p>
 <p>范围可选“我有权部署的应用”（可创建新应用并更新当前有权限的应用）、“指定单个应用”（只能更新该应用）、“仅创建新应用”。创建后立即复制完整凭证，存入调用程序的密钥配置，并以环境变量 <code>AWESOME_DEPLOY_TOKEN</code> 注入。页面之后只能查看凭证名称、范围和有效期，不能再次查看完整值。</p>
 <p>少数具名自动化来源由平台管理员单独签发和撤销，并关联一位负责的飞书成员。来源可连续提交多个应用和任务；队列、权限及资源配额照常生效。</p>
 <h2>2. 首次部署</h2>
-<p>先在调用程序的工作目录创建 <code>deployment.json</code>。下面的仓库、分支和域名前缀都要换成真实值。仓库中还必须有符合 <a href="https://guanghe.feishu.cn/docx/VBffdzM2do2H8txSOt1cwLsanig" target="_blank" rel="noopener noreferrer">平台使用手册</a> 要求的 <code>awesome.yaml</code>。</p>
+<p>先在调用程序工作目录创建 <code>deployment.json</code>，将仓库、分支和域名前缀换成真实值。仓库根目录必须有符合<a href="https://guanghe.feishu.cn/docx/DSUwdxpXhot6fQx2YticNCtWnHe#doxcngimJ5IlzSYkbu6arlZs19d" target="_blank" rel="noopener noreferrer">技术协议清单示例</a>的 <code>awesome.yaml</code>，且 app.subdomain 与请求一致；构建文件也必须推送到同一版本。</p>
 <pre><code>{<br>  &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,<br>  &quot;ref&quot;: &quot;main&quot;,<br>  &quot;subdomain&quot;: &quot;demo&quot;<br>}</code></pre>
 <p>提交部署使用 <strong>POST</strong> <code>/api/v1/automation/deployments</code>。请求体是 JSON，需带 Bearer 凭证、<code>Content-Type: application/json</code> 和 <code>Idempotency-Key</code>。确认运行环境已从安全配置注入 <code>AWESOME_DEPLOY_TOKEN</code>；每次新的部署使用新幂等键，示例键仅作演示。</p>
 <pre><code>curl --request POST --fail-with-body -sS \<br>  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \<br>  -H &#x27;Content-Type: application/json&#x27; \<br>  -H &#x27;Idempotency-Key: demo-initial-001&#x27; \<br>  --data-binary @deployment.json \<br>  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments</code></pre>
-<p>成功受理时返回 HTTP 202，响应包含任务编号 <code>id</code> 和应用编号 <code>appId</code>。请保存 <code>id</code> 供后续查询。此时任务可能仍在排队。</p>
+<p>成功受理时返回 HTTP 202，包含任务编号 <code>id</code> 和应用编号 <code>appId</code>。两者都应保存；appId 已分配不代表应用已上线。<code>status</code>、<code>phase</code> 是任务状态与阶段；仅当该次成功部署仍为当前在线版本时，<code>active</code> 才为 true，<code>url</code> 才有值。</p>
 <h2>3. 查询任务结果</h2>
-<p>查询任务使用 <strong>GET</strong> <code>/api/v1/automation/deployments/{JOB_ID}</code>，把 <code>JOB_ID</code> 换成提交响应中的 <code>id</code>。查询必须使用提交该任务的同一枚凭证；GET 不会创建或重试部署任务。</p>
+<p>查询任务使用 <strong>GET</strong> <code>/api/v1/automation/deployments/{JOB_ID}</code>，把 JOB_ID 换成提交响应中的 id。查询必须使用提交任务的同一枚有效凭证；同一账号另建的新 Token 也不能查询这枚旧凭证的任务。GET 不创建或重试任务。建议每 3–5 秒查询一次，遇到 succeeded、failed 或 recovery_required 后停止常规轮询；调用方等待超时不等于平台任务失败。</p>
 <pre><code>curl --request GET --fail-with-body -sS \<br>  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \<br>  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments/JOB_ID</code></pre>
 <table><colgroup><col><col></colgroup><thead><tr><th><p>status</p></th><th><p>含义与下一步</p></th></tr></thead><tbody><tr><td><p><code>queued</code></p></td><td><p>已入队；稍后用同一接口查询。</p></td></tr><tr><td><p><code>running</code></p></td><td><p>正在执行；继续查询。</p></td></tr><tr><td><p><code>succeeded</code></p></td><td><p>该次部署成功；再看 <code>active</code> 和 <code>url</code> 确认它是否仍是当前在线版本。</p></td></tr><tr><td><p><code>failed</code></p></td><td><p>部署失败；查看响应中的中文 <code>error</code>，修复原因后用新幂等键重新提交。</p></td></tr><tr><td><p><code>recovery_required</code></p></td><td><p>需要平台管理员检查资源与恢复状态；不要把它当成成功。</p></td></tr></tbody></table>
 <h2>4. 更新已有应用</h2>
-<p>更新时在请求体中加入已有应用的 <code>appId</code>，并保持 <code>repository</code>、<code>subdomain</code> 与该应用一致。可以更换 <code>ref</code>；提交时换用新的幂等键。应用编号可从首次提交响应或应用管理页取得。创建新应用时不要填写 <code>appId</code>。</p>
+<p>更新时加入已有应用的 <code>appId</code>，repository 须与该应用一致，当前已绑定域名的 subdomain 也须一致。保留数据下线且已释放域名的应用，可填新的空闲前缀，但仍须与新版本 awesome.yaml 一致。可更换 ref；真正的新部署使用新幂等键。创建新应用时不填 appId；失败后若要继续使用已分配的同一应用，也应传回该 appId，并确保凭证范围允许更新。</p>
 <pre><code>{<br>  &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,<br>  &quot;ref&quot;: &quot;main&quot;,<br>  &quot;subdomain&quot;: &quot;demo&quot;,<br>  &quot;appId&quot;: &quot;已有应用编号&quot;<br>}</code></pre>
 <p>“指定单个应用”范围的凭证只能更新那一个应用；如果账号失去该应用的部署权限，凭证也不能继续部署它。</p>
 <h2>5. 重试与常见错误</h2>
-<p>如果提交请求发出后没有收到响应，使用<strong>相同请求体、相同凭证、相同幂等键</strong>重试；平台会返回同一任务。真正的新部署必须换键。同一幂等键对应不同请求会发生冲突。幂等键长度为 1–128，只能使用字母、数字、点、下划线、冒号和中划线。</p>
-<table><colgroup><col><col></colgroup><thead><tr><th><p>HTTP 状态</p></th><th><p>先检查什么</p></th></tr></thead><tbody><tr><td><p>401</p></td><td><p>Bearer 凭证是否填写、过期或已撤销；不要用网页登录 Cookie 代替。</p></td></tr><tr><td><p>403</p></td><td><p>凭证范围、负责人的部署权限及目标应用权限。</p></td></tr><tr><td><p>409</p></td><td><p>幂等键是否复用于不同请求，或应用、域名是否发生冲突。</p></td></tr><tr><td><p>422</p></td><td><p>JSON 字段、类型和格式是否符合接口要求。</p></td></tr></tbody></table>
+<p>提交后未收到响应时，任务可能已经入库。保留原请求并使用<strong>相同请求体、相同凭证、相同幂等键</strong>重试，平台返回同一任务的当前状态，不新建任务。幂等范围绑定凭证，换 Token 或换键可能生成新任务。真正的新部署才换键；同键对应不同请求返回冲突。幂等键长度为 1–128，仅用字母、数字、点、下划线、冒号和中划线。</p>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>HTTP 状态或现象</p></th><th><p>处理方式</p></th></tr></thead><tbody><tr><td><p>400</p></td><td><p>检查 Idempotency-Key 是否缺少或格式不合法。</p></td></tr><tr><td><p>401</p></td><td><p>检查 Bearer 凭证是否缺少、过期、被撤销或绑定身份已失效；不要使用网页登录 Cookie 代替。</p></td></tr><tr><td><p>403</p></td><td><p>检查凭证范围、负责人权限及应用权限；浏览器跨站调用也会被拒绝，应从同组项目后端调用。</p></td></tr><tr><td><p>404</p></td><td><p>检查任务 id 是否存在及接口路径；不要把 requestId、appId 当作任务 id。</p></td></tr><tr><td><p>409</p></td><td><p>检查幂等键是否复用于不同请求，或应用、域名及当前操作是否冲突；结合 error.code 处理。</p></td></tr><tr><td><p>415</p></td><td><p>请求须带 Content-Type: application/json。</p></td></tr><tr><td><p>422</p></td><td><p>检查 JSON 字段、类型、仓库、ref 和域名前缀格式。</p></td></tr><tr><td><p>网络超时 / 5xx</p></td><td><p>不能据此认定任务未创建；保留原请求、凭证和幂等键，按退避策略重试。</p></td></tr></tbody></table>
 <p>API 凭证不能用于网页管理、修改密钥、管理成员或下线应用。撤销凭证后，调用方不能再提交或查询；尚未执行的关联部署也会失去授权。查看凭证或撤销凭证请回到 <a href="https://awesome.guanghexinzhi.cn/api-access" target="_blank" rel="noopener noreferrer">API 凭证页面</a>。</p>
+<p>若任务因缺少登录密码或供应商 API Key 失败，到控制台相应任务补充配置；不要把秘密值加进部署 JSON。API 提交与网页提交一样，由后台异步同步应用及部署记录到飞书多维表格；表格写入成功不是 202 的前置条件，也不等于部署成功。</p>
 <h3>平台不可达时的请求收据</h3>
-<p>直接调用本页的 <code>POST /api/v1/automation/deployments</code> 只有在平台已接收并返回 202 时才有平台任务记录。若调用方需要在平台不可达时仍保留申请，可在独立主机运行请求登记服务，先取得独立 <code>requestId</code>，再由服务按同一幂等键自动投递和查询；网页后端无需自行猜测重试时机。此时 <code>requestId</code> 不是平台的 <code>jobId</code> 或 <code>appId</code>，后两者要等平台接收后才会产生。飞书多维表格已新增专用「部署请求」表（表 ID：tblgVwWTlwxvQ4Mv）作为恢复副本，既有「应用」「部署记录」表仍是结果镜像；飞书故障不阻断已可用的平台部署。</p>
+<p>平台任务记录在服务端完成受理事务后产生；客户端即使没收到 202，记录也可能已经存在。平台完全没收到请求时，平台及其后台表格同步都无法替调用方记下该次申请。需要这种保障时，应另行部署独立请求登记服务：先持久保存原请求并返回 requestId，再由服务用同一幂等键自动投递与查询；requestId 不等于平台 id（jobId）或 appId。飞书「部署请求」表已准备，但独立登记服务尚未上线，不能据此认为现在已具备平台不可达时自动收件和恢复投递的能力。既有「应用」「部署记录」表是平台结果的异步镜像。</p>
 <p>完整接入协议见 <a href="https://guanghe.feishu.cn/docx/DWPCdke22oEN8Bxwy70cFX9anXe" target="_blank" rel="noopener noreferrer">同组网页项目接入 Awesome Deploy API｜后端实施手册</a> 的第 9 节。独立接入服务尚未部署到已确定的同组网页主机，启用前请按仓库 <code>docs/intake-relay.md</code> 完成配置与验收。</p>

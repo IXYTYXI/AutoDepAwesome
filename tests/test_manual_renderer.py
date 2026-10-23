@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+from xml.etree import ElementTree
 
 
 def renderer():
@@ -32,3 +33,20 @@ def test_feishu_snapshot_renderer_preserves_navigation_lists_and_safe_links():
     assert '<ul><li>' in output
     assert 'href="https://guanghe.feishu.cn/docx/current"' in output
     assert '</li></ul>' in output
+
+
+def test_protocol_examples_preserve_yaml_whitespace_and_local_section_links():
+    path = Path(__file__).resolve().parents[1] / 'scripts' / 'render_feishu_protocol.py'
+    spec = importlib.util.spec_from_file_location('render_feishu_protocol', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    root = ElementTree.fromstring('''<root>
+      <p><a href="https://guanghe.feishu.cn/docx/DSUwdxpXhot6fQx2YticNCtWnHe#doxcnExample">完整 YAML</a></p>
+      <h2 id="doxcnExample">清单示例</h2>
+      <pre lang="yaml" caption="awesome.yaml"><code>services:<br/>  web:<br/>    env: {LABEL: "a &amp; b"}</code></pre>
+    </root>''')
+    output = ''.join(module.render(block) for block in root)
+    assert '<a href="#doxcnExample">完整 YAML</a>' in output
+    assert '<h3 id="doxcnExample">清单示例</h3>' in output
+    assert 'services:\n  web:\n    env: {LABEL: &quot;a &amp; b&quot;}' in output
+    assert 'class="manual-code-caption">awesome.yaml' in output

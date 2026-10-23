@@ -35,6 +35,11 @@
       content.innerHTML = body;
       content.hidden = false;
       state.hidden = true;
+      const fragment = window.location.hash.slice(1);
+      if (/^doxcn[A-Za-z0-9]+$/.test(fragment)) {
+        const section = document.getElementById(fragment);
+        if (section && content.contains(section)) section.scrollIntoView({block: 'start'});
+      }
     } catch (error) {
       if (number !== requestNumber || selected !== id) return;
       state.textContent = error.auth ? '请先登录部署平台，再查看文档。' : '文档暂时无法读取，请重试或在飞书打开。';
