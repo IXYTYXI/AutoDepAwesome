@@ -1,62 +1,409 @@
-<h1>Awesome Deploy｜自动化部署 API 使用手册</h1>
-<p>这份手册面向脚本、CI 和同组网页项目的后端，适用平台 0.11.2，核对日期 2026-10-23。普通自动化凭证用于提交部署和查询由同一凭证创建的任务；同组委托链路另提供按实际登录人权限搜索项目。完整仓库与清单要求见<a href="https://guanghe.feishu.cn/docx/DSUwdxpXhot6fQx2YticNCtWnHe" target="_blank" rel="noopener noreferrer">部署接入技术协议 v2.0</a>。Token 必须保存在后端密钥配置中，不能放进网页 JavaScript；当前接口不开放跨站浏览器调用。</p>
-<aside class="manual-callout"><p><strong>最重要的两点：</strong>HTTP 202 只表示任务已进入队列，不表示上线成功。完整凭证只显示一次，不要写进 Git 仓库、请求文件或聊天消息。</p></aside>
-<h2>1. 取得 API 凭证</h2>
-<p>打开 <a href="https://awesome.guanghexinzhi.cn/api-access" target="_blank" rel="noopener noreferrer">API 凭证页面</a>，使用飞书登录。在“创建个人凭证”中填写名称、部署范围和有效期；创建时需要最近 10 分钟内的登录确认。凭证有效期为 1–90 天，默认 30 天。</p>
-<p>范围可选“我有权部署的应用”（可创建新应用并更新当前有权限的应用）、“指定单个应用”（只能更新该应用）、“仅创建新应用”。创建后立即复制完整凭证，存入调用程序的密钥配置，并以环境变量 <code>AWESOME_DEPLOY_TOKEN</code> 注入。页面之后只能查看凭证名称、范围和有效期，不能再次查看完整值。</p>
-<p>少数具名自动化来源由平台管理员单独签发和撤销，并关联一位负责的飞书成员。来源可连续提交多个应用和任务；队列、权限及资源配额照常生效。</p>
-<h2>2. 首次部署</h2>
-<p>先在调用程序工作目录创建 <code>deployment.json</code>，将仓库和项目名称换成真实值。项目名称仍通过 subdomain 字段提交：1–7 位小写字母、数字或中划线，首尾为字母或数字，不含中文、空格或大写字母。ref 可省略，默认 main；需要其他版本时显式传入真实存在的分支、标签或完整 commit。仓库根目录必须有符合<a href="https://guanghe.feishu.cn/docx/DSUwdxpXhot6fQx2YticNCtWnHe#doxcngimJ5IlzSYkbu6arlZs19d" target="_blank" rel="noopener noreferrer">技术协议清单示例</a>的 <code>awesome.yaml</code>，且 app.subdomain 与请求一致；构建文件也必须推送到同一版本。</p>
+<h1>Awesome Deploy｜API 接口总手册</h1>
+<p>适用平台 0.11.2；核对日期 2026-10-23。本手册汇总 B 部署平台和当前 A 同组适配服务的全部显式 HTTP 路由，统一说明认证、权限、请求、返回与错误。原 API 手册链接保持不变。第 3—4 章供调用方直接接入，第 5—8 章供控制台开发与管理集成查阅，第 9—10 章列出登录、页面资源与旧版模块。</p>
+<aside class="manual-callout"><p><strong>202 表示受理，不表示上线成功。</strong>共享登录态决定实际用户，来源凭证只证明调用服务；不能借用凭证负责人的管理员权限。秘密值只能保存在后端受控配置中，不能放入浏览器、Git 或示例文件。</p></aside>
+<p><a href="https://guanghe.feishu.cn/docx/DWPCdke22oEN8Bxwy70cFX9anXe" target="_blank" rel="noopener noreferrer">同组项目实施步骤与部署准备：同组后端实施手册</a></p>
+<p><a href="https://guanghe.feishu.cn/docx/DSUwdxpXhot6fQx2YticNCtWnHe" target="_blank" rel="noopener noreferrer">仓库、awesome.yaml、Dockerfile 与运行限制：部署接入技术协议 v2.0</a></p>
+<h2>1. 地址、认证与权限</h2>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>入口</p></th><th><p>地址与使用方式</p></th></tr></thead><tbody><tr><td><p>B 部署平台</p></td><td><p>https://awesome.guanghexinzhi.cn；本手册 /api/v1/ 和 /auth/ 路径均在 B。</p></td></tr><tr><td><p>A 同组适配服务</p></td><td><p>当前 http://127.0.0.1:8099，只供同机可信后端。/sessions、/apps/search、/requests 都在 A。浏览器不能直连。</p></td></tr><tr><td><p>当前交付边界</p></td><td><p>A 适配组件已部署；具体上游 A 业务项目尚待接入。Redis 存会话，SQLite 存请求。当前 Redis 在本机，后续可通过受控网络与 TLS 迁移。</p></td></tr><tr><td><p>线上接口定义</p></td><td><p>GET /api/v1/openapi.json 需要控制台登录，包含 B 路由；不包含独立 A 路由。默认 /docs、/redoc、/openapi.json 关闭。鉴权和部分动态返回以本文与对应实现为准。</p></td></tr></tbody></table>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>文中标记 / 凭证</p></th><th><p>用于哪些接口</p></th></tr></thead><tbody><tr><td><p>C：控制台 Cookie</p></td><td><p>网页登录后的平台会话；用于 /api/v1/deployments、apps、management、密钥、成员等控制台接口。API Bearer 不能替代。</p></td></tr><tr><td><p>W：控制台写请求</p></td><td><p>在 C 基础上加 Origin: https://awesome.guanghexinzhi.cn、X-CSRF-Token（从 /auth/session 取）及 Content-Type: application/json；DELETE 也需要。</p></td></tr><tr><td><p>F：近期认证</p></td><td><p>敏感管理操作须在最近 600 秒完成飞书登录，否则 AUTH_REAUTH_REQUIRED；重新登录后再取当前 csrfToken。</p></td></tr><tr><td><p>普通 automation Bearer</p></td><td><p>个人凭证或普通来源凭证，调用第 3 章两项接口。实际操作身份为凭证绑定成员；受凭证范围及成员当前权限约束。</p></td></tr><tr><td><p>同组 B 专用 Bearer</p></td><td><p>运维登记的 kind=source、allowAnyApp=true、delegation_source 来源凭证，调用 integrations 接口；不是普通个人 Token。</p></td></tr><tr><td><p>A 内部 Bearer</p></td><td><p>调用 8099 适配服务；与 B 专用凭证不同。仅存在 A 可信后端，不能交给用户浏览器；A 拒绝带 Origin 或 Sec-Fetch-Site 的请求。</p></td></tr><tr><td><p>sessionId</p></td><td><p>A 验证上游真实登录后签发的共享会话 ID。B 按它识别用户与有效期；不是飞书 OAuth Token，也不是浏览器 Cookie。</p></td></tr></tbody></table>
+<p>普通用户能用 API 部署，也能通过同组共享会话搜索自己的或已授权维护的项目。管理员能搜索全部项目；viewer 不具备部署搜索权限。所有部署和部署搜索均要求账号有效且 canDeploy=true。后台服务持有管理员负责的 Token，不会使普通申请人变成管理员。</p>
+<p>新建项目负责人是实际申请人；更新保留项目原负责人，本次部署的提交人记录为实际操作人。普通 automation 按凭证绑定成员执行，同组 integrations 按共享身份执行。请求 JSON 不允许指定 owner、role 或 userId 来冒充其他身份。</p>
+<p>GET 用于读取，POST 用于提交部署、复杂搜索和受控操作；PUT/PATCH/DELETE 用于对应管理修改。没有“全部改用 POST”的要求。当前没有 /api/v1/automation/apps/search；个人 Token 不能直接调用 integrations 搜索。</p>
+<p>同组内部进度 GET 按来源授权，不携带 sessionId。A 将查询结果展示给浏览器前，必须检查当前用户是该请求申请人或拥有项目详情权限（管理员、owner、maintainer）。知道 requestId、jobId 或 appId 不构成授权。</p>
+<h2>2. 通用请求与返回结构</h2>
+<h3>2.1 Deployment：创建和更新共用</h3>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>约束与含义</p></th></tr></thead><tbody><tr><td><p>repository</p></td><td><p>必填 string。允许列表内 GitHub/GitLab HTTPS 仓库，最长 2048 字符；不接受 URL 中嵌入凭证、端口、查询串或 fragment；规范化后补 .git。</p></td></tr><tr><td><p>subdomain</p></td><td><p>必填 string，页面称“项目名称”。1–7 位小写字母、数字或中划线，首尾为字母或数字；不含中文、空格、大写，避开保留名；必须与仓库 awesome.yaml 的 app.subdomain 一致。</p></td></tr><tr><td><p>ref</p></td><td><p>可选 string，默认 main。可指定真实分支、标签或完整 commit；1–200 字符，仅字母数字及 . _ / -，以字母数字开头；不接受 ..、//、尾 /、尾 .、点开头路径段、.lock 后缀或 Git 表达式。</p></td></tr><tr><td><p>appId</p></td><td><p>创建省略；更新必填已有应用 ID，[A-Za-z0-9_-]{1,64}。B 接受 null 表示创建；A 中有此字段时必须是非空字符串，所以新建统一省略。</p></td></tr><tr><td><p>更新约束</p></td><td><p>repository 必须与原应用一致；已绑定域名时 subdomain 必须保持一致。保留数据下线后可选择新的空闲名称，但必须与新清单一致。更新不转移负责人。</p></td></tr><tr><td><p>其他字段</p></td><td><p>拒绝未知字段；不要添加密码、Token、环境变量或用户角色。分支内容与构建文件须提前推送到 Git。</p></td></tr></tbody></table>
+<p>请求体统一为 JSON。B 请求体总上限 128 KiB；严格类型字段不做字符串/数字/布尔自动转换。Idempotency-Key 为 1–128 位字母、数字、点、下划线、冒号或中划线。每次新部署先生成并保存新键；网络重试复用原键、原内容和原身份。</p>
+<h3>2.2 Job：B 部署任务返回</h3>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>约束与含义</p></th></tr></thead><tbody><tr><td><p>id</p></td><td><p>string;部署任务 ID</p></td></tr><tr><td><p>appId</p></td><td><p>string|null;应用 ID</p></td></tr><tr><td><p>status</p></td><td><p>queued|running|succeeded|failed|recovery_required|cancelled</p></td></tr><tr><td><p>statusLabel</p></td><td><p>中文状态，未知状态为处理中</p></td></tr><tr><td><p>phase</p></td><td><p>阶段机器码，不保证穷尽枚举</p></td></tr><tr><td><p>phaseLabel</p></td><td><p>中文阶段，未知阶段为处理中</p></td></tr><tr><td><p>terminal</p></td><td><p>bool; succeeded/failed/recovery_required/cancelled 为 true</p></td></tr><tr><td><p>pollAfterSeconds</p></td><td><p>number; 进行中5，终态0</p></td></tr><tr><td><p>repository</p></td><td><p>规范化 HTTPS 仓库 URL</p></td></tr><tr><td><p>ref</p></td><td><p>分支/标签/commit，默认 main</p></td></tr><tr><td><p>subdomain</p></td><td><p>项目名称对应域名前缀</p></td></tr><tr><td><p>commit</p></td><td><p>string|null</p></td></tr><tr><td><p>url</p></td><td><p>string|null;仅成功且仍为当前 active release 才返回 HTTPS 地址</p></td></tr><tr><td><p>active</p></td><td><p>bool;是否仍为当前在线版本</p></td></tr><tr><td><p>error</p></td><td><p>null 或 {code,title,message,path,suggestion,steps,reason?}；安全中文错误，不含原始日志</p></td></tr><tr><td><p>createdAt</p></td><td><p>number;Unix秒</p></td></tr><tr><td><p>updatedAt</p></td><td><p>number;Unix秒</p></td></tr></tbody></table>
 <pre tabindex="0" aria-label="代码示例"><code>{
-  &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,
-  &quot;ref&quot;: &quot;main&quot;,
-  &quot;subdomain&quot;: &quot;demo&quot;
-}</code></pre>
-<p>提交部署使用 <strong>POST</strong> <code>/api/v1/automation/deployments</code>。请求体是 JSON，需带 Bearer 凭证、<code>Content-Type: application/json</code> 和 <code>Idempotency-Key</code>。确认运行环境已从安全配置注入 <code>AWESOME_DEPLOY_TOKEN</code>；每次新的部署使用新幂等键，示例键仅作演示。</p>
-<pre tabindex="0" aria-label="代码示例"><code>curl --request POST --fail-with-body -sS \
-  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \
-  -H &#x27;Content-Type: application/json&#x27; \
-  -H &#x27;Idempotency-Key: demo-initial-001&#x27; \
-  --data-binary @deployment.json \
-  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments</code></pre>
-<p>成功受理时返回 HTTP 202，包含任务编号 <code>id</code> 和应用编号 <code>appId</code>。两者都应保存；appId 已分配不代表应用已上线。<code>status</code>、<code>phase</code> 是任务状态与阶段；仅当该次成功部署仍为当前在线版本时，<code>active</code> 才为 true，<code>url</code> 才有值。</p>
-<h2>3. 查询任务结果</h2>
-<p>查询任务进度使用 <strong>GET</strong> <code>/api/v1/automation/deployments/{JOB_ID}</code>，JOB_ID 是提交响应中的 id。此普通自动化接口必须使用提交任务的同一枚有效凭证；同一账号另建的新 Token 不能查询旧凭证的任务。同组共享会话链路使用 <code>GET /api/v1/integrations/deployments/{JOB_ID}</code>，允许同一来源的有效委托凭证查询本来源任务。两种接口返回相同进度结构，GET 不创建或重试任务。按 pollAfterSeconds 轮询，terminal=true 后停止；调用方等待超时不等于平台任务失败。</p>
-<pre tabindex="0" aria-label="代码示例"><code>curl --request GET --fail-with-body -sS \
-  -H &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot; \
-  https://awesome.guanghexinzhi.cn/api/v1/automation/deployments/JOB_ID</code></pre>
-<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>含义</p></th></tr></thead><tbody><tr><td><p>id / appId</p></td><td><p>本次任务 ID / 应用 ID；不要混用。</p></td></tr><tr><td><p>status / statusLabel</p></td><td><p>机器状态码 / 中文说明；queued、running 表示未结束；succeeded、failed、recovery_required、cancelled 是终态。</p></td></tr><tr><td><p>phase / phaseLabel</p></td><td><p>当前阶段码 / 中文说明，如 build / 构建镜像、health / 健康检查。阶段耗时不固定，不返回虚构百分比。</p></td></tr><tr><td><p>terminal</p></td><td><p>布尔值；true 时停止常规进度轮询，不代表部署成功。</p></td></tr><tr><td><p>createdAt / updatedAt</p></td><td><p>Unix 时间戳，单位秒，number；用于显示提交与最近更新时刻。</p></td></tr><tr><td><p>pollAfterSeconds</p></td><td><p>建议下次查询间隔：进行中为 5，终态为 0。查询失败可退避；调用方等待超时不等于任务失败。</p></td></tr><tr><td><p>error</p></td><td><p>部署失败或待恢复的中文安全诊断对象；无错误时为 null。不包含密钥或原始日志。</p></td></tr><tr><td><p>active / url</p></td><td><p>仅该成功版本仍为当前在线版本时 active=true 且 url 非空。历史成功不等于现在在线。</p></td></tr></tbody></table>
-<pre tabindex="0" aria-label="代码示例"><code>{
-  &quot;id&quot;: &quot;任务编号&quot;,
-  &quot;appId&quot;: &quot;应用编号&quot;,
+  &quot;id&quot;: &quot;example-job-id&quot;,
+  &quot;appId&quot;: &quot;example-app-id&quot;,
   &quot;status&quot;: &quot;running&quot;,
   &quot;statusLabel&quot;: &quot;执行中&quot;,
   &quot;phase&quot;: &quot;build&quot;,
   &quot;phaseLabel&quot;: &quot;构建镜像&quot;,
   &quot;terminal&quot;: false,
   &quot;pollAfterSeconds&quot;: 5,
-  &quot;createdAt&quot;: 1792713600.0,
-  &quot;updatedAt&quot;: 1792713615.0,
-  &quot;error&quot;: null,
-  &quot;active&quot;: false,
-  &quot;url&quot;: null
-}</code></pre>
-<table><colgroup><col><col></colgroup><thead><tr><th><p>status</p></th><th><p>含义与下一步</p></th></tr></thead><tbody><tr><td><p><code>queued</code></p></td><td><p>已入队；稍后用同一接口查询。</p></td></tr><tr><td><p><code>running</code></p></td><td><p>正在执行；继续查询。</p></td></tr><tr><td><p><code>succeeded</code></p></td><td><p>该次部署成功；再看 <code>active</code> 和 <code>url</code> 确认它是否仍是当前在线版本。</p></td></tr><tr><td><p><code>failed</code></p></td><td><p>部署失败；查看响应中的中文 <code>error</code>，修复原因后用新幂等键重新提交。</p></td></tr><tr><td><p><code>recovery_required</code></p></td><td><p>需要平台管理员检查资源与恢复状态；不要把它当成成功。</p></td></tr></tbody></table>
-<h2>4. 更新已有应用</h2>
-<p>同组共享会话链路支持 POST /api/v1/integrations/apps/search，专用委托来源凭证配合有效 sessionId，按实际登录人的部署权限搜索。A 本机适配服务对应 POST /apps/search；返回 appId 后可调用更新部署。普通 personal 或未启用委托的 source Bearer 不开放应用搜索。控制台仍通过网页登录会话 GET /api/v1/apps 后本地筛选。完整调用样例见<a href="https://guanghe.feishu.cn/docx/DWPCdke22oEN8Bxwy70cFX9anXe" target="_blank" rel="noopener noreferrer">同组后端实施手册</a>第 2 节。</p>
-<p>更新仍使用 POST /api/v1/automation/deployments，并加入已有应用的 <code>appId</code>，repository 须与该应用一致，当前已绑定域名的 subdomain 也须一致。保留数据下线且已释放域名的应用，可填新的空闲前缀，但仍须与新版本 awesome.yaml 一致。ref 省略时默认 main，也可显式更换为其他版本；真正的新部署使用新幂等键。创建新应用时不填 appId；失败后若要继续使用已分配的同一应用，也应传回该 appId，并确保凭证范围允许更新。</p>
-<pre tabindex="0" aria-label="代码示例"><code>{
   &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,
   &quot;ref&quot;: &quot;main&quot;,
   &quot;subdomain&quot;: &quot;demo&quot;,
-  &quot;appId&quot;: &quot;已有应用编号&quot;
+  &quot;commit&quot;: null,
+  &quot;url&quot;: null,
+  &quot;active&quot;: false,
+  &quot;error&quot;: null,
+  &quot;createdAt&quot;: 1792713600.0,
+  &quot;updatedAt&quot;: 1792713615.0
 }</code></pre>
-<p>“指定单个应用”范围的凭证只能更新那一个应用；如果账号失去该应用的部署权限，凭证也不能继续部署它。</p>
-<h2>5. 重试与常见错误</h2>
-<p>提交后未收到响应时，任务可能已经入库。保留原请求并使用<strong>相同请求体、相同凭证、相同幂等键</strong>重试，平台返回同一任务的当前状态，不新建任务。幂等范围绑定凭证，换 Token 或换键可能生成新任务。真正的新部署才换键；同键对应不同请求返回冲突。幂等键长度为 1–128，仅用字母、数字、点、下划线、冒号和中划线。</p>
-<table><colgroup><col><col></colgroup><thead><tr><th><p>HTTP 状态或现象</p></th><th><p>处理方式</p></th></tr></thead><tbody><tr><td><p>400</p></td><td><p>检查 Idempotency-Key 是否缺少或格式不合法。</p></td></tr><tr><td><p>401</p></td><td><p>检查 Bearer 凭证是否缺少、过期、被撤销或绑定身份已失效；不要使用网页登录 Cookie 代替。</p></td></tr><tr><td><p>403</p></td><td><p>检查凭证范围、负责人权限及应用权限；浏览器跨站调用也会被拒绝，应从同组项目后端调用。</p></td></tr><tr><td><p>404</p></td><td><p>检查任务 id 是否存在及接口路径；不要把 requestId、appId 当作任务 id。</p></td></tr><tr><td><p>409</p></td><td><p>检查幂等键是否复用于不同请求，或应用、域名及当前操作是否冲突；结合 error.code 处理。</p></td></tr><tr><td><p>415</p></td><td><p>请求须带 Content-Type: application/json。</p></td></tr><tr><td><p>422</p></td><td><p>检查 JSON 字段、类型、仓库、ref 和域名前缀格式。</p></td></tr><tr><td><p>网络超时 / 5xx</p></td><td><p>不能据此认定任务未创建；保留原请求、凭证和幂等键，按退避策略重试。</p></td></tr></tbody></table>
-<p>API 凭证不能用于网页管理、修改密钥、管理成员或下线应用。撤销凭证后，调用方不能再提交或查询；尚未执行的关联部署也会失去授权。查看凭证或撤销凭证请回到 <a href="https://awesome.guanghexinzhi.cn/api-access" target="_blank" rel="noopener noreferrer">API 凭证页面</a>。</p>
-<p>若任务因缺少登录密码或供应商 API Key 失败，到控制台相应任务补充配置；不要把秘密值加进部署 JSON。API 提交与网页提交一样，由后台异步同步应用及部署记录到飞书多维表格；表格写入成功不是 202 的前置条件，也不等于部署成功。</p>
-<h3>平台不可达时的请求收据</h3>
-<p>平台受理事务完成后即有任务记录，即使客户端没收到 202 也可能已入队；完全没收到的请求则不会由 B 留下记录。0.11.0 提供同组 A 端适配服务：先在本机 SQLite 保存申请并返回 requestId，再以来源凭证和签名身份凭据向 B 投递。它与 B 暂时同机，可应对 B 进程故障和响应丢失；整机故障仍需要异机备份。该链路使用 /api/v1/integrations/deployments，不改变本文原有 /api/v1/automation 接口。具体 A 项目尚未接通。</p>
-<p>新的共享会话、A 端接口、可靠投递与迁移说明见 <a href="https://guanghe.feishu.cn/docx/DWPCdke22oEN8Bxwy70cFX9anXe" target="_blank" rel="noopener noreferrer">同组网页项目接入 Awesome Deploy API｜后端实施手册</a> 第 1—6 节。Redis 保存登录态，数据库保存申请；此方案不将签名受理凭据写入飞书。原有应用和部署记录表在 B 收件后异步同步；旧独立登记模块的部署请求表恢复未自动接入此链路。</p>
+<p>queued / running 继续按 pollAfterSeconds 查询；succeeded / failed / recovery_required / cancelled 为终态。terminal=true 不一定成功。只有 succeeded 且 active=true 才说明该次版本当前在线；后续更新或下线后，历史成功任务可能 active=false、url=null。阶段没有固定耗时，不提供百分比、预计完成时间或队列名次。</p>
+<p>PublicJob 不直接返回申请人 userId；归属记录在平台数据库及登记流程中。error 为 null 或安全中文诊断对象，含 code、title、message、path、suggestion、steps，可选 reason；不返回原始日志或密钥。</p>
+<h3>2.3 RequestEnvelope：A 的持久受理记录</h3>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>约束与含义</p></th></tr></thead><tbody><tr><td><p>requestId</p></td><td><p>原Idempotency-Key</p></td></tr><tr><td><p>status</p></td><td><p>pending|submitted|succeeded|failed|recovery_required|cancelled|rejected</p></td></tr><tr><td><p>jobId</p></td><td><p>null直到B受理</p></td></tr><tr><td><p>appId</p></td><td><p>null直到B受理</p></td></tr><tr><td><p>error</p></td><td><p>null或投递错误string；业务失败看deployment.error</p></td></tr><tr><td><p>createdAt</p></td><td><p>A记录创建时间Unix秒</p></td></tr><tr><td><p>updatedAt</p></td><td><p>A记录处理时间Unix秒，不能作为B状态新鲜度</p></td></tr><tr><td><p>pollAfterSeconds</p></td><td><p>外层终态/rejected为0，其余5</p></td></tr><tr><td><p>deployment</p></td><td><p>null或最后获取的B Job快照</p></td></tr></tbody></table>
+<p>A 的 202 表示 SQLite 事务已经提交，此时 jobId/appId/deployment 仍可能为 null。pending 是等待投递，submitted 是 B 已受理，rejected 是投递被终止；业务执行状态看 deployment.status。deployment 是最近同步快照，终态后不持续刷新后续下线信息；要确认当前在线版本，可由受信后端读取 B 的同组任务 GET。</p>
+<h2>3. 普通自动化 API：脚本、CI 与个人后端</h2>
+<p>在控制台“API 凭证”页通过飞书登录创建个人凭证。范围三选一：我有权部署的应用、指定单个应用、仅创建新应用；默认 30 天，可设 1–90 天。完整 token 只返回一次，将其放入后端密钥配置并注入 AWESOME_DEPLOY_TOKEN。同一 Token 可多次部署；没有“一枚 Token 只能部署一次”的限制。具名来源凭证由管理员/运维另行签发，不使用个人凭证 HTTP 创建接口。</p>
+<table><colgroup><col><col><col></colgroup><thead><tr><th><p>方法与路径</p></th><th><p>请求 / 成功返回</p></th><th><p>权限与幂等</p></th></tr></thead><tbody><tr><td><p>POST /api/v1/automation/deployments</p></td><td><p>Bearer + application/json + Idempotency-Key；体为 Deployment；202 Job。</p></td><td><p>凭证范围与其负责人当前部署权限均须通过。同一身份+同一 credential_id+同键+相同规范化内容返回原任务；改内容 409。</p></td></tr><tr><td><p>GET /api/v1/automation/deployments/{job_id}</p></td><td><p>Bearer；无请求体；200 Job。</p></td><td><p>必须是提交时同一有效 credential_id，并仍有任务详情权限。同一账号新建另一枚 Token 不能自动查询旧任务。</p></td></tr></tbody></table>
+<p>首次部署示例：在受控后端环境注入凭证，将 REQ_ID 设置为已在业务数据库保存的稳定申请 ID；示例不会自动生成每次不同的键。创建不填 appId，ref 省略即 main。</p>
+<pre tabindex="0" aria-label="代码示例"><code># token只由后端安全环境注入；REQ_ID先由业务数据库保存。此示例不执行。
+curl --fail-with-body --silent --show-error \
+  -X POST https://awesome.guanghexinzhi.cn/api/v1/automation/deployments \
+  -H &quot;Authorization: Bearer $AWESOME_DEPLOY_TOKEN&quot; \
+  -H &quot;Idempotency-Key: $REQ_ID&quot; -H &#x27;Content-Type: application/json&#x27; \
+  --data &#x27;{&quot;repository&quot;:&quot;https://github.com/your-org/your-repo.git&quot;,&quot;subdomain&quot;:&quot;demo&quot;}&#x27;
+# 202响应中的id保存为JOB_ID，再用同一Token GET：
+curl --fail-with-body --silent --show-error \
+  -H &quot;Authorization: Bearer $AWESOME_DEPLOY_TOKEN&quot; \
+  &quot;https://awesome.guanghexinzhi.cn/api/v1/automation/deployments/$JOB_ID&quot;</code></pre>
+<p>更新仍使用同一个 POST，唯一变化是加入已取得的 appId；新的一次更新用新幂等键。只能创建新应用的凭证不能用于更新。</p>
+<pre tabindex="0" aria-label="代码示例"><code>{
+  &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,
+  &quot;subdomain&quot;: &quot;demo&quot;,
+  &quot;appId&quot;: &quot;example-app-id&quot;
+}</code></pre>
+<p>HTTP 202 后保存 id 与 appId，按第 2 章轮询到终态。请求超时不代表平台没收到：保留原请求与幂等键，查询原任务或用同一凭证重试。同组继承用户登录的项目请使用下一章链路，不能用来源负责人身份代替真实申请人。</p>
+<h2>4. 同组接入：共享登录、搜索、更新与进度</h2>
+<p>上游业务 A 先验证自己的登录，再将可信身份登记到共享会话；适配服务先保存申请，后台用专用来源凭证投递 B。sessionId 保存在 A 的服务端会话映射中；不复制用户密码、Cookie 或飞书 access_token 给 B。身份必须使用 B 已配置的同一飞书 App 与 tenantKey 下的 openId，不按姓名猜测，也不从前端传入管理员角色。</p>
+<p>默认共享会话为 8 小时绝对有效期，无滑动续期；实际 ttl 应取上游剩余登录有效期与 28800 秒的较小值。Redis 故障时不能签发会话、搜索或受理新申请；已入库的受理记录可依靠签名凭据继续投递。B 若以后需要代用户操作飞书业务接口，须另做相应 OAuth 授权；共享身份本身不包含该授权。</p>
+<h3>4.1 A 适配服务接口（当前 8099）</h3>
+<table><colgroup><col><col><col></colgroup><thead><tr><th><p>方法与路径</p></th><th><p>JSON 请求 / 成功返回</p></th><th><p>约束</p></th></tr></thead><tbody><tr><td><p>POST /sessions</p></td><td><p>{identity:{appId,tenantKey,openId,name},ttl?:28800} → 201 {sessionId,expiresIn}</p></td><td><p>内部 Bearer；identity 必须取自已验证上游登录。ttl 为 1–28800 整数；name 为 1–256 字符且无控制字符。体 ≤4096 字节。</p></td></tr><tr><td><p>POST /sessions/revoke</p></td><td><p>{sessionId} → 200 {revoked:true}</p></td><td><p>内部 Bearer；上游退出时调用。Redis 不可用返回 503，不应伪装退出成功；已受理任务继续投递。</p></td></tr><tr><td><p>POST /apps/search</p></td><td><p>Search 请求见下表 → 200 SearchResult</p></td><td><p>内部 Bearer；不需要幂等键；实时查询，不写申请数据库；体 ≤4096 字节。失败不能伪装为零条结果。</p></td></tr><tr><td><p>POST /requests</p></td><td><p>{sessionId,deployment:Deployment} + Idempotency-Key → 202 RequestEnvelope</p></td><td><p>内部 Bearer；体 ≤16384 字节；先验证共享会话、生成受理凭据并提交 SQLite 事务。相同 ID 改内容或申请人 409。</p></td></tr><tr><td><p>GET /requests/{request_id}</p></td><td><p>无请求体 → 200 RequestEnvelope；不存在 404</p></td><td><p>内部 Bearer；按来源访问，不带 sessionId。A 网页层必须另做用户归属或项目详情权限检查。</p></td></tr></tbody></table>
+<p>以上 POST 都使用 Content-Type: application/json。A 业务后端不自行构造 receipt。当前 /requests 必须包裹 deployment 与 sessionId，不能发送平铺 repository/subdomain，也不能直接让浏览器带内部 Bearer 请求。</p>
+<h3>4.2 Search 与 SearchResult</h3>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>约束与含义</p></th></tr></thead><tbody><tr><td><p>sessionId</p></td><td><p>必填 string，有效共享会话。不接受 receipt 代替；凭证负责人为管理员不提升此用户权限。</p></td></tr><tr><td><p>query</p></td><td><p>可选 string，默认空，最多 200 字符。trim 后忽略大小写，包含匹配当前/历史项目名称、仓库地址或 appId。</p></td></tr><tr><td><p>limit / offset</p></td><td><p>可选严格整数。limit 默认 20，范围 1–20；offset 默认 0，范围 0–1000000；布尔值不算整数。</p></td></tr><tr><td><p>items</p></td><td><p>数组。每项只含 appId、projectName、repository、subdomain、lastSubdomain、domainBound；名称或历史名称可能为 null。</p></td></tr><tr><td><p>total / limit / offset / nextOffset</p></td><td><p>total 是按实际用户权限及关键字过滤后的数量；先授权后分页。nextOffset 为下一页偏移，无下一页为 null。空结果为 items=[]、total=0。</p></td></tr><tr><td><p>搜索范围</p></td><td><p>账号有效且 canDeploy=true：普通用户的 owner/maintainer 项目；本地管理员全部项目；viewer 不返回。</p></td></tr></tbody></table>
+<pre tabindex="0" aria-label="代码示例"><code>{
+  &quot;sessionId&quot;: &quot;由A服务端保存的共享会话ID&quot;,
+  &quot;query&quot;: &quot;demo&quot;,
+  &quot;limit&quot;: 20,
+  &quot;offset&quot;: 0
+}</code></pre>
+<pre tabindex="0" aria-label="代码示例"><code>{
+  &quot;items&quot;: [
+    {
+      &quot;appId&quot;: &quot;example-app-id&quot;,
+      &quot;projectName&quot;: &quot;demo&quot;,
+      &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,
+      &quot;subdomain&quot;: &quot;demo&quot;,
+      &quot;lastSubdomain&quot;: &quot;demo&quot;,
+      &quot;domainBound&quot;: true
+    }
+  ],
+  &quot;total&quot;: 1,
+  &quot;limit&quot;: 20,
+  &quot;offset&quot;: 0,
+  &quot;nextOffset&quot;: null
+}</code></pre>
+<h3>4.3 B 同组接口（由 A 适配服务调用）</h3>
+<table><colgroup><col><col><col></colgroup><thead><tr><th><p>方法与路径</p></th><th><p>JSON 请求 / 成功返回</p></th><th><p>权限与幂等</p></th></tr></thead><tbody><tr><td><p>POST /api/v1/integrations/apps/search</p></td><td><p>Search → 200 SearchResult；application/json；无需幂等键。</p></td><td><p>专用委托来源 Bearer + 有效 sessionId；真实用户范围见 4.2。Redis 不可用 503。</p></td></tr><tr><td><p>POST /api/v1/integrations/deployments</p></td><td><p>{deployment:Deployment,sessionId} 或 {deployment:Deployment,receipt}；application/json + Idempotency-Key → 202 Job。</p></td><td><p>sessionId/receipt 严格二选一。receipt 仅由可信 A 组件生成，绑定来源、申请人、请求 ID 与内容。来源+请求 ID 构成稳定幂等域；改内容或申请人拒绝。</p></td></tr><tr><td><p>GET /api/v1/integrations/deployments/{job_id}</p></td><td><p>无请求体 → 200 Job。</p></td><td><p>同一 delegation_source 有效来源 Bearer 可查询；允许同源轮换后的凭证，不需要 sessionId。A 展示给用户前仍须另做权限过滤。</p></td></tr></tbody></table>
+<p>B 每次受理及执行继续检查本地账号与应用权限，不把上游角色导入成平台管理员。新项目归实际共享身份用户，更新不改原负责人。来源可提交多个项目和多次任务，但应用硬配额、授权、队列并发限制仍然生效。</p>
+<h3>4.4 同组端到端接入示例（Python）</h3>
+<p>此示例运行在可信 A 业务后端，依赖 httpx。AWESOME_TEAM_INTAKE_TOKEN 来自安全配置；verified_identity 来自经过验证的真实登录。请求 ID 必须先由 A 业务数据库生成和保存，所有重试复用。代码包含新建、分页搜索、按用户选定 appId 更新、查询进度与退出；不是可直接嵌入浏览器的代码。</p>
+<pre tabindex="0" aria-label="代码示例"><code># 运行在 A 的可信后端。identity 来自已验证的上游登录服务，不取浏览器 JSON。
+# 所有 request_id 都由 A 业务数据库首次生成并保存；同次重试复用，不能每次生成。
+import os
+import time
+import httpx
+
+client = httpx.Client(base_url=&quot;http://127.0.0.1:8099&quot;,
+    headers={&quot;Authorization&quot;: &quot;Bearer &quot; + os.environ[&quot;AWESOME_TEAM_INTAKE_TOKEN&quot;]},
+    timeout=15, trust_env=False, follow_redirects=False)
+
+def call(method, path, **kw):
+    response = client.request(method, path, **kw)
+    response.raise_for_status()  # A 应统一提取 error.message/detail；勿输出headers、session或receipt。
+    return response.json()
+
+def share_login(verified_identity, remaining_login_seconds):
+    return call(&quot;POST&quot;, &quot;/sessions&quot;, json={&quot;identity&quot;: verified_identity,
+        &quot;ttl&quot;: min(28800, remaining_login_seconds)})[&quot;sessionId&quot;]
+
+def submit(session_id, request_id, deployment):
+    return call(&quot;POST&quot;, &quot;/requests&quot;, headers={&quot;Idempotency-Key&quot;: request_id},
+        json={&quot;sessionId&quot;: session_id, &quot;deployment&quot;: deployment})
+
+def progress(request_id, wait_seconds=600):
+    # 调用本函数之前，A 必须检查请求本人或应用 detail 权限，不能相信前端任意 request_id。
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() &lt; deadline:
+        value = call(&quot;GET&quot;, &quot;/requests/&quot; + request_id)
+        deployment = value[&quot;deployment&quot;]
+        if value[&quot;status&quot;] == &quot;rejected&quot;:
+            return value  # 展示外层 error；不要自动用新 ID 重提。
+        if deployment is not None and deployment[&quot;terminal&quot;]:
+            return value  # terminal 不等于成功，检查 deployment.status/error。
+        time.sleep(max(1, value[&quot;pollAfterSeconds&quot;]))
+    raise TimeoutError(&quot;本次等待结束；保留原 requestId，稍后继续 GET，不能据此判定部署失败&quot;)
+
+def search(session_id, query):
+    offset = 0
+    found = []
+    while True:
+        page = call(&quot;POST&quot;, &quot;/apps/search&quot;, json={&quot;sessionId&quot;: session_id,
+            &quot;query&quot;: query, &quot;limit&quot;: 20, &quot;offset&quot;: offset})
+        found.extend(page[&quot;items&quot;])
+        if page[&quot;nextOffset&quot;] is None:
+            return found
+        offset = page[&quot;nextOffset&quot;]
+
+def create_project(session_id, persisted_request_id, repository, project_name):
+    # repository 需包含符合技术协议的 awesome.yaml；ref 省略即 main。
+    return submit(session_id, persisted_request_id,
+        {&quot;repository&quot;: repository, &quot;subdomain&quot;: project_name})
+
+def update_project(session_id, persisted_request_id, query, selected_app_id, new_project_name=None):
+    # selected_app_id 必须经用户选择；不能取搜索第一项。
+    matches = [a for a in search(session_id, query) if a[&quot;appId&quot;] == selected_app_id]
+    if len(matches) != 1:
+        raise ValueError(&quot;项目不存在、匹配不唯一或当前用户无部署权限&quot;)
+    app = matches[0]
+    name = app[&quot;subdomain&quot;] if app[&quot;domainBound&quot;] else new_project_name
+    if not name:
+        raise ValueError(&quot;原项目未绑定域名，请选择与 awesome.yaml 一致的空闲项目名称&quot;)
+    return submit(session_id, persisted_request_id,
+        {&quot;appId&quot;: app[&quot;appId&quot;], &quot;repository&quot;: app[&quot;repository&quot;], &quot;subdomain&quot;: name})
+
+def logout(session_id):
+    return call(&quot;POST&quot;, &quot;/sessions/revoke&quot;, json={&quot;sessionId&quot;: session_id})
+
+# A 回调：sid = share_login(verified_identity, remaining_login_seconds)
+# 把sid关联A服务端会话，不能给浏览器保管。
+# 新建：accepted = create_project(sid, saved_new_id, repo, name); result = progress(accepted[&quot;requestId&quot;])
+# 更新：先search给用户选择；accepted = update_project(sid, saved_update_id, query, selected_id); result = progress(accepted[&quot;requestId&quot;])
+# 异常处理后可再 GET 原 requestId；POST超时只能用原requestId和原内容重试。
+</code></pre>
+<p>接入顺序：登录回调签发共享会话并关联本地服务端会话 → 搜索供用户选定 appId → 保存申请 ID 与申请人关联 → 提交 /requests → 保存返回 requestId/jobId/appId → GET 进度并展示 deployment.status/phaseLabel/error。轮询等待超时仅结束本次等待，保留 ID 以后继续查；不要据此新建申请。</p>
+<p>A 事务入库后才返回 202。B 暂时不可达或响应丢失时，A 用同 ID 后台重投；POST 400/403/409/422 结束为 rejected，401/网络/5xx 保留记录退避重试。已受理请求不因共享会话退出而丢失。A、B 同机时整机故障仍需要异机备份，Redis 不替代请求数据库。</p>
+<p>B 收件后异步同步应用主表和部署记录表；飞书同步不阻塞部署。当前同组链路没有接入旧独立模块的“部署请求表恢复”，不能宣称 B 完全没收到时已自动在飞书留档。签名受理凭据、sessionId、Token 和秘密值不写飞书表格。</p>
+<h2>5. 控制台部署、查询与下线 API</h2>
+<h3>5.1 GET /api/v1/schema</h3>
+<p>认证与权限：C。</p>
+<p>请求：查询参数：version：integer，默认 1，仅 1 或 2。</p>
+<p>成功：HTTP 200；所选 awesome.yaml JSON Schema。</p>
+<p>非法版本 422 INVALID_MANIFEST；不是部署请求 OpenAPI。</p>
+<h3>5.2 GET /api/v1/capabilities</h3>
+<p>认证与权限：C。</p>
+<p>请求：无请求体；除已列出的路径参数外，无业务查询参数。</p>
+<p>成功：HTTP 200；{schemaVersion:1,schemaVersions:[1,2],serviceKinds:[web],approval:false,codeReview:false,persistentStorage:true,storage,storageHardQuota,resourceLimits,workers:false,customEgress:false,buildNetwork,runtimeNetwork,baseDomain,aiAdvice,secretVault,applicationManagement}。</p>
+<p>运行能力以此响应为准；secretVault.enabled/versionManagement 需 Feishu + encrypted；runtimeNetwork 只适用于新部署。</p>
+<h3>5.3 GET /api/v1/openapi.json</h3>
+<p>认证与权限：C。</p>
+<p>请求：无请求体；除已列出的路径参数外，无业务查询参数。</p>
+<p>成功：HTTP 200；FastAPI OpenAPI 文档，包含 B 已注册的控制台、automation、integrations 路由。</p>
+<p>/docs、/redoc、默认 /openapi.json 均关闭；该 JSON 不覆盖独立 A 适配服务路由，且运行时代码中部分 auth/校验不会自动成为完整 OpenAPI 注解。</p>
+<h3>5.4 POST /api/v1/preflight</h3>
+<p>认证与权限：C+W。</p>
+<p>请求：JSON 请求体采用 Preflight（字段见第 8 章）。</p>
+<p>成功：HTTP 200；{manifest:&lt;规范化并校验的清单&gt;,scope:configuration_only,message}。</p>
+<p>仅配置校验，不获取 Git、不构建、不校验 secrets 可读性/真实容量/服务器能力；HTTP 整体请求上限 128 KiB 比清单解析器 256 KiB 更小。</p>
+<h3>5.5 POST /api/v1/deployments</h3>
+<p>认证与权限：C+W。</p>
+<p>请求：JSON 请求体采用 Submission（字段见第 8 章）；请求头：Idempotency-Key required。</p>
+<p>成功：HTTP 202；PublicJob。</p>
+<p>异步入队；新建归实际用户，更新需管理员/owner/maintainer + canDeploy，仓库及已绑定域名必须与原应用一致；相同 key + 相同规范化请求返回原任务，不重新部署。</p>
+<h3>5.6 GET /api/v1/deployments</h3>
+<p>认证与权限：C。</p>
+<p>请求：无请求体；除已列出的路径参数外，无业务查询参数。</p>
+<p>成功：HTTP 200；{items:[PublicJob]}。</p>
+<p>无 query/pagination 契约；当前固定最近 50 条，普通用户按 owner/maintainer 权限过滤；viewer 无任务详情。</p>
+<h3>5.7 GET /api/v1/deployments/{job_id}</h3>
+<p>认证与权限：C；管理员/owner/maintainer detail 权限。</p>
+<p>请求：无请求体；除已列出的路径参数外，无业务查询参数。</p>
+<p>成功：HTTP 200；PublicJob。</p>
+<p>不存在 404；无权限 403；无 app 归属历史任务仅管理员可读。</p>
+<h3>5.8 GET /api/v1/deployments/{job_id}/events</h3>
+<p>认证与权限：C；detail 权限。</p>
+<p>请求：无请求体；除已列出的路径参数外，无业务查询参数。</p>
+<p>成功：HTTP 200；{items:[{id,job_id,phase,message,created_at}]}。</p>
+<p>普通 JSON 列表，按 event id 升序；不是 SSE/WebSocket，不支持 since/cursor。message 为固定脱敏中文事件，不提供原始容器或构建日志。字段时间 created_at 是 Unix 秒。</p>
+<h3>5.9 POST /api/v1/deployments/{job_id}/analyze</h3>
+<p>认证与权限：C+W；管理员/owner/maintainer + canDeploy。</p>
+<p>请求：JSON 请求体采用 AnalysisRequest（字段见第 8 章）。</p>
+<p>成功：HTTP 200；200 {text,model,cached} 或 202 {status:pending} + Retry-After:1。</p>
+<p>仅 failed/recovery_required 且有 error；其余 409。poll=true 只轮询已有分析，false 可发起。单次等待最多 8 秒，忙/限流 429，AI 超时 504，其余 AI 异常 503。未配置 AI 为 503 AI_NOT_CONFIGURED。只向 AI 发标准化错误与平台规则。</p>
+<h3>5.10 GET /api/v1/apps</h3>
+<p>认证与权限：C。</p>
+<p>请求：无请求体；除已列出的路径参数外，无业务查询参数。</p>
+<p>成功：HTTP 200；{items:[ControlConsoleApp]}。</p>
+<p>控制台列表，非同组搜索接口，无 query/limit/offset。管理员可见全部；owner/maintainer 可见所属应用完整投影；viewer 仅基本信息及 permissions。</p>
+<h3>5.11 GET /api/v1/management</h3>
+<p>认证与权限：C。</p>
+<p>请求：无请求体；除已列出的路径参数外，无业务查询参数。</p>
+<p>成功：HTTP 200；{apps:[ManagementApp],deployments:[PublicJob],offlineOperations:[OfflineOperation]}。</p>
+<p>应用按可见权限过滤；deployments 只 queued/running/recovery_required 且需 detail 权限；offlineOperations 是尚未 succeeded 的操作，管理员/owner/maintainer 可见。不是全部历史部署列表。</p>
+<h3>5.12 POST /api/v1/apps/{app_id}/offline</h3>
+<p>认证与权限：C+W；管理员/owner + canDeploy；delete 另需 F（最近 10 分钟登录）。</p>
+<p>请求：JSON 请求体采用 OfflineRequest（字段见第 8 章）；请求头：Idempotency-Key required。</p>
+<p>成功：HTTP 202；OfflineOperation。</p>
+<p>expectedReleaseId 必须是当前 activeReleaseId。dataPolicy=retain 保留业务卷及密码/密钥；delete 同时清除业务数据及已保存密码密钥；deleteConfirmation 必须精确为“删除 ”+当前 subdomain。完成后释放域名和运行端口；返回 202 仅受理。相同 key 保持同一请求；recovery_required 用 retryKey 重试原操作。</p>
+<h3>5.13 GET /api/v1/offline-operations/{operation_id}</h3>
+<p>认证与权限：C；管理员/owner/maintainer detail 权限。</p>
+<p>请求：无请求体；除已列出的路径参数外，无业务查询参数。</p>
+<p>成功：HTTP 200；OfflineOperation。</p>
+<p>只读操作进度；retryable 与 retryKey 只为具有下线/删除权限且为原提交人的操作开放；看到操作不等于能重试。</p>
+<p>ControlConsoleApp：字段 id、repository、subdomain、active_release_id、created_at、updated_at、lastSubdomain、domainBound、role、permissions。viewer 不返回 repository；只获得基本状态。不要将控制台的 id 与同组 SearchResult 的 appId 字段名混用。</p>
+<p>ManagementApp：字段 id、repository、subdomain、lastSubdomain、domainBound、status、activeReleaseId、retainedReleaseId、dataDeleted、commit、ref、url、updatedAt、canOffline、offlineBlockReason、operation、role、permissions。status 为 attention/offlining/online/offline/not_deployed。viewer 仅有 id、subdomain、lastSubdomain、domainBound、status、url、updatedAt、role、permissions。</p>
+<p>OfflineOperation：字段 id、appId、releaseId、status、phase、dataPolicy、error、createdAt、updatedAt、retryable、retryKey。下线操作没有 Job 的 terminal、statusLabel、phaseLabel 或 pollAfterSeconds，调用方须按 status 判断。succeeded 表示完成；recovery_required 需要查看错误与 retryable/retryKey，不能直接当作已下线。时间戳均为 Unix 秒。</p>
+<h2>6. 控制台凭证、成员与权限 API</h2>
+<h3>6.1 GET /api/v1/api-credentials</h3>
+<p>认证与权限：C；仅飞书模式。</p>
+<p>请求：无请求体；除已列出的路径参数外，无业务查询参数。</p>
+<p>成功：HTTP 200；{items:[ApiCredentialMetadata]}。</p>
+<p>仅当前用户自己创建的 self_managed=true 凭证，含已撤销记录；不返回 token。不是管理员全量来源凭证管理端点。</p>
+<h3>6.2 POST /api/v1/api-credentials</h3>
+<p>认证与权限：C+W；仅飞书模式；F（最近 10 分钟登录）。</p>
+<p>请求：JSON 请求体采用 ApiCredentialRequest（字段见第 8 章）。</p>
+<p>成功：HTTP 201；{id,token,ownerUserId,kind:person,delegationSource:null,name,appId,allowCreate,allowAnyApp,selfManaged:true,expiresAt}。</p>
+<p>token 仅这次响应返回；平台保存 hash。appId / allowCreate=true / allowAnyApp=true 必须恰好选一。allowAnyApp 不绕过用户权限。需 canDeploy；appId 限定时也需该应用 deploy 权限。</p>
+<h3>6.3 DELETE /api/v1/api-credentials/{credential_id}</h3>
+<p>认证与权限：C+W；仅飞书模式；F（最近 10 分钟登录）。</p>
+<p>请求：请求体：不需要字段，但需 application/json 写请求头。</p>
+<p>成功：HTTP 200；{ok:true}。</p>
+<p>只能撤销本人 self_managed 凭证；不能用此接口撤销 source 类型。未知 404，无权限 403。重复撤销自身已有记录返回成功。</p>
+<h3>6.4 GET /api/v1/apps/{app_id}/members</h3>
+<p>认证与权限：C；仅飞书模式；管理员/owner。</p>
+<p>请求：无请求体；除已列出的路径参数外，无业务查询参数。</p>
+<p>成功：HTTP 200；{items:[{userId,displayName,role}],permissions,repositoryCredentialsApproved,repositoryCredentialsConfigured}。</p>
+<p>不是任意 viewer/maintainer 的成员可见接口。</p>
+<h3>6.5 PUT /api/v1/apps/{app_id}/repository-credentials</h3>
+<p>认证与权限：C+W；仅飞书模式；管理员；F（最近 10 分钟登录）。</p>
+<p>请求：JSON 请求体采用 RepositoryCredentialsRequest（字段见第 8 章）。</p>
+<p>成功：HTTP 200；{ok:true}。</p>
+<p>approved=true 需已配置服务器 git_askpass，否则409；仅授权应用使用平台仓库凭证，不上传GitHub token；app需已有owner登记。</p>
+<h3>6.6 PUT /api/v1/apps/{app_id}/members/{user_id}</h3>
+<p>认证与权限：C+W；仅飞书模式；管理员/owner；F（最近 10 分钟登录）。</p>
+<p>请求：JSON 请求体采用 MemberRequest（字段见第 8 章）。</p>
+<p>成功：HTTP 200；{ok:true}。</p>
+<p>role 只能 maintainer/viewer；目标必须是当前 App 与 tenant 范围内有效用户，不能把 owner 用本接口改成其他角色。变更提升应用权限版本，旧排队操作可能不再被授权。</p>
+<h3>6.7 DELETE /api/v1/apps/{app_id}/members/{user_id}</h3>
+<p>认证与权限：C+W；仅飞书模式；管理员/owner；F（最近 10 分钟登录）。</p>
+<p>请求：请求体：无模型字段；仍需 application/json。</p>
+<p>成功：HTTP 200；{ok:true}。</p>
+<p>不能移除 owner；先转移负责人。</p>
+<h3>6.8 POST /api/v1/apps/{app_id}/transfer</h3>
+<p>认证与权限：C+W；仅飞书模式；管理员/owner；F（最近 10 分钟登录）。</p>
+<p>请求：JSON 请求体采用 OwnerRequest（字段见第 8 章）。</p>
+<p>成功：HTTP 200；{ok:true}。</p>
+<p>已有 owner 转给同 App+tenant 内有效用户，旧owner降为maintainer，新目标成为owner。更新部署本身不会转移owner，必须显式调用此接口。</p>
+<h3>6.9 POST /api/v1/apps/{app_id}/owner</h3>
+<p>认证与权限：C+W；仅飞书模式；仅管理员；F（最近 10 分钟登录）。</p>
+<p>请求：JSON 请求体采用 OwnerRequest（字段见第 8 章）。</p>
+<p>成功：HTTP 200；{ok:true}。</p>
+<p>仅为还没有 app_access 的历史应用指定owner；已有owner不能用此接口覆盖，应 transfer。</p>
+<h3>6.10 GET /api/v1/users</h3>
+<p>认证与权限：C；仅飞书模式；管理员。</p>
+<p>请求：无请求体；除已列出的路径参数外，无业务查询参数。</p>
+<p>成功：HTTP 200；{items:[{userId,displayName,enabled,canDeploy,role:admin|member}]}。</p>
+<p>只列当前平台存储用户。</p>
+<h3>6.11 PATCH /api/v1/users/{user_id}</h3>
+<p>认证与权限：C+W；仅飞书模式；管理员；F（最近 10 分钟登录）。</p>
+<p>请求：JSON 请求体采用 UserPermissionsRequest（字段见第 8 章）。</p>
+<p>成功：HTTP 200；{ok:true}。</p>
+<p>enabled/canDeploy 至少一项为bool；不提供 is_admin/role 修改。变更用户权限版本并注销其现有平台sessions，旧凭证/受理操作权限也受版本校验。最后有效管理员不能停用，409 LAST_ADMIN_REQUIRED。</p>
+<p>ApiCredentialMetadata：id、ownerUserId、kind、name、delegationSource、appId、allowCreate、allowAnyApp、selfManaged、createdAt、expiresAt、revokedAt；时间戳为 Unix 秒，撤销时间可为 null，不包含完整 token。HTTP 创建接口只签发本人 person 凭证，不是任意 source 或管理员提权入口。</p>
+<p>permissions 是布尔权限集合：viewDetails、deploy、configureSecrets、offline、manageSecrets、rotateSecrets、revokeSecrets、manageMembers、assignOwner、manageRepositoryCredentials。界面可据此展示按钮，服务端仍重新鉴权，不能靠隐藏按钮保证权限。</p>
+<h2>7. 控制台配置与密钥 API</h2>
+<h3>7.1 GET /api/v1/deployments/{job_id}/secrets</h3>
+<p>认证与权限：C；管理员/owner/maintainer + canDeploy。</p>
+<p>请求：无请求体；除已列出的路径参数外，无业务查询参数。</p>
+<p>成功：HTTP 200；DeploymentSecretRequirements。</p>
+<p>仅失败且 error.code=SECRET_NOT_FOUND、固定快照可核验、数据未清除的任务；其他 409 SECRET_CONFIGURATION_NOT_AVAILABLE。不返回密钥值。</p>
+<h3>7.2 POST /api/v1/deployments/{job_id}/secrets</h3>
+<p>认证与权限：C+W；管理员/owner/maintainer + canDeploy。</p>
+<p>请求：JSON 请求体采用 SecretConfigurationRequest（字段见第 8 章）。</p>
+<p>成功：HTTP 200；DeploymentSecretRequirements。</p>
+<p>只补充缺失值；不覆盖已配置、不修改不可读值、不接受平台托管 MASTER_KEY。允许平台在合适新应用场景生成托管密钥。此接口只保存，随后仍需新 key 提交部署，不自动续跑旧任务。</p>
+<h3>7.3 GET /api/v1/apps/{app_id}/secrets</h3>
+<p>认证与权限：C；管理员/owner/maintainer + canDeploy；仅 Feishu + encrypted，否则404。</p>
+<p>请求：无请求体；除已列出的路径参数外，无业务查询参数。</p>
+<p>成功：HTTP 200；{appId,items:[SecretMetadata],operations:[SecretRevocationOperation],can_rotate:true,can_revoke:&lt;owner/admin&gt;}。</p>
+<p>只返回元数据及版本，绝不返回 secret value；SecretMetadata={name,kind,current_version,data_generation,versions:[{version,status}]}。</p>
+<h3>7.4 POST /api/v1/apps/{app_id}/secrets/{name}/rotate</h3>
+<p>认证与权限：C+W；管理员/owner/maintainer + canDeploy；Feishu+encrypted；F（最近 10 分钟登录）。</p>
+<p>请求：JSON 请求体采用 SecretRotationRequest（字段见第 8 章）；路径参数：name 匹配 [A-Za-z][A-Za-z0-9_-]{0,63}。</p>
+<p>成功：HTTP 200；{name,current_version}。</p>
+<p>只允许 kind=runtime_secret；平台数据主密钥禁止普通轮换。expected_current_version 为32位小写hex，CAS 冲突 409。下线/销毁期间阻止。轮换不自动部署，已固定旧版本的部署不自动变更。</p>
+<h3>7.5 POST /api/v1/apps/{app_id}/secrets/{name}/revoke</h3>
+<p>认证与权限：C+W；管理员/owner + canDeploy；Feishu+encrypted；F（最近 10 分钟登录）。</p>
+<p>请求：JSON 请求体采用 SecretRevocationRequest（字段见第 8 章）；路径参数：name 匹配 [A-Za-z][A-Za-z0-9_-]{0,63}。</p>
+<p>成功：HTTP 202；SecretRevocationOperation。</p>
+<p>只允许 runtime_secret；version/expected_current_version 均32位小写hex；reason 单行1–1024字符不得CR/LF/NUL。吊销是异步操作；随后 GET 应用 secrets 的 operations 观察，不存在单独 revocation GET。会触发受影响版本的处置，不能描述成单纯删除一行配置。</p>
+<p>DeploymentSecretRequirements：jobId、repository、subdomain、canGenerate、items。每项为 {name,uses:[{service,environmentVariable}],state,managed}，state 为 missing/configured/unavailable；不返回秘密值。保存缺失配置之后，使用新幂等键提交新的部署，并带回原 appId。</p>
+<p>SecretMetadata：name、kind、current_version、data_generation、versions:[{version,status}]。SecretRevocationOperation：id、app_id、name、version、status、error、created_at、updated_at；状态 queued/running/recovery_required/succeeded。这些接口确实使用 snake_case，不要改成 camelCase；没有单独的吊销进度 GET，查看 GET 应用 secrets 的 operations。</p>
+<h2>8. 控制台请求模型与调用范式</h2>
+<p>第 5—7 章的模型字段如下。Submission 即第 2 章 Deployment；其他模型均拒绝未知字段，string、boolean、integer 均采用严格类型。写操作包括 DELETE 也带 W 请求头，无业务字段时发送 {}。</p>
+<h3>8.1 Preflight</h3>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>约束与含义</p></th></tr></thead><tbody><tr><td><p>manifest</p></td><td><p>必填 string，awesome.yaml 原文。只预校验配置，不保证能构建或上线。</p></td></tr></tbody></table>
+<h3>8.2 AnalysisRequest</h3>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>约束与含义</p></th></tr></thead><tbody><tr><td><p>poll</p></td><td><p>可选 boolean，默认 false；false 发起/获取分析，true 只查询已有分析。</p></td></tr></tbody></table>
+<h3>8.3 OfflineRequest</h3>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>约束与含义</p></th></tr></thead><tbody><tr><td><p>expectedReleaseId</p></td><td><p>必填 string，当前 activeReleaseId，[A-Za-z0-9_-]{1,64}；并发版本变化会冲突。</p></td></tr><tr><td><p>dataPolicy</p></td><td><p>retain（默认）或 delete；retain 保留数据和密码密钥，delete 同时清除平台受控数据与已存秘密。</p></td></tr><tr><td><p>deleteConfirmation</p></td><td><p>可选 string|null；delete 时必须精确为“删除 ”加当前 subdomain，例如“删除 demo”。</p></td></tr></tbody></table>
+<h3>8.4 ApiCredentialRequest</h3>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>约束与含义</p></th></tr></thead><tbody><tr><td><p>name</p></td><td><p>必填 string，1–80 字符，允许 Unicode 字母数字、下划线、空格及 . : / -。</p></td></tr><tr><td><p>appId / allowCreate / allowAnyApp</p></td><td><p>appId 为可选 string|null；另两项为 boolean，默认 false。指定 appId、allowCreate=true、allowAnyApp=true 恰好选一。allowAnyApp 仍受用户实际权限约束。</p></td></tr><tr><td><p>days</p></td><td><p>可选 integer，1–90，默认 30；不接受 true/false。</p></td></tr></tbody></table>
+<h3>8.5 MemberRequest</h3>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>约束与含义</p></th></tr></thead><tbody><tr><td><p>role</p></td><td><p>必填 maintainer 或 viewer；不能通过该接口指定 owner。</p></td></tr></tbody></table>
+<h3>8.6 OwnerRequest</h3>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>约束与含义</p></th></tr></thead><tbody><tr><td><p>userId</p></td><td><p>必填 string，平台内部成员 ID；不是姓名，也不是可随意填入的飞书 openId。</p></td></tr></tbody></table>
+<h3>8.7 UserPermissionsRequest</h3>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>约束与含义</p></th></tr></thead><tbody><tr><td><p>enabled / canDeploy</p></td><td><p>可选 boolean|null；至少一项提供 boolean。不支持 role/is_admin。</p></td></tr></tbody></table>
+<h3>8.8 RepositoryCredentialsRequest</h3>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>约束与含义</p></th></tr></thead><tbody><tr><td><p>approved</p></td><td><p>必填 boolean，仅批准或撤销该应用使用平台已配置的仓库凭证；不传 Token。</p></td></tr></tbody></table>
+<h3>8.9 SecretConfigurationRequest</h3>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>约束与含义</p></th></tr></thead><tbody><tr><td><p>values</p></td><td><p>必填对象 {名称:实际值}，最多 2048 项。名称 [A-Za-z][A-Za-z0-9_-]{0,63}；值必须 string，1–16384 UTF-8 字节、单行，不含 CR/LF/NUL。只补缺失值，不传平台托管 MASTER_KEY。</p></td></tr></tbody></table>
+<h3>8.10 SecretRotationRequest</h3>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>约束与含义</p></th></tr></thead><tbody><tr><td><p>value</p></td><td><p>必填 string，1–16384 UTF-8 字节，单行且无 CR/LF/NUL。</p></td></tr><tr><td><p>expected_current_version</p></td><td><p>必填 string，32 位小写十六进制当前版本，防止覆盖并发轮换。</p></td></tr></tbody></table>
+<h3>8.11 SecretRevocationRequest</h3>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>约束与含义</p></th></tr></thead><tbody><tr><td><p>version</p></td><td><p>必填 string，要吊销的 32 位小写十六进制版本。</p></td></tr><tr><td><p>expected_current_version</p></td><td><p>必填 string，32 位小写十六进制当前版本。</p></td></tr><tr><td><p>reason</p></td><td><p>必填 string，1–1024 字符，非纯空白、单行，无 CR/LF/NUL。</p></td></tr></tbody></table>
+<p>控制台同源 JavaScript 调用范式如下。只在已登录的 Awesome Deploy 控制台 origin 执行；其他网页后端应使用第 3 或 4 章，不复制平台 Cookie。示例预校验不创建部署，不含秘密值。</p>
+<pre tabindex="0" aria-label="代码示例"><code>const sessionResponse = await fetch(&#x27;/auth/session&#x27;, {credentials: &#x27;same-origin&#x27;});
+if (!sessionResponse.ok) throw new Error(&#x27;请先登录&#x27;);
+const session = await sessionResponse.json();
+const response = await fetch(&#x27;/api/v1/preflight&#x27;, {
+  method: &#x27;POST&#x27;, credentials: &#x27;same-origin&#x27;,
+  headers: {&#x27;Content-Type&#x27;: &#x27;application/json&#x27;, &#x27;X-CSRF-Token&#x27;: session.csrfToken},
+  body: JSON.stringify({manifest: yamlText}) // yamlText 是用户提供的完整清单文本
+}); // 浏览器自动发送同源 Origin，不要尝试在 JS 中伪造。
+const result = await response.json();
+if (!response.ok) throw new Error(result.error?.message || result.detail || &#x27;请求失败&#x27;);
+// result.scope === &#x27;configuration_only&#x27;，不代表完成部署。</code></pre>
+<h2>9. 登录、会话与网页资源路由</h2>
+<p>平台 Cookie 绝对有效期 8 小时、闲置 30 分钟过期；与 A 共享会话的绝对 TTL 是两套机制。当前使用飞书模式。旧 HTTP Basic 模式仅为兼容，不作为新接入方案。</p>
+<h3>9.1 GET /auth/feishu/start</h3>
+<p>无；仅 Feishu 模式；否则 404。</p>
+<p>请求：{&quot;query&quot;: {&quot;return&quot;: &quot;可选，默认 /；允许本地页面白名单，非法值回退 /&quot;}}</p>
+<p>成功：303 跳转飞书授权 URL；设置 300 秒的 PKCE/OAuth 浏览器绑定 Cookie。</p>
+<p>return 实际白名单：/, /manage, /members, /document, /api-access；/document?doc=overview|api|protocol|protocol-legacy|audit。当前 intake/catalog 不在 begin_login 的 doc 子白名单，勿承诺这些登录后精确回跳。</p>
+<h3>9.2 GET /auth/feishu/callback</h3>
+<p>OAuth 一次性 state + 浏览器绑定 Cookie + code，PKCE；仅 Feishu 模式；否则 404。</p>
+<p>请求：{&quot;query&quot;: {&quot;state&quot;: &quot;required OAuth state&quot;, &quot;code&quot;: &quot;正常成功回调 required；1–4096 可打印 ASCII 非空白字符&quot;, &quot;error&quot;: &quot;提供则视为取消授权；state/code/error 重复参数拒绝&quot;}}</p>
+<p>成功：303 成功跳转已验证 return 并设置会话 Cookie；失败跳 /login?error=cancelled|invalid|expired|denied|unavailable；清除 OAuth Cookie。</p>
+<p>集成方不应自行生成 code/state 或复制飞书 token 作为平台 Cookie。</p>
+<h3>9.3 GET /auth/session</h3>
+<p>控制台认证：Feishu Cookie（或配置为 Basic 模式时 HTTP Basic）；不能用 API Bearer 替代。</p>
+<p>成功：{mode,authenticated,userId,displayName,role:admin|member,canDeploy,csrfToken,capabilities:{vault_enabled}}；Basic 模式省略 userId/displayName/csrfToken。</p>
+<p>csrfToken 取此接口；平台 Cookie 绝对有效期 8 小时、闲置 30 分钟过期。</p>
+<h3>9.4 POST /auth/logout</h3>
+<p>控制台写认证：C + 精确 Origin + X-CSRF-Token + application/json；非 Feishu 的 Basic 模式免 CSRF 但仍检查 Origin/cross-site/content-type；仅 Feishu 模式；否则 404。</p>
+<p>请求：{&quot;body&quot;: &quot;无模型字段；仍须 Content-Type: application/json，推荐 {}&quot;}</p>
+<p>成功：{ok:true}；撤销当前平台 Cookie 并删除 Cookie。</p>
+<p>以下是页面或资源入口，不是部署 JSON API。页面未登录通常 303 跳登录；受保护 API/正文未登录返回 401。</p>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>方法与路径</p></th><th><p>返回与访问范围</p></th></tr></thead><tbody><tr><td><p>GET /login</p></td><td><p>HTML 登录页；无；仅 Feishu 模式；否则 404</p></td></tr><tr><td><p>GET /</p></td><td><p>部署控制台 HTML；C 登录；仅网页用途</p></td></tr><tr><td><p>GET /manage</p></td><td><p>应用管理 HTML；C 登录；仅网页用途</p></td></tr><tr><td><p>GET /api-access</p></td><td><p>个人 API 凭证页面，仅Feishu；C 登录；仅网页用途</p></td></tr><tr><td><p>GET /document</p></td><td><p>网页手册外壳，doc参数在前端选择；C 登录；仅网页用途</p></td></tr><tr><td><p>GET /document/content/{doc_id}</p></td><td><p>对应手册 HTML 内容；C 登录；doc_id 为 catalog/overview/api/intake/protocol/protocol-legacy/audit，其他 404</p></td></tr><tr><td><p>GET /document/deployment-guide.txt</p></td><td><p>text/plain 附件；服务器资源限额动态填充；C 登录；仅网页用途</p></td></tr><tr><td><p>GET /members</p></td><td><p>成员页面，仅Feishu；C 登录；仅网页用途</p></td></tr><tr><td><p>GET /assets/{name}</p></td><td><p>JS/CSS文件；Feishu 模式静态资源免认证；Basic 模式需Basic</p></td></tr></tbody></table>
+<h2>10. 旧独立登记模块（兼容说明，非当前同组入口）</h2>
+<p>仓库还保留 intake_server.py / IntakeRelay 对应的 awesome-deploy-intake.service。它与当前 awesome-team-intake 不是同一个服务，不要仅凭默认端口或同名路径混用。以下两项是旧模块路由；当前 8099 使用第 4 章的共享登录态协议。</p>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>旧模块方法与路径</p></th><th><p>旧契约</p></th></tr></thead><tbody><tr><td><p>POST /requests</p></td><td><p>内部 Bearer + Idempotency-Key + application/json；平铺 {repository,ref,subdomain,appId?}，ref 必填，体 ≤8192 字节；202 返回 requestId,status,jobId,appId,error。部署归普通 automation 凭证负责人，无共享 sessionId。</p></td></tr><tr><td><p>GET /requests/{request_id}</p></td><td><p>内部 Bearer；200 返回同一旧记录，无 deployment 进度快照、时间或 pollAfterSeconds；不存在 404。</p></td></tr></tbody></table>
+<p>旧模块可用 SQLite 与飞书部署请求表进行签名备份恢复，该能力未自动迁移到当前同组链路。旧模块 FastAPI 默认文档路由属于旧进程配置，不是当前 B /api/v1/openapi.json，也不能假定线上有旧 /docs。</p>
+<h2>11. 错误、重试与接入验收</h2>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>HTTP / 现象</p></th><th><p>调用方处理</p></th></tr></thead><tbody><tr><td><p>200 / 201 / 202</p></td><td><p>200 成功读取/操作；201 创建会话或凭证；202 仅受理异步任务。继续查询任务或操作状态。</p></td></tr><tr><td><p>400</p></td><td><p>请求体或 Idempotency-Key 等基础格式错误。</p></td></tr><tr><td><p>401</p></td><td><p>凭证/会话缺失、过期或撤销；A /requests 的部分字段校验目前也可能返回 401，需读 detail，不要一律提示密码错误。</p></td></tr><tr><td><p>403</p></td><td><p>用户、应用、来源或范围无权；AUTH_REAUTH_REQUIRED 表示重新飞书登录后再执行敏感操作。</p></td></tr><tr><td><p>404</p></td><td><p>资源不存在、路径错误或该能力未启用；不要把 appId、jobId、requestId 混用。</p></td></tr><tr><td><p>409</p></td><td><p>幂等内容冲突、应用/域名占用、版本变更或当前状态不允许；根据 error.code 处理，不要换键盲重试。</p></td></tr><tr><td><p>413 / 415 / 422</p></td><td><p>体积过大 / 非 application/json / 字段、类型、部署参数或配置校验失败。</p></td></tr><tr><td><p>429</p></td><td><p>认证或 AI 等相关接口忙/限流；遵循返回提示退避。</p></td></tr><tr><td><p>503 / 504</p></td><td><p>依赖或 AI 服务不可用 / AI 超时；部署是否受理须按原 ID 查，不依据 HTTP 错误推断已清理。</p></td></tr><tr><td><p>网络超时或响应丢失</p></td><td><p>不能确定服务器是否已经受理；保存原 ID、内容、身份，查询或同键重试。不得每次换键造成重复上线。</p></td></tr></tbody></table>
+<p>B 错误可能为 {detail:中文字符串}，也可能为 {error:{code,title,message,path,suggestion,steps,reason?}}；A HTTP 错误主要为 {detail:中文字符串}。调用方两种都要识别。HTTP 成功与任务状态分开判断：GET 返回 200 的 Job 仍可能是 failed。不要将响应对象、请求头、sessionId 或 receipt 原样写日志。</p>
+<pre tabindex="0" aria-label="代码示例"><code>{
+  &quot;error&quot;: {
+    &quot;code&quot;: &quot;INVALID_REQUEST&quot;,
+    &quot;title&quot;: &quot;请求参数无效&quot;,
+    &quot;message&quot;: &quot;请检查请求字段。&quot;,
+    &quot;path&quot;: &quot;request&quot;,
+    &quot;suggestion&quot;: &quot;按接口字段约束修改后再提交。&quot;,
+    &quot;steps&quot;: [
+      &quot;按接口字段约束修改后再提交。&quot;
+    ]
+  }
+}</code></pre>
+<p>上面的诊断对象仅展示结构；具体 code、title、path 取实际响应，不以示例字符串匹配业务。幂等域不同：普通 automation 绑定确切凭证；同组绑定 delegation_source + requestId。凭证轮换前应处理未完成请求，普通 Token 更换不能自动接管旧 Token 查询。</p>
+<p>接入验收至少覆盖：真实用户登录签发与退出；普通用户只搜自己的或授权项目、管理员全量搜索、viewer 不可部署；选定 appId 更新且负责人不变；202 后 queued/running 到终态；同 ID 重试不重复部署；会话失效或 Redis/B 不可用时返回明确错误；A 给浏览器查进度时校验归属；秘密值不进入日志、前端或飞书表。</p>
+<p>本手册按当前源代码的 52 个显式运行路由核对：B 47 项（含登录、页面和静态资源）+ A 5 项；另单列旧独立模块的 2 项请求路由。未提供暂停/取消部署、调整队列顺序、SSE/WebSocket 进度推送或 Bearer 下线管理接口，不应自行假设存在。</p>

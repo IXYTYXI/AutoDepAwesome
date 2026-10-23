@@ -124,3 +124,7 @@ COPY server.py /app/server.py
 USER 65532:65532
 EXPOSE 8080
 CMD ["python", "-u", "/app/server.py"]
+
+完整 API 接口、认证、搜索 appId、更新部署与进度查询示例：
+https://guanghe.feishu.cn/docx/DxI1dW2LOoDjssxtaAfcrdOCnNg
+登录后的网页入口：https://awesome.guanghexinzhi.cn/document?doc=api
