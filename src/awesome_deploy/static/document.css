@@ -7,6 +7,7 @@
 .manual-sidebar{min-width:0;position:sticky;top:18px;max-height:calc(100vh - 36px);overflow-y:auto;overscroll-behavior:contain;padding:19px 11px;border:1px solid var(--border);border-radius:14px;background:#fff;box-shadow:0 3px 12px #274b3010}
 .manual-sidebar h2{font-size:14px;margin:0 9px 6px}
 .manual-sidebar-note{margin:0 9px 14px;font-size:11px;line-height:1.7;color:#64746b}
+.manual-sidebar-group{margin:16px 9px 6px;padding-top:12px;border-top:1px solid var(--border);color:#617568;font-size:11px;font-weight:750;letter-spacing:.04em;line-height:1.4}
 .manual-sidebar>a{display:block;min-height:62px;padding:11px 12px;border-radius:8px;border:1px solid transparent;color:#2c4035;text-decoration:none;touch-action:manipulation}
 .manual-sidebar>a+a{margin-top:4px}
 .manual-sidebar>a:hover{background:#f5f8f2;border-color:#e5ecdf}
@@ -21,6 +22,9 @@
 .manual-reader-title h2{font-size:18px;line-height:1.35;margin:0;text-wrap:balance;overflow-wrap:anywhere}
 .manual-reader-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
 .manual-reader-actions .secondary{min-height:44px;font-size:12px}
+.manual-status{margin:0;padding:9px 20px;border-bottom:1px solid var(--border);background:#f0f6ed;color:#416b45;font-size:12px;font-weight:650;line-height:1.6}
+.manual-status[data-status="待实施规范"]{background:#fff8e9;color:#795522}
+.manual-status[data-status="历史文档"]{background:#f7f0ea;color:#875237}
 .manual-reader-help{margin:0;padding:9px 20px;background:#f7f9f5;border-bottom:1px solid var(--border);font-size:11px;color:#607264;line-height:1.6}
 .manual-content-wrap{position:relative}
 .manual-state{position:absolute;z-index:1;top:50%;left:50%;transform:translate(-50%,-50%);width:min(350px,calc(100% - 40px));padding:17px 20px;border:1px solid var(--border);border-radius:10px;background:#fff;color:#536958;text-align:center;box-shadow:0 8px 24px #274b3014}

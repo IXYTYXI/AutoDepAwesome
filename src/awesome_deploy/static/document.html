@@ -7,9 +7,9 @@
   <title>使用手册 · Awesome Deploy</title>
   <link rel="stylesheet" href="/assets/app.css?v=0.9.13">
   <link rel="stylesheet" href="/assets/auth.css?v=0.9.0">
-  <link rel="stylesheet" href="/assets/document.css?v=0.9.15">
+  <link rel="stylesheet" href="/assets/document.css?v=0.9.16">
   <script src="/assets/auth.js?v=0.9.0" defer></script>
-  <script src="/assets/document.js?v=0.9.15" defer></script>
+  <script src="/assets/document.js?v=0.9.16" defer></script>
 <link rel="stylesheet" href="/assets/theme.css?v=0.10.0">
 </head>
 <body>
@@ -31,21 +31,27 @@
     <p id="auth-notice-text" role="status" aria-live="polite"></p>
     <div class="auth-notice-actions"><a id="auth-login" href="/login" target="_blank" rel="noopener">在新标签页登录 ↗</a><button id="auth-retry" class="secondary" type="button">重新检查登录</button></div>
   </section>
-  <div class="manual-heading"><div><p class="eyebrow">DOCS / 使用说明</p><h1>使用手册</h1><p>选择左侧文档，在右侧阅读。内容于 2026-10-22 从飞书同步。</p></div><a class="manual-download" href="/document/deployment-guide.txt" download>下载接入说明</a></div>
+  <div class="manual-heading"><div><p class="eyebrow">DOCS / 使用说明</p><h1>使用手册</h1><p>按使用状态选择文档，在右侧阅读。正文快照于 2026-10-23 从飞书同步。</p></div><a class="manual-download" href="/document/deployment-guide.txt" download>下载接入说明</a></div>
   <div class="manual-layout">
     <nav class="manual-sidebar" aria-label="飞书文档导航">
       <h2>文档目录</h2>
       <p class="manual-sidebar-note">登录部署平台后可阅读；最新版本和编辑功能请在飞书打开。</p>
-      <a href="/document?doc=overview" data-doc-id="overview" data-title="部署接入使用手册" data-url="https://guanghe.feishu.cn/docx/VBffdzM2do2H8txSOt1cwLsanig"><strong>部署接入使用手册</strong><span>仓库、清单、配置与下线</span></a>
-      <a href="/document?doc=api" data-doc-id="api" data-title="自动化部署 API 使用手册" data-url="https://guanghe.feishu.cn/docx/DxI1dW2LOoDjssxtaAfcrdOCnNg"><strong>自动化部署 API</strong><span>凭证、提交、查询与重试</span></a>
-      <a href="/document?doc=protocol" data-doc-id="protocol" data-title="接入技术协议 v1.1" data-url="https://guanghe.feishu.cn/docx/WaCDdlTg2of7lCxGkY9c2fbQnPf"><strong>接入技术协议 v1.1</strong><span>历史协议，部分能力已变化</span></a>
-      <a href="/document?doc=audit" data-doc-id="audit" data-title="服务上线审计协议" data-url="https://guanghe.feishu.cn/docx/OHLpdQMcpoZNvUxrWWlcpSGmnnc"><strong>服务上线审计协议</strong><span>审计与验收格式参考</span></a>
+      <a href="/document?doc=catalog" data-doc-id="catalog" data-title="项目文档导航" data-status="目录" data-url="https://guanghe.feishu.cn/docx/IrPvdtrOvolR79xOVVpcALywncr"><strong>项目文档导航</strong><span>全部文档的目录与状态</span></a>
+      <h3 class="manual-sidebar-group">当前可用文档</h3>
+      <a href="/document?doc=overview" data-doc-id="overview" data-title="部署接入使用手册（0.9.14）" data-status="当前可用文档" data-url="https://guanghe.feishu.cn/docx/VBffdzM2do2H8txSOt1cwLsanig"><strong>部署接入使用手册</strong><span>仓库、清单、配置与下线</span></a>
+      <a href="/document?doc=api" data-doc-id="api" data-title="自动化部署 API 使用手册" data-status="当前可用文档" data-url="https://guanghe.feishu.cn/docx/DxI1dW2LOoDjssxtaAfcrdOCnNg"><strong>自动化部署 API</strong><span>凭证、提交、查询与重试</span></a>
+      <h3 class="manual-sidebar-group">待实施规范</h3>
+      <a href="/document?doc=intake" data-doc-id="intake" data-title="同组网页项目接入 API｜后端实施手册" data-status="待实施规范" data-url="https://guanghe.feishu.cn/docx/DWPCdke22oEN8Bxwy70cFX9anXe"><strong>同组网页项目接入</strong><span>独立登记服务尚未上线</span></a>
+      <a href="/document?doc=audit" data-doc-id="audit" data-title="服务上线审计协议（审查稿）" data-status="待实施规范" data-url="https://guanghe.feishu.cn/docx/OHLpdQMcpoZNvUxrWWlcpSGmnnc"><strong>服务上线审计协议</strong><span>审查稿，尚未成为上线门禁</span></a>
+      <h3 class="manual-sidebar-group">历史文档</h3>
+      <a href="/document?doc=protocol" data-doc-id="protocol" data-title="接入技术协议 v1.1（历史版）" data-status="历史文档" data-url="https://guanghe.feishu.cn/docx/WaCDdlTg2of7lCxGkY9c2fbQnPf"><strong>接入技术协议 v1.1</strong><span>旧版协议，不能覆盖现行手册</span></a>
     </nav>
     <section class="manual-reader panel" aria-labelledby="manual-title">
       <div class="manual-reader-header">
         <div class="manual-reader-title"><span class="manual-reader-kicker">飞书文档</span><h2 id="manual-title">正在读取文档…</h2></div>
         <div class="manual-reader-actions"><button id="manual-reload" class="secondary" type="button" disabled>重试读取</button><a id="manual-open" class="manual-open" href="https://guanghe.feishu.cn" target="_blank" rel="noopener noreferrer" aria-label="在飞书打开当前文档">在飞书打开 ↗</a></div>
       </div>
+      <p id="manual-status" class="manual-status" role="note"></p>
       <p class="manual-reader-help">这里显示只读同步内容；飞书原文可能已有更新，点击“在飞书打开”查看最新版本。</p>
       <div class="manual-content-wrap">
         <p id="manual-state" class="manual-state" role="status" aria-live="polite">正在确认登录状态…</p>

@@ -22,3 +22,13 @@ def test_feishu_snapshot_renderer_keeps_readable_structure_and_rejects_active_ma
     assert 'href="https://example.com/path?x=1&amp;y=2"' in output
     assert "<script" not in output and "onclick=" not in output and "javascript:" not in output
     assert "危险链接" in output
+
+
+def test_feishu_snapshot_renderer_preserves_navigation_lists_and_safe_links():
+    render = renderer()
+    output = render('''<title>目录</title><h1>当前可用</h1><ul><li>
+      <a href="https://guanghe.feishu.cn/docx/current">当前手册</a>
+    </li></ul>''')
+    assert '<ul><li>' in output
+    assert 'href="https://guanghe.feishu.cn/docx/current"' in output
+    assert '</li></ul>' in output

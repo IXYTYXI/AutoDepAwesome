@@ -18,6 +18,7 @@ TAGS = {
     "table": "table", "thead": "thead", "tbody": "tbody", "tr": "tr",
     "th": "th", "td": "td", "colgroup": "colgroup", "col": "col",
     "br": "br", "checkbox": "span", "callout": "aside", "a": "a",
+    "ul": "ul", "ol": "ol", "li": "li",
 }
 
 

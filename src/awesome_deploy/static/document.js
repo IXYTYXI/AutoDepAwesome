@@ -2,11 +2,12 @@
   'use strict';
   const links = [...document.querySelectorAll('.manual-sidebar [data-doc-id]')];
   const docs = new Map(links.map(link => [link.dataset.docId, {
-    title: link.dataset.title, url: link.dataset.url,
+    title: link.dataset.title, url: link.dataset.url, status: link.dataset.status,
   }]));
   const content = document.getElementById('manual-content');
   const state = document.getElementById('manual-state');
   const title = document.getElementById('manual-title');
+  const status = document.getElementById('manual-status');
   const open = document.getElementById('manual-open');
   const reload = document.getElementById('manual-reload');
   let selected = null;
@@ -48,6 +49,12 @@
     const changed = selected !== id;
     selected = id;
     title.textContent = doc.title;
+    status.textContent = doc.status === '历史文档'
+      ? '历史文档 · 仅供追溯；正文中的“当前”指编写当时，请以当前可用文档为准。'
+      : doc.status === '待实施规范'
+        ? '待实施规范 · 文中描述的能力尚未全部上线，请勿据此判断平台已支持。'
+        : doc.status;
+    status.dataset.status = doc.status;
     open.href = doc.url;
     for (const link of links) {
       if (link.dataset.docId === id) link.setAttribute('aria-current', 'page');

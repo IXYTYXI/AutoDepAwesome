@@ -26,7 +26,8 @@ BODY = {"repository": "https://github.com/org/repo.git", "ref": "main", "subdoma
 
 def test_management_endpoints_are_protected(client):
     for url in ["/", "/api/v1/deployments", "/api/v1/apps", "/api/v1/schema",
-                "/document", "/document/deployment-guide.txt", "/document/content/overview"]:
+                "/document", "/document/deployment-guide.txt",
+                "/document/content/overview", "/document/content/catalog", "/document/content/intake"]:
         assert client.get(url).status_code == 401
     assert client.post("/api/v1/deployments", json=BODY, headers=headers()).status_code == 401
 
@@ -41,10 +42,15 @@ def test_handbook_download_uses_current_limits_and_document_viewer_is_protected(
     assert 'id="manual-content"' in page.text
     assert 'data-doc-id="api"' in page.text
     assert 'data-doc-id="overview"' in page.text
+    assert 'data-doc-id="catalog"' in page.text
+    assert 'data-doc-id="intake"' in page.text
+    assert 'data-status="当前可用文档"' in page.text
+    assert 'data-status="待实施规范"' in page.text
+    assert 'data-status="历史文档"' in page.text
     assert 'https://guanghe.feishu.cn/docx/DxI1dW2LOoDjssxtaAfcrdOCnNg' in page.text
     assert 'https://guanghe.feishu.cn/docx/VBffdzM2do2H8txSOt1cwLsanig' in page.text
     assert "frame-src" not in page.headers["content-security-policy"]
-    for doc_id in ("overview", "api", "protocol", "audit"):
+    for doc_id in ("catalog", "overview", "api", "intake", "protocol", "audit"):
         content = client.get(f"/document/content/{doc_id}", auth=AUTH)
         assert content.status_code == 200
         assert "text/html" in content.headers["content-type"]
