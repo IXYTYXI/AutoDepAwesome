@@ -1,0 +1,11 @@
+{
+  "database_path": "/var/lib/awesome-intake/outbox.sqlite3",
+  "platform_origin": "https://awesome.guanghexinzhi.cn",
+  "platform_token_file": "/etc/awesome-intake/platform-token",
+  "intake_token_file": "/etc/awesome-intake/intake-token",
+  "integrity_key_file": "/etc/awesome-intake/integrity-key",
+  "feishu_app_id": "cli_YOUR_APP_ID",
+  "feishu_app_secret_file": "/etc/awesome-intake/feishu-app-secret",
+  "base_token": "YOUR_BASE_TOKEN",
+  "intake_table_id": "tblYOUR_INTAKE_TABLE_ID"
+}
