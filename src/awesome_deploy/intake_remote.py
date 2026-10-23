@@ -18,6 +18,14 @@ class PlatformRejected(Exception):
         super().__init__(f'平台拒绝部署请求 (HTTP {status_code})')
 
 
+class PlatformUnavailable(ConnectionError):
+    """Retryable platform failure; status is absent for invalid or missing responses."""
+
+    def __init__(self, message, *, status_code=None):
+        self.status_code = status_code
+        super().__init__(message)
+
+
 class PlatformClient:
     def __init__(self, origin: str, token_file: Path, *, client=None):
         parts = urlsplit(origin)
@@ -42,21 +50,22 @@ class PlatformClient:
             with self.client.stream(method, self.origin + path, headers=headers,
                                     follow_redirects=False, **kwargs) as response:
                 if response.is_redirect:
-                    raise ConnectionError('平台发生意外跳转')
+                    raise PlatformUnavailable('平台发生意外跳转')
                 data = bytearray()
                 for chunk in response.iter_bytes():
                     data.extend(chunk)
                     if len(data) > 131072:
-                        raise ConnectionError('平台响应过大')
+                        raise PlatformUnavailable('平台响应过大')
                 if response.status_code == 202 or response.status_code == 200:
                     value = json.loads(data)
                     if isinstance(value, dict):
                         return value
+                    raise PlatformUnavailable(f'平台 HTTP {response.status_code}')
                 if method == 'POST' and response.status_code in (400, 409, 422):
                     raise PlatformRejected(response.status_code)
-                raise ConnectionError(f'平台 HTTP {response.status_code}')
+                raise PlatformUnavailable(f'平台 HTTP {response.status_code}', status_code=response.status_code)
         except (httpx.HTTPError, ValueError):
-            raise ConnectionError('平台暂不可达或响应无效') from None
+            raise PlatformUnavailable('平台暂不可达或响应无效') from None
 
     def post(self, request_id, body):
         return self._call('POST', '/api/v1/automation/deployments', json=body,

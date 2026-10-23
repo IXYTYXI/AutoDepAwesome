@@ -124,6 +124,7 @@ class ApiCredentialStore:
         row = db.execute('SELECT * FROM api_credentials WHERE id=?', (credential_id,)).fetchone()
         now = time.time()
         if (not row or row['revoked_at'] is not None or not row['created_at'] <= now < row['expires_at']
+                or not delegated and row['delegation_source'] is not None
                 or not delegated and (row['owner_user_id'] != actor['id']
                                       or row['owner_revision'] != actor['revision'])):
             raise denied()

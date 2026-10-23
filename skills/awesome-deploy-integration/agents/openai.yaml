@@ -1,0 +1,4 @@
+interface:
+  display_name: "Awesome Deploy 接入"
+  short_description: "接入共享登录态、按实际用户搜索项目并可靠提交部署与查询进度"
+  default_prompt: "使用 $awesome-deploy-integration 为我的后端接入 Awesome Deploy，先离线验证登录态、项目选择、幂等请求与进度查询。"

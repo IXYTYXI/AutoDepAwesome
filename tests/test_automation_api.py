@@ -180,3 +180,30 @@ def test_designated_source_can_submit_multiple_applications_and_updates(web):
                           headers=headers(token, 'one-update'))
     assert updated.status_code == 202
     assert updated.json()['appId'] == first.json()['appId']
+
+
+@pytest.mark.parametrize('is_admin', [False, True])
+def test_delegation_source_cannot_submit_as_owner_without_applicant(web, is_admin):
+    client, app, _ = web
+    owner = login(client)['userId']
+    if is_admin:
+        app.state.identity.set_user(owner, is_admin=True)
+    issued = ApiCredentialStore(app.state.store.settings).issue(
+        owner, 'team-source', kind='source', allow_any_app=True, delegation_source='project-a')
+    response = client.post('/api/v1/automation/deployments', json=body(), headers=headers(issued['token']))
+    assert response.status_code == 403
+    with app.state.store._connection() as db:
+        assert db.execute('SELECT count(*) FROM jobs').fetchone()[0] == 0
+
+
+def test_delegation_source_cannot_read_legacy_owner_job_via_automation(web):
+    client, app, _ = web
+    owner = login(client)['userId']
+    credentials = ApiCredentialStore(app.state.store.settings)
+    issued = credentials.issue(owner, 'team-source', kind='source', allow_any_app=True)
+    job = client.post('/api/v1/automation/deployments', json=body(), headers=headers(issued['token'])).json()
+    # Simulate an owner-bound job admitted before delegated sources were isolated.
+    with credentials._connection(write=True) as db:
+        db.execute('UPDATE api_credentials SET delegation_source=? WHERE id=?', ('project-a', issued['id']))
+    response = client.get('/api/v1/automation/deployments/' + job['id'], headers=headers(issued['token']))
+    assert response.status_code == 403

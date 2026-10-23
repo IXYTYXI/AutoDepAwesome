@@ -102,3 +102,17 @@ def test_source_can_have_unbounded_credentials_and_all_accessible_app_scope(setu
         Store(settings).enqueue(payload(app_id=other_app, subdomain='other'), 'foreign-update',
                                 actor=owner, credential_id=issued['id'])
     assert denied.value.code == 'ACCESS_DENIED'
+
+
+def test_delegation_source_cannot_enqueue_as_credential_owner(setup):
+    settings, owner, app_id, clock = setup
+    clock[0] = time.time()
+    service = credentials(settings, clock=clock)
+    issued = service.issue(owner['id'], 'team-source', kind='source', allow_any_app=True,
+                           delegation_source='project-a')
+    with pytest.raises(DeployError) as denied:
+        Store(settings).enqueue(payload(app_id=app_id), 'source-without-applicant',
+                                actor=owner, credential_id=issued['id'])
+    assert denied.value.code == 'ACCESS_DENIED'
+    with service._connection() as db:
+        service.authorize_scope(db, owner, issued['id'], app_id, delegated=True)

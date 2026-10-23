@@ -244,6 +244,12 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
         request.state.actor, request.state.credential = actor, credential
         return actor, credential
 
+    def automation_owner_access(pair=Depends(automation_access)):
+        # Delegated sources authenticate transport only; integrations resolve the applicant.
+        if pair[1]['delegation_source'] is not None:
+            raise DeployError('ACCESS_DENIED', '同组来源凭证必须通过共享会话接入。')
+        return pair
+
     def fresh(actor):
         if identity and time.time() - actor["authenticated_at"] > 600:
             raise DeployError("AUTH_REAUTH_REQUIRED", "请重新使用飞书登录后再进行此操作。")
@@ -624,7 +630,8 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
         return public_job(store.enqueue(payload, key, **({"actor": request.state.actor} if access else {})))
 
     @app.post('/api/v1/automation/deployments', status_code=202)
-    def automation_submit(body: Submission, request: Request, identity_and_credential=Depends(automation_access)):
+    def automation_submit(body: Submission, request: Request,
+                          identity_and_credential=Depends(automation_owner_access)):
         if not request.headers.get('content-type', '').lower().startswith('application/json'):
             raise HTTPException(415, '请使用 application/json。')
         actor, credential = identity_and_credential
@@ -636,7 +643,7 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
                         submission_model=Submission, public_job=public_job)
 
     @app.get('/api/v1/automation/deployments/{job_id}')
-    def automation_deployment(job_id: str, identity_and_credential=Depends(automation_access)):
+    def automation_deployment(job_id: str, identity_and_credential=Depends(automation_owner_access)):
         actor, credential = identity_and_credential
         job = store.get(job_id)
         access.require_credential_job(actor, credential['id'], job)

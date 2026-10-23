@@ -1,6 +1,6 @@
 <h1>Awesome Deploy API 参考文档</h1>
 <nav class="manual-toc" aria-label="本文目录"><p><strong>本文目录</strong></p><ol><li><a href="#doxcnsLS4zAQLyPR4mdi47vsFSe">1. 快速开始</a></li><li><a href="#doxcnQkJcO6yi27LdFd1TSYPKQg">2. 认证与权限</a></li><li><a href="#doxcn7aV96fP1L8TB31cnUmib0e">3. 同组接入服务接口</a></li><li><a href="#doxcnJD33i8beq3edkRRzwxGebb">4. 平台同组部署接口</a></li><li><a href="#doxcnNHNkFcaLOLeSQJu1a3kCrf">5. 普通自动化接口</a></li><li><a href="#doxcnU0dr7vSQHi6Qrmn98wYmEO">6. 控制台部署与项目管理</a></li><li><a href="#doxcn4RojJqrJOvnaimwL0uEzSg">7. 控制台 API 凭证管理</a></li><li><a href="#doxcnd9MVUVsWQAiXgBrfDXBGwc">8. 控制台应用配置与密钥</a></li><li><a href="#doxcnpdAYb7et8nAHASx0syVi2f">9. 控制台成员与权限管理</a></li><li><a href="#doxcnPqYCphaHn0wDe5WKXoIzDP">10. 公共响应字段与状态</a></li><li><a href="#doxcnMpPHdshWOTGNRKaztnr8Xb">11. 登录、错误与其他路由</a></li></ol></nav>
-<p>版本：0.11.2　更新日期：2026-10-23</p>
+<p>版本：0.11.3　更新日期：2026-10-23</p>
 <p>本文用于后端开发者和 AI 编程工具接入项目搜索、部署提交及进度查询。每个接口均提供请求方法、地址、认证、参数、请求示例、响应示例和错误处理。接口均为 HTTP；JSON 使用 UTF-8，字段区分大小写。示例中的尖括号内容和演示 ID 需要替换为实际值。</p>
 <p><a href="https://guanghe.feishu.cn/docx/DSUwdxpXhot6fQx2YticNCtWnHe" target="_blank" rel="noopener noreferrer">仓库与 awesome.yaml 要求：部署接入技术协议</a></p>
 <h2 id="doxcnsLS4zAQLyPR4mdi47vsFSe" tabindex="-1">1. 快速开始</h2>
@@ -21,7 +21,8 @@
 <h2 id="doxcnQkJcO6yi27LdFd1TSYPKQg" tabindex="-1">2. 认证与权限</h2>
 <h3 id="doxcn7SpmT0XAcLCpDG4FVtWIuc" tabindex="-1">2.1 API 凭证</h3>
 <p>个人 API 凭证在平台“API 凭证”页面创建，默认有效期 30 天，可设为 1–90 天。完整 Token 只显示一次。凭证可重复用于多次部署；范围选择“我有权部署的应用”“指定单个应用”或“仅创建新应用”。凭证范围和所属用户的当前权限同时生效。</p>
-<p>同组接入使用两枚服务端凭证：业务后端持有接入服务凭证 INTAKE_TOKEN；接入服务持有平台来源凭证 SOURCE_TOKEN。由管理员为指定来源配置，不能用普通个人 Token 代替。它们均通过 Authorization: Bearer 发送，不交给浏览器。</p>
+<p>同组接入使用两枚服务端凭证：业务后端持有接入服务凭证 INTAKE_TOKEN；接入服务持有平台来源凭证 SOURCE_TOKEN。由管理员为指定来源配置，不能用普通个人 Token 代替。它们均通过 Authorization: Bearer 发送，不交给浏览器。 从 0.11.3 起，绑定共享登录来源的凭证仅可调用同组委托接口；调用普通 /api/v1/automation 接口返回 403，不能借用凭证持有人的管理员身份。</p>
+<p>同机调用可使用配套 Skill 的 Python 客户端，默认读取 /etc/awesome-team/intake-token；也可一次性配置 AWESOME_INTAKE_TOKEN 或 AWESOME_INTAKE_TOKEN_FILE。实际可用 Key 和配置示例见 <a href="https://guanghe.feishu.cn/docx/OjSxd1b3goodWrxgl4ec1DLMnPf" target="_blank" rel="noopener noreferrer">同机服务 Key 与快速接入</a>。</p>
 <h3 id="doxcnRRM56e417K4SxbrXfsE4pe" tabindex="-1">2.2 共享登录态与项目权限</h3>
 <p>业务后端验证用户真实登录后，调用 POST /sessions 建立共享会话，将返回的 sessionId 与自己的服务端登录会话关联。搜索、提交部署时携带该 sessionId。普通用户可搜索自己拥有或被授予 maintainer 权限的项目；管理员可搜索全部项目；viewer 无部署搜索权限。账号必须有效且允许部署。</p>
 <p>新建项目负责人为实际登录用户；更新项目保留原负责人，本次部署的提交人记录为实际操作人。来源凭证只证明哪个服务发起请求，不赋予用户凭证负责人的管理员权限。不要传入角色或 userId 来替换真实登录身份。</p>

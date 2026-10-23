@@ -53,8 +53,12 @@ def create_app(relay, intake_token, *, start_worker=True):
     app = FastAPI(title='Awesome Deploy independent intake', lifespan=lifespan)
 
     def require_token(request):
-        auth = request.headers.get('authorization', '')
-        if not auth.startswith('Bearer ') or not hmac.compare_digest(auth[7:], intake_token):
+        values = request.headers.getlist('authorization')
+        if (len(values) != 1 or not values[0].startswith('Bearer ')
+                or not values[0].isascii()
+                or not hmac.compare_digest(values[0][7:], intake_token)
+                or request.headers.get('origin') is not None
+                or request.headers.get('sec-fetch-site') is not None):
             raise HTTPException(401, '接入凭证无效。')
 
     @app.post('/requests', status_code=202)
@@ -68,7 +72,7 @@ def create_app(relay, intake_token, *, start_worker=True):
                 raise HTTPException(413, '请求内容过大。')
         try:
             body = json.loads(chunks)
-            return relay.accept(request_id, body)
+            return await asyncio.to_thread(relay.accept, request_id, body)
         except (ValueError, UnicodeError) as exc:
             if isinstance(exc, IntakeError) and '相同请求 ID' in str(exc):
                 raise HTTPException(409, str(exc)) from None

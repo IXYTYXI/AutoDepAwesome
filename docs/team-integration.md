@@ -1,6 +1,6 @@
 # 同组后端接入：共享登录态与可靠部署
 
-适用 0.11.2，权限说明核对于 2026-10-23。A 是将来部署在本机的同组项目，B 是 Awesome Deploy。A 项目尚未存在；本次提供 A 端适配服务、共享会话和 B 端委托接口，并不代表 A 业务已接通。原有 `/api/v1/automation` 接口保持兼容，使用凭证负责人的身份。同组共享登录态方案使用 `/api/v1/integrations`：新建应用归实际登录申请人；更新已有应用保留原负责人，本次部署提交人记录为实际操作用户。
+适用 0.11.3，权限说明核对于 2026-10-23。A 是将来部署在本机的同组项目，B 是 Awesome Deploy。A 项目尚未存在；本次提供 A 端适配服务、共享会话和 B 端委托接口，并不代表 A 业务已接通。原有 `/api/v1/automation` 接口保留普通个人/非委托来源凭证调用，使用凭证负责人的身份；绑定 `delegation_source` 的来源凭证必须走共享登录委托接口，调用普通自动化接口返回 403。同组共享登录态方案使用 `/api/v1/integrations`：新建应用归实际登录申请人；更新已有应用保留原负责人，本次部署提交人记录为实际操作用户。
 
 ## 1. 服务与身份
 
@@ -158,3 +158,7 @@ awesome-deploy --config /etc/awesome-deploy/config.json api-token-create \
 - 已受理后退出登录仍能部署；本地停用、来源撤销和权限撤销按平台授权规则生效。
 - 请求最终状态、错误摘要、在线链接可显示，凭证和 receipt 不出现在网页及飞书表格。
 - Redis 外部端口不可达，A/B ACL 不越权；迁移与数据库备份分开验收。
+
+## 7. 可分发 Skill 与便捷配置
+
+配套 Skill 为 `skills/awesome-deploy-integration`，包含标准库 Python 客户端、接入顺序和 API 契约。客户端默认连接 `http://127.0.0.1:8099`，默认从 `/etc/awesome-team/intake-token` 读取 Key；也支持 `AWESOME_INTAKE_TOKEN` 和 `AWESOME_INTAKE_TOKEN_FILE`。其他系统账号运行的业务服务由管理员一次性提供凭证文件或环境变量。实际 Key 已写入[同机服务 Key 与快速接入](https://guanghe.feishu.cn/docx/OjSxd1b3goodWrxgl4ec1DLMnPf)，按项目文档权限访问。

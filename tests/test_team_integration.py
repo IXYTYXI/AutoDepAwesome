@@ -116,9 +116,10 @@ def test_direct_session_required_scope_and_tamper(team, sessions):
 
 
 def test_deployment_apis_default_omitted_ref_and_preserve_idempotency(team, sessions):
-    client, _, credential, _ = team
+    client, _, credential, credentials = team
+    ordinary = credentials.issue(credential['ownerUserId'], 'ordinary', kind='source', allow_any_app=True)
     omitted = {key: value for key, value in payload().items() if key != 'ref'}
-    headers = {'Authorization': 'Bearer ' + credential['token'], 'Idempotency-Key': 'automation-main'}
+    headers = {'Authorization': 'Bearer ' + ordinary['token'], 'Idempotency-Key': 'automation-main'}
     accepted = client.post('/api/v1/automation/deployments', json=omitted, headers=headers)
     assert accepted.status_code == 202, accepted.text
     assert accepted.json()['ref'] == 'main'

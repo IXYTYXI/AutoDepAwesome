@@ -26,13 +26,18 @@ def progress_api(tmp_path):
     app.state.shared_sessions = {'project-a': sessions}
     with TestClient(app, base_url='https://testserver', follow_redirects=False) as client:
         user_id = login(client)['userId']
-        credential = ApiCredentialStore(settings).issue(
-            user_id, 'project-a', kind='source', allow_any_app=True, delegation_source='project-a')
-        yield client, app, sessions, credential
+        credentials = ApiCredentialStore(settings)
+        endpoint_credentials = {
+            'automation': credentials.issue(user_id, 'ordinary-automation', kind='source', allow_any_app=True),
+            'integrations': credentials.issue(user_id, 'project-a', kind='source', allow_any_app=True,
+                                              delegation_source='project-a'),
+        }
+        yield client, app, sessions, endpoint_credentials
 
 
 def accepted_job(progress_api, endpoint):
-    client, _, sessions, credential = progress_api
+    client, _, sessions, endpoint_credentials = progress_api
+    credential = endpoint_credentials[endpoint]
     body = payload()
     if endpoint == 'integrations':
         body = {'deployment': body, 'sessionId': sessions.issue(person())}

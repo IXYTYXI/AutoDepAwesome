@@ -5,73 +5,15 @@ from contextlib import asynccontextmanager
 import hmac
 import json
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
-import httpx
 import uvicorn
 
-from .feishu import FeishuUnavailable, _read_secret
-from .intake_remote import PlatformClient
+from .feishu import _read_secret
+from .team_client import TeamPlatformClient as TeamPlatformClient, TeamSearchError as TeamSearchError
 from .team_outbox import TeamOutbox
 from .team_sessions import SessionError, SessionUnavailable, load_shared_sessions
 from .team_api import TeamAppSearch
-
-
-class TeamSearchError(Exception):
-    def __init__(self, status_code):
-        self.status_code = status_code
-        super().__init__('项目查询未完成。')
-
-
-class TeamPlatformClient(PlatformClient):
-    def __init__(self, origin, token_file, *, host=None, client=None):
-        parts = urlsplit(origin)
-        if (parts.scheme not in ('http', 'https') or not parts.hostname
-                or parts.username or parts.password or parts.query or parts.fragment
-                or parts.path not in ('', '/')
-                or parts.scheme == 'http' and parts.hostname not in ('127.0.0.1', '::1', 'localhost')):
-            raise ValueError('平台地址只允许本机 HTTP 或 HTTPS。')
-        if host is not None and (not isinstance(host, str) or not host or any(c in host for c in '/\r\n :')):
-            raise ValueError('Host 必须是纯域名。')
-        self.origin, self.token_file, self.host = origin.rstrip('/'), token_file, host
-        self.client = client or httpx.Client(timeout=httpx.Timeout(10, connect=3),
-                                             trust_env=False, follow_redirects=False)
-        self.owns_client = client is None
-
-    def _call(self, method, path, **kwargs):
-        if self.host:
-            kwargs['headers'] = {**kwargs.get('headers', {}), 'Host': self.host}
-        return super()._call(method, path, **kwargs)
-
-    def post(self, request_id, body):
-        from .intake_remote import PlatformRejected
-        try:
-            return self._call('POST', '/api/v1/integrations/deployments', json=body,
-                             headers={'Idempotency-Key': request_id, 'Content-Type': 'application/json'})
-        except ConnectionError as exc:
-            # Local permission denial is definitive; 401 remains retryable for credential maintenance.
-            if str(exc) == '平台 HTTP 403':
-                raise PlatformRejected(403) from None
-            raise
-
-    def get(self, job_id):
-        from .team_sessions import request_key
-        request_key(job_id)
-        return self._call('GET', '/api/v1/integrations/deployments/' + job_id)
-
-    def search(self, body):
-        from .intake_remote import PlatformRejected
-        try:
-            return self._call('POST', '/api/v1/integrations/apps/search', json=body,
-                             headers={'Content-Type': 'application/json'})
-        except PlatformRejected as exc:
-            raise TeamSearchError(exc.status_code) from None
-        except ConnectionError as exc:
-            code = {'平台 HTTP 401': 401, '平台 HTTP 403': 403}.get(str(exc), 503)
-            raise TeamSearchError(code) from None
-        except (OSError, ValueError, FeishuUnavailable):
-            raise TeamSearchError(503) from None
 
 
 def create_team_app(outbox, token, *, start_worker=True):
