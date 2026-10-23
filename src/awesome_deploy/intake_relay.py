@@ -16,6 +16,8 @@ import stat
 import time
 from urllib.parse import urlsplit
 
+from .intake_remote import PlatformRejected
+
 
 REQUEST_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z')
 BODY_FIELDS = {'repository', 'ref', 'subdomain', 'appId'}
@@ -120,13 +122,18 @@ class IntakeRelay:
             attempts = row['base_attempts'] + 1
             with self._db() as db:
                 db.execute('UPDATE intake_requests SET base_attempts=?,base_retry_after=? '
-                           'WHERE request_id=? AND updated_at=?',
+                           "WHERE request_id=? AND updated_at=? AND status=? "
+                           "AND COALESCE(job_id,'')=? AND COALESCE(app_id,'')=?",
                            (attempts, self.clock() + min(3600, 2 ** min(attempts, 10)),
-                            request_id, row['updated_at']))
+                            request_id, row['updated_at'], row['status'],
+                            row['job_id'] or '', row['app_id'] or ''))
             return  # The local committed request remains dispatchable.
         with self._db() as db:
             db.execute('UPDATE intake_requests SET base_sync_digest=?,base_attempts=0,base_retry_after=0 '
-                       'WHERE request_id=? AND updated_at=?', (digest, request_id, row['updated_at']))
+                       "WHERE request_id=? AND updated_at=? AND status=? "
+                       "AND COALESCE(job_id,'')=? AND COALESCE(app_id,'')=?",
+                       (digest, request_id, row['updated_at'], row['status'],
+                        row['job_id'] or '', row['app_id'] or ''))
 
     def accept(self, request_id: str, body: dict):
         if not isinstance(request_id, str) or not REQUEST_ID.fullmatch(request_id):
@@ -155,10 +162,11 @@ class IntakeRelay:
     def run_once(self, *, limit=100):
         with self._db() as db:
             rows = db.execute("SELECT request_id,body,status,job_id,attempts,retry_after FROM intake_requests "
-                              "WHERE status IN ('pending','submitted') OR base_sync_digest IS NULL "
-                              "ORDER BY CASE WHEN status IN ('pending','submitted') AND retry_after<=? THEN 0 "
-                              "WHEN status IN ('pending','submitted') THEN 1 ELSE 2 END, "
-                              'created_at,request_id LIMIT ?', (self.clock(), limit)).fetchall()
+                              "WHERE (status IN ('pending','submitted') AND retry_after<=?) "
+                              "OR (base_sync_digest IS NULL AND base_retry_after<=?) "
+                              "ORDER BY CASE WHEN status IN ('pending','submitted') AND retry_after<=? "
+                              "THEN 0 ELSE 1 END, created_at,request_id LIMIT ?",
+                              (self.clock(), self.clock(), self.clock(), limit)).fetchall()
         for row in rows:
             request_id = row['request_id']
             if row['status'] in FINAL:
@@ -192,6 +200,14 @@ class IntakeRelay:
                         db.execute('UPDATE intake_requests SET status=?,updated_at=?,base_sync_digest=NULL '
                                    'WHERE request_id=? '
                                    'AND status=?', (state, self.clock(), request_id, 'submitted'))
+            except PlatformRejected as exc:
+                with self._db() as db:
+                    db.execute('UPDATE intake_requests SET status=?,updated_at=?,base_sync_digest=NULL, '
+                               'retry_after=0,error=? WHERE request_id=? AND status=?',
+                               ('rejected', self.clock(), f'platform_http_{exc.status_code}',
+                                request_id, 'pending'))
+                self._sync(request_id)
+                continue
             except Exception:
                 attempts = row['attempts'] + 1
                 with self._db() as db:
@@ -223,8 +239,8 @@ class IntakeRelay:
             job_id, app_id = fields.get('部署 ID') or '', fields.get('应用 ID') or ''
             if (raw != encoded or status not in {'pending', 'submitted'} | FINAL
                     or not isinstance(job_id, str) or not isinstance(app_id, str)
-                    or (status != 'pending' and (not job_id or not app_id))
-                    or (status == 'pending' and (job_id or app_id))):
+                    or (status not in {'pending', 'rejected'} and (not job_id or not app_id))
+                    or (status in {'pending', 'rejected'} and (job_id or app_id))):
                 continue
             signed = {'请求 ID': request_id, '请求内容': raw, '状态': status,
                       '部署 ID': job_id, '应用 ID': app_id}

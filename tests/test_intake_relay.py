@@ -5,6 +5,7 @@ import stat
 import pytest
 
 from awesome_deploy.intake_relay import IntakeRelay, IntakeError
+from awesome_deploy.intake_remote import PlatformRejected
 
 
 BODY = {'repository': 'https://github.com/org/repo.git', 'ref': 'main', 'subdomain': 'demo'}
@@ -182,6 +183,24 @@ def test_backing_off_old_request_does_not_starve_fresh_one(tmp_path):
     assert platform.posts[-1][0] == 'source-z-new'
 
 
+def test_backing_off_requests_do_not_starve_due_base_sync(tmp_path):
+    now = [100.0]
+    platform, base = FakePlatform(), FakeBase()
+    worker = relay(tmp_path, platform, base, clock=lambda: now[0])
+    worker.accept('source-final', BODY)
+    platform.available = True
+    worker.run_once()
+    assert worker.get('source-final')['status'] == 'succeeded'
+    for index in range(101):
+        worker.accept(f'source-backoff-{index:03}', {**BODY, 'subdomain': 'b' + str(index)})
+    with sqlite3.connect(tmp_path / 'intake.sqlite3') as db:
+        db.execute("UPDATE intake_requests SET retry_after=1000 WHERE status='pending'")
+        db.execute("UPDATE intake_requests SET base_sync_digest=NULL WHERE request_id='source-final'")
+    base.records.pop('source-final')
+    worker.run_once(limit=1)
+    assert base.records['source-final']['状态'] == 'succeeded'
+
+
 def test_restores_only_signed_request_from_base(tmp_path):
     platform, base = FakePlatform(), FakeBase()
     original = relay(tmp_path, platform, base)
@@ -221,6 +240,50 @@ def test_platform_retry_has_bounded_backoff_and_safe_error(tmp_path):
     now[0] += 3
     worker.run_once()
     assert len(platform.posts) == 2
+
+
+def test_permanently_rejected_submission_is_recorded_once(tmp_path):
+    class RejectingPlatform(FakePlatform):
+        def post(self, request_id, body):
+            self.posts.append((request_id, body))
+            raise PlatformRejected(422)
+
+    platform, base = RejectingPlatform(), FakeBase()
+    worker = relay(tmp_path, platform, base)
+    worker.accept('source-rejected', BODY)
+    worker.run_once()
+    assert worker.get('source-rejected')['status'] == 'rejected'
+    assert worker.get('source-rejected')['error'] == 'platform_http_422'
+    assert base.records['source-rejected']['状态'] == 'rejected'
+    worker.run_once()
+    assert len(platform.posts) == 1
+    (tmp_path / 'intake.sqlite3').unlink()
+    recovered = relay(tmp_path, platform, base)
+    assert recovered.restore_from_base() == 1
+    assert recovered.get('source-rejected')['status'] == 'rejected'
+
+
+def test_inflight_base_write_cannot_acknowledge_a_newer_request_state(tmp_path):
+    platform, base = FakePlatform(), FakeBase()
+    worker = relay(tmp_path, platform, base, clock=lambda: 100.0)
+    platform.available = True
+    worker.accept('source-race', BODY)
+
+    original_upsert = base.upsert
+
+    def concurrent_update(request_id, fields):
+        if fields['状态'] == 'pending':
+            with sqlite3.connect(tmp_path / 'intake.sqlite3') as db:
+                db.execute("UPDATE intake_requests SET status='submitted',job_id='job-1',"
+                           "app_id='app-1',base_sync_digest=NULL WHERE request_id=?", (request_id,))
+        original_upsert(request_id, fields)
+
+    base.upsert = concurrent_update
+    with sqlite3.connect(tmp_path / 'intake.sqlite3') as db:
+        db.execute("UPDATE intake_requests SET base_sync_digest=NULL WHERE request_id='source-race'")
+    worker._sync('source-race')
+    with sqlite3.connect(tmp_path / 'intake.sqlite3') as db:
+        assert db.execute("SELECT base_sync_digest FROM intake_requests WHERE request_id='source-race'").fetchone()[0] is None
 
 
 def test_recovery_of_completed_base_row_does_not_resubmit(tmp_path):

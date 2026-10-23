@@ -3,8 +3,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+import pytest
 
-from awesome_deploy.intake_remote import BaseIntake, PlatformClient
+from awesome_deploy.intake_remote import BaseIntake, PlatformClient, PlatformRejected
 
 
 def test_platform_client_uses_one_key_for_submission_and_reads_status(tmp_path):
@@ -28,6 +29,18 @@ def test_platform_client_uses_one_key_for_submission_and_reads_status(tmp_path):
     assert seen[0].headers['authorization'] == 'Bearer adp_example'
     assert seen[0].url.path == '/api/v1/automation/deployments'
     assert seen[1].url.path.endswith('/j1')
+
+
+def test_platform_client_reports_invalid_submission_as_permanent_rejection(tmp_path):
+    token_file = tmp_path / 'token'
+    token_file.write_text('adp_example')
+    token_file.chmod(0o600)
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(422, json={'detail': 'invalid repository'})))
+    remote = PlatformClient('https://deploy.example.test', token_file, client=client)
+    with pytest.raises(PlatformRejected) as error:
+        remote.post('source-1', {'repository': 'https://github.com/org/repo.git'})
+    assert error.value.status_code == 422
 
 
 def test_base_intake_upserts_and_lists_full_request(monkeypatch):

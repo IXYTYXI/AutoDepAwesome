@@ -12,6 +12,12 @@ from .base_sync import BASE_ORIGIN, BaseRemote, BaseSyncError
 from .feishu import _read_secret
 
 
+class PlatformRejected(Exception):
+    def __init__(self, status_code):
+        self.status_code = status_code
+        super().__init__(f'平台拒绝部署请求 (HTTP {status_code})')
+
+
 class PlatformClient:
     def __init__(self, origin: str, token_file: Path, *, client=None):
         parts = urlsplit(origin)
@@ -46,6 +52,8 @@ class PlatformClient:
                     value = json.loads(data)
                     if isinstance(value, dict):
                         return value
+                if method == 'POST' and response.status_code in (400, 409, 422):
+                    raise PlatformRejected(response.status_code)
                 raise ConnectionError(f'平台 HTTP {response.status_code}')
         except (httpx.HTTPError, ValueError):
             raise ConnectionError('平台暂不可达或响应无效') from None
