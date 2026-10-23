@@ -51,6 +51,9 @@ class TeamOutbox(IntakeRelay):
                 return None
             return dict(requestId=row['request_id'], status=row['status'], jobId=row['job_id'],
                         appId=row['app_id'], error=row['error'],
+                        createdAt=row['created_at'], updatedAt=row['updated_at'],
+                        pollAfterSeconds=0 if row['status'] in (
+                            'succeeded', 'failed', 'recovery_required', 'cancelled', 'rejected') else 5,
                         deployment=json.loads(row['result']) if row['result'] else None)
 
     def run_once(self):

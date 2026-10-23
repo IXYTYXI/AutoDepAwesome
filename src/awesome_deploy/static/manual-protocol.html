@@ -1,11 +1,11 @@
-<h1>Awesome Deploy｜部署接入技术协议 v2.0（当前可用 · 平台 0.10.0）</h1>
+<h1>Awesome Deploy｜部署接入技术协议 v2.0（当前可用 · 平台 0.11.2）</h1>
 <h2 id="doxcnVeJT7kqDF3oti8kS2914zg">1. 协议范围与不可变更的边界</h2>
 <p>本协议面向提交应用的开发者、AI 编程助手和调用部署 API 的同组后端。目标是让交付物通过当前平台的配置、构建、运行和发布检查。本文的“必须”是接入条件，“建议”是实现建议；解析通过不等于应用已经上线。</p>
 <p>文件示例快速入口：<a href="#doxcnslIqmcDtKOE9miVcMv6yGb">5.1 单服务 awesome.yaml</a>；<a href="#doxcn7bcDkZ2IgHlsM4pGFI9cGg">5.2 持久存储与密钥完整 awesome.yaml</a>；<a href="#doxcneV1KQf1J16cCLOhb9sPlFh">5.3 前端与 API awesome.yaml</a>；<a href="#doxcnlbLI2fpE4PBVwvqN30X79c">6.1 Dockerfile</a>。示例均在本文正文中，可复制后按真实项目调整。</p>
-<p>协议版本：2.0；适用平台：Awesome Deploy 0.10.0；核对日期：2026-10-23；本次核对时线上发布提交：426e11d225cb53558fa59f5b03da0d63504b5687（平台功能版本 0.10.0）。本文协议版本与 awesome.yaml 的 schemaVersion 是两个概念。新接入统一采用 schemaVersion: 2，旧版 1 仍兼容。</p>
+<p>协议版本：2.0；本次接口增量适用平台：Awesome Deploy 0.11.2；更新日期：2026-10-23。本次新增同组项目搜索和结构化进度字段，清单与资源约束沿用已核对基线。本文协议版本与 awesome.yaml 的 schemaVersion 是两个概念。新接入统一采用 schemaVersion: 2，旧版 1 仍兼容。</p>
 <p>平台入口为 https://awesome.guanghexinzhi.cn；应用访问地址为 https://&lt;subdomain&gt;.awesome.guanghexinzhi.cn。当前应用运行在 awesome 部署服务器的隔离容器中。源码目录、宿主机端口和数据卷路径由平台管理，不能作为应用内固定路径。</p>
 <p>必须完整保留用户业务逻辑。不得为了通过部署而增删功能、替换鉴权、关闭校验、伪造健康结果、改写数据库语义或接入未经用户要求的模型。可提供保持原行为的 Dockerfile、清单、镜像引用及配置映射；如果现有程序无法满足平台约束，说明冲突与所需决策，不能偷偷改业务。</p>
-<p>无需额外制作 ZIP“交付包”。通常交付一个可访问的 Git 仓库、明确的分支或提交、awesome.yaml，以及构建所需的文件；使用现有镜像时仍需仓库中的 awesome.yaml。审批、代码审查门禁、独立请求登记服务不属于当前已上线能力。</p>
+<p>无需额外制作 ZIP“交付包”。通常交付一个可访问的 Git 仓库、明确的分支或提交、awesome.yaml，以及构建所需的文件；使用现有镜像时仍需仓库中的 awesome.yaml。同组 A 端适配服务提供数据库持久受理和恢复投递，真实 A 业务尚待接入；旧独立登记模块的飞书部署请求表恢复未接入该链路。审批与代码审查门禁尚未提供。</p>
 <h2 id="doxcnjovlQ2yab3Azaxvnleyyzc">2. 当前线上能力与资源上限</h2>
 <p>以下是本次读取线上配置确认的值。MiB = 1,048,576 字节，GiB = 1,024 MiB；页面口头所说的 50MB / 500MB 在清单中按 MiB 配置。额度不是可用空间承诺，实际还要通过剩余容量检查。</p>
 <table><thead><tr><th>项目</th><th>当前规则</th></tr></thead><tbody><tr><td>应用类型</td><td>支持 HTTP Web 服务、前端与 API 多服务、/data 持久数据；SQLite 等应用内文件数据可按原程序使用。</td></tr><tr><td>单应用内存</td><td>所有服务 memoryMiB 相加不得超过 500 MiB；按实际用量消耗，不预先固定占满。各容器有声明的硬上限，超限可能被 OOM 终止。</td></tr><tr><td>单服务内存</td><td>整数，至少 32 MiB；受单应用总上限约束。建议显式写出，不能让两个服务各默认 500。</td></tr><tr><td>CPU 与平台内存</td><td>CPU 至少 0.05；全平台部署准入预算当前 4 CPU、6144 MiB。旧版本、候选版本及待清理资源可能同时计入。</td></tr><tr><td>持久存储容量</td><td>全平台承诺额度 65536 MiB（64 GiB）；单应用所有服务合计最多 50 MiB，单服务最多 50 MiB。每服务最多一个 /data 卷。</td></tr><tr><td>持久存储文件数量</td><td>全平台 300000 inode；单应用 100000；单服务 50000。各卷还受自身 maxInodes 限制；文件和目录都会消耗 inode。</td></tr><tr><td>运行临时空间</td><td>/tmp 为 64 MiB、noexec 的临时空间；/dev/shm 为 16 MiB。它们不持久，运行内存仍受容器限制。</td></tr><tr><td>仓库与清单</td><td>源码获取预算 256 MiB、最多 100000 个目录/文件项；awesome.yaml 最大 256 KiB。</td></tr><tr><td>服务与路由</td><td>1–16 个 web 服务；网关实际最多 32 条路由。</td></tr><tr><td>时间限制</td><td>单次 Git 操作 120 秒；构建超时配置 900 秒；健康检查等待上限配置 180 秒。排队时间不等于这些执行时间。</td></tr><tr><td>运行网络</td><td>当前 public-https-v1：可访问公网 IPv4 的 TCP 443 与受控 DNS；不能访问内网、宿主机、元数据地址、IPv6、HTTP 80 或其他端口。</td></tr><tr><td>构建网络</td><td>RUN 阶段禁止联网；基础镜像由平台先拉取并固定摘要。Git 获取已配置平台代理，不等于构建或业务请求自动走该代理。</td></tr><tr><td>平台鉴权与配置</td><td>飞书登录；加密密钥库已启用；成员与应用权限生效；当前不持续轮询飞书员工状态。</td></tr></tbody></table>
@@ -176,17 +176,34 @@ CMD [&quot;python&quot;, &quot;-u&quot;, &quot;/app/server.py&quot;]</code></pre
 <p>接收成功返回 HTTP 202。响应字段如下；应直接保存 id 和 appId，不能用域名猜测应用编号。新任务在代码和资源准备完成前，部分字段可能为 null。</p>
 <table><thead><tr><th>字段</th><th>含义</th></tr></thead><tbody><tr><td>id</td><td>本次部署任务 ID；用于查询这次部署。</td></tr><tr><td>appId</td><td>应用 ID；后续更新同一应用时使用，提交新任务时不要凭空生成。</td></tr><tr><td>status / phase</td><td>任务状态与当前阶段；202通常 queued，并非成功。</td></tr><tr><td>repository / ref / subdomain</td><td>规范化后的提交输入。</td></tr><tr><td>commit</td><td>已固定的 commit，尚未固定时为 null。</td></tr><tr><td>active / url</td><td>只有该成功版本当前仍为在线版本时 active=true 且 url 非空；历史成功任务可能已被新版本替换或已下线。</td></tr><tr><td>error / createdAt</td><td>安全错误对象或 null，以及创建时间。</td></tr></tbody></table>
 <h3 id="doxcnMJNQagrTboMGoYIIAttEgb">8.3 GET 查询最终结果与更新</h3>
-<p>用创建该任务的同一凭证 GET /api/v1/automation/deployments/{id}。GET 只查询，POST 才创建；不能把任务 id 当成 appId。建议从2秒开始轮询，逐步退避到10秒并设置调用方总等待期限；这是客户端建议，不是平台新的接口字段。</p>
+<p>普通自动化任务用创建该任务的同一有效凭证 GET /api/v1/automation/deployments/{id}；同组共享会话任务用同一来源的有效委托凭证 GET /api/v1/integrations/deployments/{id}。GET 只查询，POST 才创建；不能把任务 id 当成 appId。使用返回的 pollAfterSeconds 查询，terminal=true 后停止常规轮询；客户端等待超时不能据此判定平台任务失败。</p>
 <pre><code class="language-bash">curl --silent --show-error --fail-with-body \
   &quot;https://awesome.guanghexinzhi.cn/api/v1/automation/deployments/${JOB_ID}&quot; \
   --header &quot;Authorization: Bearer ${AWESOME_DEPLOY_TOKEN}&quot;</code></pre>
+<table><thead><tr><th>字段</th><th>含义</th></tr></thead><tbody><tr><td>id / appId</td><td>本次任务 ID / 应用 ID；不要混用。</td></tr><tr><td>status / statusLabel</td><td>机器状态码 / 中文说明；queued、running 表示未结束；succeeded、failed、recovery_required、cancelled 是终态。</td></tr><tr><td>phase / phaseLabel</td><td>当前阶段码 / 中文说明，如 build / 构建镜像、health / 健康检查。阶段耗时不固定，不返回虚构百分比。</td></tr><tr><td>terminal</td><td>布尔值；true 时停止常规进度轮询，不代表部署成功。</td></tr><tr><td>createdAt / updatedAt</td><td>Unix 时间戳，单位秒，number；用于显示提交与最近更新时刻。</td></tr><tr><td>pollAfterSeconds</td><td>建议下次查询间隔：进行中为 5，终态为 0。查询失败可退避；调用方等待超时不等于任务失败。</td></tr><tr><td>error</td><td>部署失败或待恢复的中文安全诊断对象；无错误时为 null。不包含密钥或原始日志。</td></tr><tr><td>active / url</td><td>仅该成功版本仍为当前在线版本时 active=true 且 url 非空。历史成功不等于现在在线。</td></tr></tbody></table>
+<pre><code class="language-json">{
+  &quot;id&quot;: &quot;任务编号&quot;,
+  &quot;appId&quot;: &quot;应用编号&quot;,
+  &quot;status&quot;: &quot;running&quot;,
+  &quot;statusLabel&quot;: &quot;执行中&quot;,
+  &quot;phase&quot;: &quot;build&quot;,
+  &quot;phaseLabel&quot;: &quot;构建镜像&quot;,
+  &quot;terminal&quot;: false,
+  &quot;pollAfterSeconds&quot;: 5,
+  &quot;createdAt&quot;: 1792713600.0,
+  &quot;updatedAt&quot;: 1792713615.0,
+  &quot;error&quot;: null,
+  &quot;active&quot;: false,
+  &quot;url&quot;: null
+}</code></pre>
 <table><thead><tr><th>status</th><th>调用方处理</th></tr></thead><tbody><tr><td>queued</td><td>已持久入队，继续查询。</td></tr><tr><td>running</td><td>正在执行，继续查询。</td></tr><tr><td>succeeded</td><td>本次发布成功；结合 active/url 判断它是否仍为当前在线版本。</td></tr><tr><td>failed</td><td>本次失败，读取 error；完成修复后创建新的业务尝试。</td></tr><tr><td>recovery_required</td><td>需要恢复或清理确认，不能盲目不断新建任务；保留记录并通知负责人处理。</td></tr></tbody></table>
 <p>更新请求仍使用同一 POST 路径，增加 &quot;appId&quot;:&quot;原应用编号&quot;，使用新的幂等键。在线应用须保持原仓库和已绑定前缀；保留数据的已下线应用也要传原 appId，并选用可用前缀及一致清单。</p>
+<p>同组项目先搜索再更新：POST /api/v1/integrations/apps/search 携带专用委托来源 Bearer，JSON 为 {&quot;sessionId&quot;:&quot;服务端共享会话标识&quot;,&quot;query&quot;:&quot;demo&quot;,&quot;limit&quot;:20,&quot;offset&quot;:0}。query 最多 200 字符，limit 为 1–20 的整数，offset 为 0–1000000 的整数；会话标识不放 URL。按实际申请人的部署权限筛选项目，空 query 列全部有权更新项目；项目名称、仓库地址、appId 均支持不区分大小写的包含搜索。返回 items、total、limit、offset、nextOffset；items 含 appId、projectName、repository、subdomain、lastSubdomain、domainBound。domainBound=false 时 subdomain=null，历史名称不代表当前可用，更新必须选择空闲且与清单一致的名称。A 适配服务对应 POST /apps/search；用选定 appId 加入 deployment 后 POST /requests，再 GET /requests/{requestId} 查看投递和 deployment 内的进度。完整分页、错误和代码示例见<a href="https://guanghe.feishu.cn/docx/DWPCdke22oEN8Bxwy70cFX9anXe" target="_blank" rel="noopener noreferrer">同组后端实施手册</a>。普通 personal Bearer 不开放此搜索接口。</p>
 <h3 id="doxcn2PCyMeoj54cn1mkOrDo9VL">8.4 不确定响应与错误处理</h3>
 <p>Idempotency-Key 为1–128位字母、数字、点、下划线、冒号或中划线，按用户及凭证隔离。同一凭证+同键+相同规范化请求返回原任务；同键不同请求报409 IDEMPOTENCY_CONFLICT。超时、断网、5xx 或丢失202响应后，应使用原凭证、原键、原请求重试；真正的新部署或修复后的新尝试使用新键。换 Token 也会改变幂等命名空间，不能无记录切换。</p>
 <table><thead><tr><th>HTTP</th><th>含义与处理</th></tr></thead><tbody><tr><td>400 / 415 / 422</td><td>缺少幂等键、Content-Type错误或字段/参数不合法；修正请求，不盲目重发。</td></tr><tr><td>401</td><td>Token缺失、过期或撤销；重新确认凭证。</td></tr><tr><td>403</td><td>来源、部署范围或用户/应用权限不足。</td></tr><tr><td>404</td><td>任务不存在，或在该身份范围内不可查询。</td></tr><tr><td>409</td><td>幂等冲突、域名/应用冲突、容量不足或恢复状态，查看机器错误码。</td></tr><tr><td>5xx / 超时 / 断连</td><td>结果可能不确定；保留请求与原幂等键，按上述规则确认，不能假设没有创建任务。</td></tr></tbody></table>
 <p>业务错误一般为 {&quot;error&quot;:{...}}，包含 code 及中文安全诊断；部分 HTTP 错误为 {&quot;detail&quot;:...}。调用方要同时处理 HTTP 状态和响应结构。HTTP 202后的异步失败在查询响应的 error 中，不会反过来改变最初的202。</p>
-<p>自动化 Bearer 当前只用于提交部署和查询其任务，不能用于网页登录、写密钥、成员管理或下线。控制台配置接口与自动化接口不能混用。</p>
+<p>普通自动化 Bearer 仅用于提交部署和查询其任务；同组专用委托来源凭证另可配合有效共享会话搜索实际申请人有权部署的项目。两类凭证都不能用于网页登录、写密钥、成员管理或下线。控制台配置接口与自动化接口不能混用。</p>
 <h2 id="doxcngzUeND2OHHgbr0Eexa2zcf">9. 排队、登记、更新、下线与失败后的资源</h2>
 <p>平台直接 API 先将请求和幂等关系写入 SQLite 队列，随后由 worker 执行；当前执行器通过全局锁串行处理部署。网页关闭不取消已接收任务，worker与网页进程分开；平台不可达且没有收到请求时，不能声称已经受理。调用方应保存自己这次业务申请的输入、键和收到的任务ID。</p>
 <p>应用与部署结果会由后台同步到项目飞书多维表格，网页和 API 发起的部署均进入同一登记机制。登记包含负责人、状态与应用/部署定位信息，不上传密码、密钥或原始日志。飞书同步失败不阻断部署，由后台重试；这是结果镜像，不是“所有请求在到达平台之前都已有收据”的保证。</p>
@@ -219,7 +236,7 @@ CMD [&quot;python&quot;, &quot;-u&quot;, &quot;/app/server.py&quot;]</code></pre
 交付：文件差异、仓库/ref/建议前缀、环境与秘密配置清单、验证结果、未验证项及不兼容原因。
 如果原业务无法在这些约束下部署，停止该不兼容步骤并说明所需平台能力或用户决策；不能擅自改业务。
 不得声称已上线，除非真实平台任务succeeded且实际业务验证通过。</code></pre>
-<p>线上配置变化时应同时修订本协议的基线日期和资源表。协议与历史文档冲突时，以本协议对应版本和线上有效配置为准；平台升级超出0.10.0时应重新核对，不能把旧文档的“当前”理解为永久有效。</p>
+<p>线上配置变化时应同时修订本协议的基线日期和资源表。协议与历史文档冲突时，以本协议对应版本和线上有效配置为准；后续平台版本变化应重新核对受影响内容，不能把旧文档的“当前”理解为永久有效。</p>
 <p>实现依据：该基线提交的 schema/awesome-v1.json、schema/awesome-v2.json、manifest.py、source.py、runtime.py、api.py、api_credentials.py、deployment_secrets.py、secret_vault.py、store.py、worker.py、ops/awesome-gateway 与 ops/storage_quota，以及线上非秘密配置。清单和API样例做静态/解析校验；本次写作未创建真实部署任务。</p>
 <p><a href="https://guanghe.feishu.cn/docx/IrPvdtrOvolR79xOVVpcALywncr" target="_blank" rel="noopener noreferrer">项目文档导航</a></p>
 <p><a href="https://guanghe.feishu.cn/docx/DxI1dW2LOoDjssxtaAfcrdOCnNg" target="_blank" rel="noopener noreferrer">自动化部署 API 使用手册（操作步骤补充）</a></p>

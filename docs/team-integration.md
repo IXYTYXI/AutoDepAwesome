@@ -1,6 +1,6 @@
 # 同组后端接入：共享登录态与可靠部署
 
-适用 0.11.0。A 是将来部署在本机的同组项目，B 是 Awesome Deploy。A 项目尚未存在；本次提供 A 端适配服务、共享会话和 B 端委托接口，并不代表 A 业务已接通。原有 `/api/v1/automation` 接口保持兼容，使用凭证负责人的身份。新方案使用 `/api/v1/integrations`，应用负责人和部署提交人是实际登录申请人。
+适用 0.11.2。A 是将来部署在本机的同组项目，B 是 Awesome Deploy。A 项目尚未存在；本次提供 A 端适配服务、共享会话和 B 端委托接口，并不代表 A 业务已接通。原有 `/api/v1/automation` 接口保持兼容，使用凭证负责人的身份。新方案使用 `/api/v1/integrations`，应用负责人和部署提交人是实际登录申请人。
 
 ## 1. 服务与身份
 
@@ -12,7 +12,7 @@ A/B 共用登录身份并不等于共用密码或飞书授权。Redis 只保存�
 
 ## 2. A 后端接入顺序（任何语言均可）
 
-四个接口都必须由 A 后端调用，带 `Authorization: Bearer <内部接入凭证>`。凭证由运行环境安全注入，不能出现在浏览器、Git、聊天或日志。
+以下接口都必须由 A 后端调用，带 `Authorization: Bearer <内部接入凭证>`。凭证由运行环境安全注入，不能出现在浏览器、Git、聊天或日志。
 
 1. OAuth 回调校验成功后，取已验证的飞书身份，调用 `POST http://127.0.0.1:8099/sessions`。把返回 sessionId 关联到 A 自己的服务端登录会话，不交给用户填写。
 2. 用户提交部署时，A 检查自己的申请权限，从服务端登录态取 sessionId；给此次业务申请生成并保存固定请求 ID，调用 `POST /requests`。
@@ -44,9 +44,59 @@ Idempotency-Key: project-a-request-001
 {"requestId":"project-a-request-001","status":"pending","jobId":null,"appId":null,"error":null,"deployment":null}
 ```
 
-B 接收后 jobId、appId 非空，状态 submitted；最终为 succeeded、failed、recovery_required。`deployment` 为最近一次 B 返回的任务视图，包含 id、appId、status、phase、active、url、error 等。只有 succeeded 且 active=true、url 非空才能显示当前在线链接；历史成功不等于当前仍在线。
+B 接收后 jobId、appId 非空，外层状态 submitted。外层 pending/submitted 表示投递阶段，不代表已上线；部署进度读取 `deployment` 的状态和阶段。最终为 succeeded、failed、recovery_required 或 cancelled；平台明确拒绝时为 rejected。
 
-更新已有应用：在 deployment 中加入 appId，仓库与当前绑定域名须匹配，申请人必须有该应用的部署权限。域名前缀 1–7 位小写字母/数字/中划线，且与 awesome.yaml 一致。每次新部署新请求 ID；同次超时重试始终保留 ID 和请求内容。请求 ID 为 1–128 位 `[A-Za-z0-9._:-]`。一次来源凭证可持续创建和更新多个获授权应用，没有累计申请数量上限；现有 worker 仍串行执行，受资源硬配额限制。
+更新已有应用：在 deployment 中加入 appId，仓库与当前绑定域名须匹配，申请人必须有该应用的部署权限。项目名称通过 subdomain 提交：1–7 位小写字母、数字或中划线，首尾为字母或数字，不含中文、空格、大写字母，并与 awesome.yaml 一致。ref 可省略，默认 main。每次新部署新请求 ID；同次超时重试始终保留 ID 和请求内容。请求 ID 为 1–128 位 `[A-Za-z0-9._:-]`。一次来源凭证可持续创建和更新多个获授权应用，没有累计申请数量上限；现有 worker 仍串行执行，受资源硬配额限制。
+
+### 2.1 搜索已有项目
+
+A 后端调用 `POST http://127.0.0.1:8099/apps/search`，使用内部接入 Bearer。适配服务使用专用委托来源凭证调用 B 的 `POST /api/v1/integrations/apps/search`；JSON 相同：
+
+```json
+{"sessionId":"服务端保存的共享会话标识","query":"demo","limit":20,"offset":0}
+```
+
+sessionId 放在 JSON，不放 URL。query 最多 200 字符，按当前/历史项目名称（subdomain）、repository 或 appId 不区分大小写包含匹配；空字符串列出所有有权部署的项目。limit 为 1–20 的整数，默认 20；offset 为 0–1000000 的整数，默认 0。来源凭证的管理员身份不会扩大实际登录用户的权限；普通 personal 或未开启委托的 source 凭证不能搜索。
+
+```json
+{
+  "items": [{
+    "appId": "已有应用编号", "projectName": "demo",
+    "repository": "https://github.com/your-org/your-repo.git",
+    "subdomain": "demo", "lastSubdomain": "demo", "domainBound": true
+  }],
+  "total": 1, "limit": 20, "offset": 0, "nextOffset": null
+}
+```
+
+nextOffset 为数字时，把它作为下一次 offset，保持会话、query、limit 不变；null 表示结束。total 仅统计有权限且匹配的项目，无匹配返回空 items。出现多个匹配时由用户明确选择，不能自动部署第一项。
+
+选定结果后，将 appId、repository 和已绑定的 subdomain 放入 deployment，调用 `POST /requests`，再按 requestId 查询。`domainBound=false` 时 subdomain 为 null，lastSubdomain 只是曾用名称；须先选空闲且符合清单的项目名称，不得把历史名称当成保留域名直接复用。提交时会重新核对权限、仓库与域名。
+
+搜索不创建请求或部署，不需要幂等键。会话失效或来源凭证需维护可返回 401；核对登录态后由运维处理来源凭证轮换。权限拒绝 403，参数错误 422，Redis/B 不可用 503。搜索错误不应在界面伪装成“没有项目”。
+
+### 2.2 查询进度
+
+A 后端用内部接入凭证调用 `GET /requests/{requestId}`。A 必须先校验记录属于当前用户，因为内部接口按整个来源授权。返回 requestId、status、jobId、appId、error、deployment，另含 Unix 秒数 createdAt/updatedAt 以及 pollAfterSeconds（未结束 5、已结束 0）。外层 error 是投递错误；业务部署错误读取 deployment.error。deployment 取得前为 null。
+
+B 最新进度接口为 `GET /api/v1/integrations/deployments/{jobId}`，用本来源有效委托凭证；普通自动化任务仍使用 `GET /api/v1/automation/deployments/{jobId}`，用提交时同一凭证。均返回：
+
+| 字段 | 含义 |
+| --- | --- |
+| id / appId | 部署任务 ID / 应用 ID |
+| status / statusLabel | 机器状态码 / 中文状态说明 |
+| phase / phaseLabel | 阶段码 / 中文阶段说明，如 build / 构建镜像 |
+| terminal | 是否结束；true 不等于成功 |
+| createdAt / updatedAt | Unix 秒数（number） |
+| pollAfterSeconds | 进行中建议 5 秒，终态为 0 |
+| error | 中文安全错误对象，无错误为 null |
+| active / url | 该成功版本是否仍在线、当前访问地址 |
+
+queued/running 继续查询；succeeded/failed/recovery_required/cancelled 为终态。不存在百分比字段，各阶段耗时不固定。A 外层还可能 rejected，同样停止轮询并展示 error。调用方等待超时不等于平台任务失败，保存 requestId/jobId 后可继续查询，不创建新任务。
+
+A 在任务结束后不持续更新缓存的 deployment，因此其 active/url 只表示最后同步时的状态。确认当前是否仍在线时，A 后端用来源凭证直接查询 B 任务；不要以 A 历史快照证明当前在线。
+
+完整搜索→选择 appId→更新→轮询的 Python 后端示例见[同组后端实施手册](https://guanghe.feishu.cn/docx/DWPCdke22oEN8Bxwy70cFX9anXe)，网页手册同步同一内容。
 
 ## 3. B 端接口与已受理授权
 

@@ -1,8 +1,9 @@
 """Server-to-server delegated deployment routes; no browser login endpoints."""
 from fastapi import Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 from .access import denied
+from .errors import DeployError
 from .team_sessions import SessionError, SessionUnavailable, load_shared_sessions
 
 
@@ -11,6 +12,14 @@ class TeamSubmission(BaseModel):
     deployment: dict
     sessionId: StrictStr | None = None
     receipt: dict | None = None
+
+
+class TeamAppSearch(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    sessionId: StrictStr
+    query: StrictStr = Field(default='', max_length=200)
+    limit: StrictInt = Field(default=20, ge=1, le=20)
+    offset: StrictInt = Field(default=0, ge=0, le=1_000_000)
 
 
 def install_team_routes(app, settings, *, automation_access, deployment_input, submission_model, public_job):
@@ -36,6 +45,38 @@ def install_team_routes(app, settings, *, automation_access, deployment_input, s
             return identity.authorize_user(row['id'], expected_revision=row['revision'])
         return identity.login_user({'open_id': details['openId'], 'tenant_key': details['tenantKey'],
                                     'name': details['name']})
+
+    @app.post('/api/v1/integrations/apps/search')
+    def search_apps(body: TeamAppSearch, source=Depends(source_access)):
+        _, _, sessions = source
+        try:
+            actor = applicant(sessions.read(body.sessionId))
+        except SessionUnavailable:
+            raise HTTPException(503, '共享登录服务暂不可用，无法查询项目。') from None
+        except SessionError:
+            raise HTTPException(401, '共享会话无效或已过期。') from None
+        if not actor['can_deploy']:
+            raise denied()
+        query = body.query.strip().casefold()
+        visible = []
+        for item in store.apps():
+            try:
+                app.state.access.require_app(actor, item['id'], 'deploy')
+            except DeployError as error:
+                if error.code != 'ACCESS_DENIED':
+                    raise
+                continue
+            if query and not any(query in str(item.get(key) or '').casefold()
+                                 for key in ('subdomain', 'lastSubdomain', 'repository', 'id')):
+                continue
+            visible.append({
+                'appId': item['id'], 'projectName': item['subdomain'] or item['lastSubdomain'],
+                'repository': item['repository'], 'subdomain': item['subdomain'],
+                'lastSubdomain': item['lastSubdomain'], 'domainBound': item['domainBound'],
+            })
+        end = body.offset + body.limit
+        return {'items': visible[body.offset:end], 'total': len(visible), 'limit': body.limit,
+                'offset': body.offset, 'nextOffset': end if end < len(visible) else None}
 
     @app.post('/api/v1/integrations/deployments', status_code=202)
     def submit(body: TeamSubmission, request: Request, source=Depends(source_access)):

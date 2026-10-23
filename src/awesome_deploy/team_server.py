@@ -11,10 +11,17 @@ from fastapi import FastAPI, HTTPException, Request
 import httpx
 import uvicorn
 
-from .feishu import _read_secret
+from .feishu import FeishuUnavailable, _read_secret
 from .intake_remote import PlatformClient
 from .team_outbox import TeamOutbox
 from .team_sessions import SessionError, SessionUnavailable, load_shared_sessions
+from .team_api import TeamAppSearch
+
+
+class TeamSearchError(Exception):
+    def __init__(self, status_code):
+        self.status_code = status_code
+        super().__init__('项目查询未完成。')
 
 
 class TeamPlatformClient(PlatformClient):
@@ -53,6 +60,19 @@ class TeamPlatformClient(PlatformClient):
         request_key(job_id)
         return self._call('GET', '/api/v1/integrations/deployments/' + job_id)
 
+    def search(self, body):
+        from .intake_remote import PlatformRejected
+        try:
+            return self._call('POST', '/api/v1/integrations/apps/search', json=body,
+                             headers={'Content-Type': 'application/json'})
+        except PlatformRejected as exc:
+            raise TeamSearchError(exc.status_code) from None
+        except ConnectionError as exc:
+            code = {'平台 HTTP 401': 401, '平台 HTTP 403': 403}.get(str(exc), 503)
+            raise TeamSearchError(code) from None
+        except (OSError, ValueError, FeishuUnavailable):
+            raise TeamSearchError(503) from None
+
 
 def create_team_app(outbox, token, *, start_worker=True):
     async def drain():
@@ -86,6 +106,7 @@ def create_team_app(outbox, token, *, start_worker=True):
     def authenticate(request):
         values = request.headers.getlist('authorization')
         if (len(values) != 1 or not values[0].startswith('Bearer ')
+                or not values[0].isascii()
                 or not hmac.compare_digest(values[0][7:], token)
                 or request.headers.get('origin') is not None or request.headers.get('sec-fetch-site') is not None):
             raise HTTPException(401, '仅允许已认证的 A 后端调用。')
@@ -155,6 +176,30 @@ def create_team_app(outbox, token, *, start_worker=True):
             raise HTTPException(409 if '相同请求 ID' in str(exc) else 401, str(exc)) from None
         except (ValueError, UnicodeError):
             raise HTTPException(400, 'JSON 无效。') from None
+
+    @app.post('/apps/search')
+    async def search_apps(request: Request):
+        body = await session_body(request)
+        if not request.headers.get('content-type', '').lower().startswith('application/json'):
+            raise HTTPException(415, '请使用 application/json。')
+        from pydantic import ValidationError
+        try:
+            query = TeamAppSearch.model_validate(body)
+        except ValidationError:
+            raise HTTPException(422, '项目查询字段无效，请检查会话、关键词和分页参数。') from None
+        try:
+            await asyncio.to_thread(outbox.sessions.read, query.sessionId)
+            return await asyncio.to_thread(outbox.platform.search, query.model_dump())
+        except SessionError:
+            raise HTTPException(401, '共享会话已失效，请重新登录。') from None
+        except SessionUnavailable:
+            raise HTTPException(503, '共享登录服务暂不可用，请稍后重试查询。') from None
+        except TeamSearchError as exc:
+            messages = {400: '项目查询请求无效。', 401: '共享会话已失效，或来源凭证需要维护。',
+                        403: '当前用户或来源无权查询可部署项目。', 409: '项目查询暂不可用，请重试。',
+                        422: '项目查询字段无效，请检查关键词和分页参数。'}
+            raise HTTPException(exc.status_code, messages.get(exc.status_code,
+                '部署平台暂不可用，请稍后重试查询。')) from None
 
     @app.get('/requests/{request_id}')
     def get(request_id: str, request: Request):

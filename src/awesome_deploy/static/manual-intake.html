@@ -1,12 +1,12 @@
 <h1>同组网页项目接入 Awesome Deploy API｜后端实施手册</h1>
-<p>适用版本 0.11.0，更新于 2026-10-23。本文面向同组项目开发者和 AI：A/B 先同机部署，Redis 可迁移。A 业务项目尚未创建，本次交付可接入组件与 B 端能力，不代表 A 已完成真实登录联调。</p>
+<p>适用版本 0.11.2，更新于 2026-10-23。本文面向同组项目开发者和 AI：A/B 先同机部署，Redis 可迁移。A 业务项目尚未创建，本次交付可接入组件、项目搜索和进度查询能力，不代表 A 已完成真实登录联调。</p>
 <aside class="manual-callout"><p>浏览器只访问 A；内部接入凭证、平台来源凭证、签名受理凭据均不得下发到前端。A 返回 202 表示申请已保存，B 返回 202 表示部署已入队，都不代表上线成功。</p></aside>
 <h2>1. 服务与身份</h2>
 <p>A 后端完成飞书 OAuth 后，以受保护的内部凭证调用本机适配服务签发共享会话。会话存 Redis，默认 8 小时绝对过期，可配置更短时间，无滑动续期。B 验证来源凭证及共享身份，按申请人的本地权限部署。客户端不得决定 openId、角色或负责人。只接受与 B 相同飞书 App ID、tenant_key 的 open_id；不同 App 的 open_id 不能直接互换，不通过姓名匹配。</p>
 <p>现行本机地址：Redis <code>127.0.0.1:6391</code>；A 端适配服务 <code>127.0.0.1:8099</code>；B <code>127.0.0.1:8088</code>，内部 HTTP 设置 Host 为 <code>awesome.guanghexinzhi.cn</code>。浏览器只访问 A，不能访问 8099 或持有内部凭证。容器中的 127.0.0.1 是容器自己；若 A 以后部署在容器，必须先配置受控的宿主机连接，不要直接开放公网端口或使用 host 网络来绕过平台策略。</p>
 <p>A/B 共用登录身份并不等于共用密码或飞书授权。Redis 只保存签名身份和有效期，不保存密码、飞书 access_token 或 refresh_token。若 B 将来需要以用户身份读取/创建飞书文件，那是另一项 OAuth 资源授权；当前部署链路不需要。部署结果登记使用平台已有的飞书应用身份。</p>
 <h2>2. A 后端接入顺序（任何语言均可）</h2>
-<p>四个接口都必须由 A 后端调用，带 <code>Authorization: Bearer &lt;内部接入凭证&gt;</code>。凭证由运行环境安全注入，不能出现在浏览器、Git、聊天或日志。</p>
+<p>以下接口都必须由 A 后端调用，带 <code>Authorization: Bearer &lt;内部接入凭证&gt;</code>。凭证由运行环境安全注入，不能出现在浏览器、Git、聊天或日志。</p>
 <ol><li>OAuth 回调校验成功后，取已验证的飞书身份，调用 <code>POST http://127.0.0.1:8099/sessions</code>。把返回 sessionId 关联到 A 自己的服务端登录会话，不交给用户填写。</li><li>用户提交部署时，A 检查自己的申请权限，从服务端登录态取 sessionId；给此次业务申请生成并保存固定请求 ID，调用 <code>POST /requests</code>。</li><li>返回 202 表示请求已事务落入 A 适配服务数据库。前端显示“已受理”，后台通过 <code>GET /requests/{requestId}</code> 查询。GET 不创建任务。</li><li>用户退出 A 时，调用 <code>POST /sessions/revoke</code>。已持久受理的任务继续处理；后续新申请不能使用旧会话。</li><li>A 自己的请求查询接口必须校验请求属于当前用户；内部接口的凭证属于整个 A 服务，不替代 A 网页的数据权限。</li></ol>
 <p>会话签发请求（identity 必须取自服务器验证的 OAuth 结果）：</p>
 <pre tabindex="0" aria-label="代码示例"><code>{&quot;identity&quot;:{&quot;appId&quot;:&quot;cli_aa04dd8797f8dbd1&quot;,&quot;tenantKey&quot;:&quot;平台约定的企业标识&quot;,&quot;openId&quot;:&quot;ou_实际登录用户&quot;,&quot;name&quot;:&quot;实际显示名&quot;},&quot;ttl&quot;:28800}</code></pre>
@@ -20,13 +20,106 @@ Idempotency-Key: project-a-request-001
 
 {&quot;deployment&quot;:{&quot;repository&quot;:&quot;https://github.com/your-org/your-repo.git&quot;,&quot;ref&quot;:&quot;main&quot;,&quot;subdomain&quot;:&quot;demo&quot;},&quot;sessionId&quot;:&quot;服务端保存的共享会话标识&quot;}</code></pre>
 <pre tabindex="0" aria-label="代码示例"><code>{&quot;requestId&quot;:&quot;project-a-request-001&quot;,&quot;status&quot;:&quot;pending&quot;,&quot;jobId&quot;:null,&quot;appId&quot;:null,&quot;error&quot;:null,&quot;deployment&quot;:null}</code></pre>
-<p>B 接收后 jobId、appId 非空，状态 submitted；最终为 succeeded、failed、recovery_required。<code>deployment</code> 为最近一次 B 返回的任务视图，包含 id、appId、status、phase、active、url、error 等。只有 succeeded 且 active=true、url 非空才能显示当前在线链接；历史成功不等于当前仍在线。</p>
+<p>B 接收后 jobId、appId 非空，A 外层状态 submitted。部署排队、执行阶段和结果看 deployment；同组调用方可按第 2.2 节返回的 pollAfterSeconds 查询进度。202、pending、submitted 都不表示已上线。</p>
 <p>更新已有应用：仍提交 POST /requests，在 deployment 中加入 appId，仓库与当前绑定域名须匹配，申请人必须有该应用的部署权限。deployment.ref 可省略，默认 main；显式传入其他分支、标签或完整 commit 时按指定版本部署。页面“项目名称”对应 deployment.subdomain：1–7 位小写字母、数字或中划线，首尾为字母或数字，不含中文、空格或大写字母，并与 awesome.yaml 的 app.subdomain 一致。每次新部署新请求 ID；同次超时重试始终保留 ID 和请求内容。请求 ID 为 1–128 位 <code>[A-Za-z0-9._:-]</code>。一次来源凭证可持续创建和更新多个获授权应用，没有累计申请数量上限；现有 worker 仍串行执行，受资源硬配额限制。</p>
-<p>当前没有供同组来源凭证调用的应用搜索接口。A 应保存请求结果中的 appId，用于后续更新；控制台下拉搜索使用网页登录会话获取应用列表后在浏览器筛选，不能用 A 的专用凭证直接调用该列表接口。</p>
+<h3>2.1 搜索项目并更新部署</h3>
+<p>A 后端调用 <code>POST http://127.0.0.1:8099/apps/search</code>，携带内部接入 Bearer；适配服务使用平台专用委托来源凭证调用 B 的 <code>POST /api/v1/integrations/apps/search</code>。两层请求体相同。sessionId 只能取自 A 已验证的服务端会话，放入 JSON，不放在 URL。所有这些接口仅供后端，内部接入凭证与来源凭证不能发送到浏览器。</p>
+<pre tabindex="0" aria-label="代码示例"><code>POST /apps/search HTTP/1.1
+Host: 127.0.0.1:8099
+Authorization: Bearer &lt;内部接入凭证&gt;
+Content-Type: application/json
+
+{&quot;sessionId&quot;:&quot;服务端保存的共享会话标识&quot;,&quot;query&quot;:&quot;demo&quot;,&quot;limit&quot;:20,&quot;offset&quot;:0}</code></pre>
+<p>query 默认为空字符串，最多 200 个字符；不区分大小写，按项目当前/历史名称（subdomain）、仓库地址或 appId 包含匹配。limit 为 1–20 的整数，默认 20；offset 为 0–1000000 的整数，默认 0。空 query 列出当前用户有权部署的项目；没有匹配时 items=[]、total=0。</p>
+<pre tabindex="0" aria-label="代码示例"><code>{
+  &quot;items&quot;: [
+    {
+      &quot;appId&quot;: &quot;已有应用编号&quot;,
+      &quot;projectName&quot;: &quot;demo&quot;,
+      &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,
+      &quot;subdomain&quot;: &quot;demo&quot;,
+      &quot;lastSubdomain&quot;: &quot;demo&quot;,
+      &quot;domainBound&quot;: true
+    }
+  ],
+  &quot;total&quot;: 1,
+  &quot;limit&quot;: 20,
+  &quot;offset&quot;: 0,
+  &quot;nextOffset&quot;: null
+}</code></pre>
+<p>total 只统计当前申请人有部署权限且匹配查询的项目。nextOffset 为下一页偏移；null 表示没有下一页。下一页保持 query、limit 和会话不变，offset 使用 nextOffset。来源凭证即使绑定管理员，也不会因此扩大实际申请人的搜索范围；能搜索到不保证提交时权限或域名未发生变化，部署接口仍重新校验。</p>
+<p>domainBound=true 时，更新保留返回的 repository、subdomain，并携带 appId。domainBound=false 时 subdomain=null，lastSubdomain 只是曾用名称，不代表现在仍可用；先选择空闲且符合 awesome.yaml 的项目名称，不能直接把 null 或历史名称当作已保留域名提交。搜索结果只供选择，出现多个匹配时必须由用户明确选择 appId。</p>
+<p>搜索不创建部署请求，不使用 Idempotency-Key，也不会进入部署队列。会话失效返回 401，来源凭证过期/撤销也可能返回 401；先核对用户会话，来源凭证由运维轮换。权限拒绝为 403，参数错误为 422，Redis 或 B 暂不可用为 503。不可用时应显示查询失败，不把错误当成空列表；无须申请额外飞书通讯录权限。</p>
+<p>以下连贯示例演示“搜索 → 选定 appId → 更新 → 查询进度”。authenticated_user 与 deployment_request 是 A 自己的已验证登录对象及持久业务记录，需要接入实际代码；这是后端集成示例，不是可直接粘到浏览器执行的脚本。HTTP 错误应交给 A 处理并向用户展示：搜索失败不提交，POST 响应不明时保留相同业务 ID 与请求内容重试，GET 失败时稍后恢复查询。</p>
+<pre tabindex="0" aria-label="代码示例"><code># Python 3；仅在 A 后端执行。Token 由运行环境注入，session_id 来自服务端登录态。
+import json, os, time
+from urllib.request import Request, urlopen
+
+base = &quot;http://127.0.0.1:8099&quot;
+token = os.environ[&quot;AWESOME_INTAKE_TOKEN&quot;]
+session_id = authenticated_user.shared_session_id  # 接入 A 自己的登录对象
+request_id = deployment_request.id  # A 已持久保存的本次业务申请 ID；重试不换 ID
+
+def call(path, body=None, key=None):
+    headers = {&quot;Authorization&quot;: &quot;Bearer &quot; + token}
+    data = None if body is None else json.dumps(body).encode()
+    if body is not None:
+        headers[&quot;Content-Type&quot;] = &quot;application/json&quot;
+    if key is not None:
+        headers[&quot;Idempotency-Key&quot;] = key
+    with urlopen(Request(base + path, data=data, headers=headers), timeout=15) as response:
+        return json.load(response)
+
+page = call(&quot;/apps/search&quot;, {&quot;sessionId&quot;: session_id, &quot;query&quot;: &quot;demo&quot;, &quot;limit&quot;: 20, &quot;offset&quot;: 0})
+# 实际页面可展示 page.items，让用户选择；示例仅接受唯一匹配。
+if page[&quot;total&quot;] != 1:
+    raise ValueError(&quot;请明确选择项目，不能自动部署第一个搜索结果&quot;)
+app = page[&quot;items&quot;][0]
+if not app[&quot;domainBound&quot;]:
+    raise ValueError(&quot;请先选择空闲且与清单一致的项目名称&quot;)
+body = {&quot;sessionId&quot;: session_id, &quot;deployment&quot;: {
+    &quot;appId&quot;: app[&quot;appId&quot;], &quot;repository&quot;: app[&quot;repository&quot;], &quot;subdomain&quot;: app[&quot;subdomain&quot;]
+}}  # ref 省略，默认 main
+result = call(&quot;/requests&quot;, body, request_id)
+deadline = time.monotonic() + 900
+while result[&quot;pollAfterSeconds&quot;] &gt; 0 and time.monotonic() &lt; deadline:
+    time.sleep(result[&quot;pollAfterSeconds&quot;])
+    result = call(&quot;/requests/&quot; + request_id)
+    job = result.get(&quot;deployment&quot;)
+    if job:
+        print(job[&quot;statusLabel&quot;], job[&quot;phaseLabel&quot;])
+# A 外层 pending/submitted 不能当作上线成功。
+# 若仍未结束，保留 requestId，之后继续 GET；不要生成新的部署请求。
+job = result.get(&quot;deployment&quot;)
+if job and job[&quot;terminal&quot;]:
+    print(job[&quot;status&quot;], job[&quot;error&quot;], job[&quot;url&quot;])
+elif result[&quot;status&quot;] == &quot;rejected&quot;:
+    print(result[&quot;error&quot;])
+</code></pre>
+<h3>2.2 查询投递与部署进度</h3>
+<p>A 后端使用内部接入 Bearer 调用 <code>GET http://127.0.0.1:8099/requests/{requestId}</code>。A 自己必须校验该 requestId 属于当前用户；内部来源凭证能查询本来源记录，不等于前端用户可查看所有人的请求。查询不要求把 sessionId 放 URL，也不要求再次提交部署。</p>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>含义</p></th></tr></thead><tbody><tr><td><p>requestId / jobId / appId</p></td><td><p>A 业务请求 ID / B 部署任务 ID / 应用 ID；B 未受理时后两项可能为 null。</p></td></tr><tr><td><p>status</p></td><td><p>A 外层 pending=已落库待投递；submitted=B 已受理，仍可能排队/执行；rejected=平台明确拒绝。取得 B 终态后为 succeeded、failed、recovery_required 或 cancelled。</p></td></tr><tr><td><p>createdAt / updatedAt</p></td><td><p>A 请求的创建/最后处理时间；Unix 秒数。</p></td></tr><tr><td><p>pollAfterSeconds</p></td><td><p>外层进行中建议 5 秒查询一次；外层终态（含 rejected）为 0。</p></td></tr><tr><td><p>error</p></td><td><p>A 投递错误摘要；真正的部署失败还需查看 deployment.error。</p></td></tr><tr><td><p>deployment</p></td><td><p>最近一次从 B 查询的任务快照；还未取得时为 null。显示部署进度用其中 status、phase 和对应中文标签。</p></td></tr></tbody></table>
+<p>B 任务快照包含以下字段。A 外层 submitted 只表示投递已成功，不表示部署完成；没有百分比字段。A 在任务结束后不持续刷新在线状态，因此最终缓存里的 active/url 是最后同步时的状态。若要确认今天是否仍在线，A 后端用来源凭证直接 GET B 的任务接口，不能仅据 A 的历史快照判断。</p>
+<table><colgroup><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>含义</p></th></tr></thead><tbody><tr><td><p>id / appId</p></td><td><p>本次任务 ID / 应用 ID；不要混用。</p></td></tr><tr><td><p>status / statusLabel</p></td><td><p>机器状态码 / 中文说明；queued、running 表示未结束；succeeded、failed、recovery_required、cancelled 是终态。</p></td></tr><tr><td><p>phase / phaseLabel</p></td><td><p>当前阶段码 / 中文说明，如 build / 构建镜像、health / 健康检查。阶段耗时不固定，不返回虚构百分比。</p></td></tr><tr><td><p>terminal</p></td><td><p>布尔值；true 时停止常规进度轮询，不代表部署成功。</p></td></tr><tr><td><p>createdAt / updatedAt</p></td><td><p>Unix 时间戳，单位秒，number；用于显示提交与最近更新时刻。</p></td></tr><tr><td><p>pollAfterSeconds</p></td><td><p>建议下次查询间隔：进行中为 5，终态为 0。查询失败可退避；调用方等待超时不等于任务失败。</p></td></tr><tr><td><p>error</p></td><td><p>部署失败或待恢复的中文安全诊断对象；无错误时为 null。不包含密钥或原始日志。</p></td></tr><tr><td><p>active / url</p></td><td><p>仅该成功版本仍为当前在线版本时 active=true 且 url 非空。历史成功不等于现在在线。</p></td></tr></tbody></table>
+<pre tabindex="0" aria-label="代码示例"><code>{
+  &quot;id&quot;: &quot;任务编号&quot;,
+  &quot;appId&quot;: &quot;应用编号&quot;,
+  &quot;status&quot;: &quot;running&quot;,
+  &quot;statusLabel&quot;: &quot;执行中&quot;,
+  &quot;phase&quot;: &quot;build&quot;,
+  &quot;phaseLabel&quot;: &quot;构建镜像&quot;,
+  &quot;terminal&quot;: false,
+  &quot;pollAfterSeconds&quot;: 5,
+  &quot;createdAt&quot;: 1792713600.0,
+  &quot;updatedAt&quot;: 1792713615.0,
+  &quot;error&quot;: null,
+  &quot;active&quot;: false,
+  &quot;url&quot;: null
+}</code></pre>
 <h2>3. B 端接口与已受理授权</h2>
 <p><code>POST /api/v1/integrations/deployments</code>：Bearer 是专用来源凭证，必须显式签发 <code>--kind source --all-apps --delegation-source project-a</code>。请求 envelope 包含 deployment，并且 sessionId 或 receipt 二选一。直接请求带 sessionId 时 B 实时读 Redis；普通 personal/source Token 不自动获得代理用户的权限。</p>
 <p>推荐由已提供的 A 适配服务生成 receipt。它在受理时校验 Redis，事务保存完整部署内容、申请人、请求 ID 和 HMAC 签名受理凭据。后台向 B 发送 <code>{&quot;deployment&quot;:{...},&quot;receipt&quot;:{...}}</code>。B 校验来源、签名、请求内容、身份命名空间和本地权限，不要求用户此时仍保持登录。receipt 不是飞书 Token，但属于授权材料，必须保存在受限数据库，不能上传飞书表格、前端或普通日志。不要手工构造或修改 receipt，复用组件。</p>
-<p>B 返回 HTTP 202 和 <code>{id,appId,status,phase,...}</code>；GET <code>/api/v1/integrations/deployments/{id}</code> 查询任务。相同来源可用轮换后的有效委托凭证查询和重投同一请求，仍返回原任务。不同来源不能查询；同一来源同请求 ID 不允许换申请人或请求内容。原凭证撤销会阻止其绑定的待执行任务；轮换应先把待投递/未完成请求切到新凭证并用原请求 ID 重放，再撤销旧凭证。签名密钥在待处理请求完成前不能直接换掉，否则旧 receipt 无法核验。</p>
+<p>B 返回 HTTP 202 和任务视图。<code>GET /api/v1/integrations/deployments/{jobId}</code> 使用同一来源的有效委托凭证查询最新任务状态，返回 status、statusLabel、phase、phaseLabel、terminal、updatedAt、pollAfterSeconds、active、url、error 等；不需要用户仍登录，也不需要在 URL 传会话。相同来源可用轮换后的有效委托凭证查询和重投同一请求，仍返回原任务。不同来源不能查询；同一来源同请求 ID 不允许换申请人或请求内容。原凭证撤销会阻止其绑定的待执行任务；轮换应先把待投递/未完成请求切到新凭证并用原请求 ID 重放，再撤销旧凭证。签名密钥在待处理请求完成前不能直接换掉，否则旧 receipt 无法核验。</p>
 <p>申请人首次从 A 接入时 B 创建普通成员，不授予管理员角色。既有账号保留本地禁用状态、权限和角色；A 不能传角色覆盖。会话退出不取消已受理任务，明确禁用账号、撤销来源或撤销应用权限仍会阻止未获执行授权的操作。</p>
 <h2>4. 故障、存储和飞书记录</h2>
 <p>A 适配服务在 SQLite 事务提交后才返回 202。B 不可达、响应丢失或 5xx 时，后台按原 ID 退避重试（最长 300 秒）；POST 400/403/409/422 作为明确拒绝，不无限重试。401 可能是来源凭证过期或需维护，保留请求并重试，不换 ID。Redis 不可用时不受理新的共享身份申请，返回 503；已经保存 receipt 的请求仍可继续投递。退出登录、会话过期和 Redis 清空都不会清除已提交数据库记录。</p>

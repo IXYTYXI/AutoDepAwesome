@@ -1,5 +1,5 @@
 Awesome Deploy 部署接入说明｜供 AI 与开发者使用
-说明版本：2026-10-23 / 平台 0.10.0；支持 schemaVersion 1、2。
+说明版本：2026-10-23 / 平台 0.11.2；支持 schemaVersion 1、2。
 本文件是当前接入补充说明，完整字段以平台 JSON Schema 和执行器校验为准。
 当前技术协议：https://guanghe.feishu.cn/docx/DSUwdxpXhot6fQx2YticNCtWnHe
 资源配额、登录、秘密和下线能力以该协议对应的平台版本及当前服务器配置核对。
@@ -64,7 +64,7 @@ Dockerfile 支持显式 FROM、RUN、COPY、ENV、WORKDIR、USER、EXPOSE、LABE
 下线可选择保留数据，或清除平台受控业务数据及该应用保存的密码、API Key、密钥。删除不可恢复，外部数据库不会自动删除。
 确认下线与清理完成后才释放域名和运行端口。失败或待恢复状态可能继续占用资源；不能仅凭“部署失败”判断已释放。
 部署失败时查看具体错误和当前应用状态，不自动修改用户源码，也不为重试随意删除已有数据或替换主密钥。
-网页与自动化 API 提交的应用和部署任务均进入平台记录，由后台异步同步到飞书多维表格。负责人关联实际提交身份或凭证绑定的飞书成员；表格不是实时部署队列，飞书同步失败不使已受理部署失效。独立请求登记服务尚未上线；审批门禁、业务后台 worker 和自动备份仍未提供。
+网页与自动化 API 提交的应用和部署任务均进入平台记录，由后台异步同步到飞书多维表格。负责人关联实际提交身份或凭证绑定的飞书成员；表格不是实时部署队列，飞书同步失败不使已受理部署失效。同组 A 端适配服务已提供数据库持久受理与恢复投递；真实 A 业务尚待接入，旧独立模块的飞书部署请求表恢复未接入此链路。审批门禁、业务后台 worker 和自动备份仍未提供。
 
 八、AI 交付检查清单
 请先检查原项目，再提供实际所需的部署文件和简短操作说明。不要创建与业务无关的演示程序。
@@ -73,7 +73,10 @@ Dockerfile 支持显式 FROM、RUN、COPY、ENV、WORKDIR、USER、EXPOSE、LABE
 飞书登录平台后，可通过网页登录会话访问 /api/v1/schema?version=2 核对字段；无存储旧项目可使用 version=1。这是控制台接口，不接受自动化 Bearer 凭证。
 控制台接口 POST /api/v1/preflight 用于配置预检，请求体为 {"manifest":"清单 YAML 字符串"}，需网页登录会话、同源 Origin 和有效 X-CSRF-Token；自动化 Bearer 凭证不能调用。预检不会拉代码、构建、预留资源或保证最终上线。
 自动化提交部署使用 POST /api/v1/automation/deployments，请求体为 JSON，并携带 Bearer 凭证和 Idempotency-Key；返回 HTTP 202 仅代表任务入队。
-使用同一凭证调用 GET /api/v1/automation/deployments/{任务ID} 查询结果。GET 只读取任务状态，不创建或重试部署；每次新的部署要换幂等键。
+使用同一凭证调用 GET /api/v1/automation/deployments/{任务ID} 查询进度和结果；同组委托任务使用同一来源的有效凭证 GET /api/v1/integrations/deployments/{任务ID}。返回 status/statusLabel、phase/phaseLabel、terminal、createdAt/updatedAt（Unix 秒数）、pollAfterSeconds、error、active/url。进行中按 5 秒查询，terminal=true 时停止；不返回百分比。GET 不创建或重试部署；每次新部署换幂等键。
+同组项目搜索：POST /api/v1/integrations/apps/search，专用委托来源 Bearer 和 JSON {"sessionId":"服务端共享会话","query":"demo","limit":20,"offset":0}。会话不放 URL；query 最多 200 字符，limit 为 1–20 整数，offset 为 0–1000000 整数。按实际用户部署权限返回项目，空 query 列全部可更新项目，按名称、仓库、appId 包含搜索。响应 items 含 appId、projectName、repository、subdomain、lastSubdomain、domainBound，外层 total/limit/offset/nextOffset 用于分页。未绑定域名时 subdomain=null，历史名称不保证可复用。普通个人凭证没有此搜索接口。
+A 本机适配服务 POST /apps/search 接收相同 JSON，选定 appId 后 POST /requests 中 deployment 携带该 appId、repository、subdomain，ref 可省略默认 main。用 GET /requests/{requestId} 查询，外层 pending/submitted 只是投递状态，实际进度看 deployment。A 完成后不持续刷新在线状态；确认当前是否在线需查询 B 的任务接口。所有内部凭证及 sessionId 只用于后端，A 自己核验用户对请求记录的权限。
+完整同组接入、搜索→更新→轮询样例：https://guanghe.feishu.cn/docx/DWPCdke22oEN8Bxwy70cFX9anXe
 实际构建与运行使用既有远端部署平台；未经用户要求，不自动启动本机 Docker Desktop。
 验收应覆盖真实页面/API、真实健康路径、重部署及所声明的数据持久化行为。只做与本次交付相关的检查。
 

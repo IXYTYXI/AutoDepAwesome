@@ -415,11 +415,18 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
         data = job["input"]
         current = store.active_release(job["app_id"]) if job.get("app_id") and job["status"] == "succeeded" else None
         active = bool(current and current["id"] == job["id"])
+        terminal = job["status"] in {"succeeded", "failed", "recovery_required", "cancelled"}
         return {
             "id": job["id"],
             "appId": job.get("app_id"),
             "status": job["status"],
+            "statusLabel": {"queued": "已排队", "running": "执行中", "succeeded": "部署成功",
+                            "failed": "部署失败", "recovery_required": "需要处理恢复状态",
+                            "cancelled": "已取消"}.get(job["status"], "处理中"),
             "phase": job["phase"],
+            "phaseLabel": PHASE_LABELS.get(job["phase"], "处理中"),
+            "terminal": terminal,
+            "pollAfterSeconds": 0 if terminal else 5,
             "repository": data["repository"],
             "ref": data["ref"],
             "subdomain": data["subdomain"],
@@ -430,6 +437,7 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
             "active": active,
             "error": localize_error(job.get("error"), job["phase"]),
             "createdAt": job.get("created_at"),
+            "updatedAt": job.get("updated_at"),
         }
 
     def permissions(actor, app_id):
