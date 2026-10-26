@@ -31,7 +31,6 @@ from .source import validate_ref, validate_repository
 from .store import Store
 
 STATIC = Path(__file__).parent / "static"
-ANALYSIS_POLL_WAIT = 8.0
 
 
 class Submission(BaseModel):
@@ -711,7 +710,7 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
         try:
             return await asyncio.wait_for(
                 app.state.advice.analyze(advice_context(job), **({"poll_only": True} if body.poll else {})),
-                timeout=ANALYSIS_POLL_WAIT,
+                timeout=settings.ai_poll_wait_seconds,
             )
         except TimeoutError:
             # AdviceService shields and coalesces the provider task across short polls.

@@ -40,5 +40,6 @@
   "ai_base_url": null,
   "ai_model": "",
   "ai_api_key_file": null,
-  "ai_reasoning_effort": null
+  "ai_reasoning_effort": null,
+  "ai_poll_wait_seconds": 8.0
 }

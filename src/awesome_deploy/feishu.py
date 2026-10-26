@@ -16,6 +16,8 @@ from urllib.parse import urlencode
 
 import httpx
 
+from .feishu_identifiers import is_valid_feishu_app_id
+
 
 AUTHORIZE_URL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
 USER_TOKEN_URL = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
@@ -83,7 +85,8 @@ def _object(value):
 
 class FeishuProvider:
     def __init__(self, settings, *, client: httpx.Client | None = None, clock=time.monotonic):
-        if settings.feishu_eligibility_mode not in ("login", "continuous"):
+        if (settings.feishu_eligibility_mode not in ("login", "continuous")
+                or not is_valid_feishu_app_id(settings.feishu_app_id)):
             raise FeishuUnavailable() from None
         self.settings = settings
         self._clock = clock
@@ -95,10 +98,6 @@ class FeishuProvider:
         self._token_lock = threading.Lock()
         self._tenant_token_value = None
         self._tenant_token_deadline = 0.0
-        if not isinstance(settings.feishu_app_id, str) or not re.fullmatch(
-            r"cli_[A-Za-z0-9_]{1,128}", settings.feishu_app_id
-        ):
-            raise FeishuUnavailable() from None
 
     @property
     def callback_url(self) -> str:

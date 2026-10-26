@@ -7,13 +7,13 @@ import hmac
 import json
 import logging
 from pathlib import Path
-import re
 
 from fastapi import FastAPI, HTTPException, Request
 import uvicorn
 
 from .config import Settings
 from .feishu import _read_secret
+from .feishu_identifiers import is_valid_feishu_app_id
 from .intake_relay import IntakeError, IntakeRelay
 from .intake_remote import BaseIntake, PlatformClient
 
@@ -100,8 +100,7 @@ def load_relay(config_path):
                 'integrity_key_file', 'feishu_app_secret_file'):
         if not isinstance(values[key], str) or not Path(values[key]).is_absolute():
             raise ValueError(f'{key} 必须是绝对路径。')
-    if not isinstance(values['feishu_app_id'], str) or not re.fullmatch(
-            r'cli_[A-Za-z0-9]{1,80}', values['feishu_app_id']):
+    if not is_valid_feishu_app_id(values['feishu_app_id']):
         raise ValueError('飞书 App ID 无效。')
     token = _read_secret(Path(values['intake_token_file']))
     key = _read_secret(Path(values['integrity_key_file'])).encode()

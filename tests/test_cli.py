@@ -195,3 +195,26 @@ def test_ai_reasoning_effort_requires_complete_ai_configuration(tmp_path):
     with pytest.raises(DeployError) as caught:
         load_settings(path)
     assert caught.value.code == "INVALID_CONFIG"
+
+
+def test_ai_poll_wait_default_and_override(tmp_path):
+    from awesome_deploy.cli import load_settings
+
+    path = tmp_path / "config.json"
+    path.write_text("{}")
+    assert load_settings(path).ai_poll_wait_seconds == 8.0
+    for value in (0.1, 12.5, 30):
+        path.write_text(json.dumps({"ai_poll_wait_seconds": value}))
+        assert load_settings(path).ai_poll_wait_seconds == value
+
+
+@pytest.mark.parametrize("value", [True, False, None, "8", 0, -1, 0.099, 30.1,
+                                         float("nan"), float("inf"), float("-inf")])
+def test_ai_poll_wait_rejects_invalid_values(tmp_path, value):
+    from awesome_deploy.cli import load_settings
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"ai_poll_wait_seconds": value}))
+    with pytest.raises(DeployError) as caught:
+        load_settings(path)
+    assert caught.value.code == "INVALID_CONFIG"

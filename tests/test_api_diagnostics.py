@@ -14,10 +14,12 @@ HEADERS = {'Origin': 'http://testserver', 'Idempotency-Key': 'diagnostics'}
 
 
 @pytest.fixture
-def client(tmp_path):
+def client(tmp_path, request):
     auth = tmp_path / 'admin.json'
     initialize_credentials(auth, *AUTH)
-    with TestClient(create_app(Settings(state_dir=tmp_path, auth_file=auth, public_url='http://testserver'))) as c:
+    settings = Settings(state_dir=tmp_path, auth_file=auth, public_url='http://testserver',
+                        **getattr(request, 'param', {}))
+    with TestClient(create_app(settings)) as c:
         yield c
 
 
@@ -118,19 +120,18 @@ def test_ai_error_is_safe_and_unknown_error_codes_do_not_leave_server(client):
     assert 'PRIVATE_CUSTOM_SENTINEL' not in json.dumps(seen)
 
 
+@pytest.mark.parametrize("client", [{"ai_poll_wait_seconds": 0.1}], indirect=True)
 def test_slow_ai_returns_pending_then_same_single_generation(client, monkeypatch, tmp_path):
     import asyncio
-    import awesome_deploy.api as api_module
     from awesome_deploy.ai_advice import AdviceService
 
-    monkeypatch.setattr(api_module, 'ANALYSIS_POLL_WAIT', 0.01, raising=False)
     advice = AdviceService(Settings(ai_base_url='https://ai.example/v1', ai_model='test',
                                     ai_api_key_file=tmp_path / 'key'))
     calls = []
 
     async def request(serialized):
         calls.append(serialized)
-        await asyncio.sleep(0.04)
+        await asyncio.sleep(0.3)
         return {'text': '检查仓库根目录的配置。', 'model': 'test'}
 
     monkeypatch.setattr(advice, '_request', request)

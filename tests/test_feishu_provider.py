@@ -23,7 +23,7 @@ def settings(tmp_path):
     secret.write_text("test-app-secret\n")
     secret.chmod(0o600)
     return SimpleNamespace(
-        public_url="https://deploy.example.com/", feishu_app_id="cli_test_app",
+        public_url="https://deploy.example.com/", feishu_app_id="cli_testapp",
         feishu_tenant_key="tenant-1", feishu_app_secret_file=secret,
         feishu_eligibility_mode="continuous",
     )
@@ -95,7 +95,7 @@ def test_authorization_uses_fixed_callback_and_s256_without_offline_access(setti
     assert (url.scheme, url.netloc, url.path) == (
         "https", "accounts.feishu.cn", "/open-apis/authen/v1/authorize")
     query = parse_qs(url.query)
-    assert query == {"client_id": ["cli_test_app"], "response_type": ["code"],
+    assert query == {"client_id": ["cli_testapp"], "response_type": ["code"],
                      "redirect_uri": ["https://deploy.example.com/auth/feishu/callback"],
                      "state": ["random-state"], "code_challenge": ["random-challenge"],
                      "code_challenge_method": ["S256"]}
@@ -109,7 +109,7 @@ def test_exchange_checks_identity_employment_and_app_visibility(settings):
     body = json.loads(api.calls[0].content)
     assert api.calls[0].url == "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
     assert api.calls[0].headers["content-type"] == "application/json; charset=utf-8"
-    assert body == {"grant_type": "authorization_code", "client_id": "cli_test_app",
+    assert body == {"grant_type": "authorization_code", "client_id": "cli_testapp",
                     "client_secret": "test-app-secret", "code": "valid-code",
                     "redirect_uri": "https://deploy.example.com/auth/feishu/callback",
                     "code_verifier": "v" * 43}
@@ -220,7 +220,7 @@ def test_incomplete_visibility_is_unavailable(settings, field):
                                       [{"user_id": OPEN_ID}, {"user_id": OPEN_ID}]])
 def test_visibility_response_must_match_exactly_one_requested_user(settings, entries):
     client, api = provider(settings)
-    api.override["/open-apis/application/v6/applications/cli_test_app/visibility/check_white_black_list"] = (
+    api.override["/open-apis/application/v6/applications/cli_testapp/visibility/check_white_black_list"] = (
         lambda request: httpx.Response(200, json={"code": 0, "data": {"user_visibility_list": entries}}))
     with pytest.raises(FeishuUnavailable):
         client.check_eligible(OPEN_ID)

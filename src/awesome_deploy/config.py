@@ -4,6 +4,8 @@ from pathlib import Path
 import re
 from urllib.parse import urlsplit
 
+from .feishu_identifiers import is_valid_feishu_app_id
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -52,6 +54,8 @@ class Settings:
     ai_model: str = ""
     ai_api_key_file: Path | None = None
     ai_reasoning_effort: str | None = None
+    # One API poll may return 202 while the provider request continues in the background.
+    ai_poll_wait_seconds: float = 8.0
     reserved_names: tuple[str, ...] = (
         "www",
         "api",
@@ -80,7 +84,7 @@ def validate_identity_settings(settings: Settings) -> None:
         if settings.feishu_app_id or settings.feishu_tenant_key or settings.feishu_app_secret_file is not None:
             raise ValueError("Feishu settings require explicit Feishu mode")
         return
-    if (not re.fullmatch(r"cli_[A-Za-z0-9]{1,80}", settings.feishu_app_id)
+    if (not is_valid_feishu_app_id(settings.feishu_app_id)
             or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", settings.feishu_tenant_key)
             or not isinstance(settings.feishu_app_secret_file, Path)):
         raise ValueError("Feishu identity settings")
@@ -142,6 +146,9 @@ def validate_git_proxy_settings(settings: Settings) -> None:
 
 def validate_ai_settings(settings: Settings) -> None:
     """Validate operator configuration without opening the API key file."""
+    if (type(settings.ai_poll_wait_seconds) not in (int, float)
+            or not 0.1 <= settings.ai_poll_wait_seconds <= 30):
+        raise ValueError("AI poll wait must be between 0.1 and 30 seconds")
     base, model, key = settings.ai_base_url, settings.ai_model, settings.ai_api_key_file
     effort = settings.ai_reasoning_effort
     if effort is not None and (

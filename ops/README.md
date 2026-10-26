@@ -6,6 +6,17 @@
 
 模板使用非 root 专用账号 `awesome`、示例 UID `1001`、代码目录 `/opt/awesome-deploy`。安装前确认真实 UID，并同时修改平台配置的 `docker_host`、网关配置的 `allowed_uid` 和 worker unit 的 `XDG_RUNTIME_DIR`。该账号不要加入 rootful Docker 的 `docker` 组，也不要授予任意 sudo。
 
+`docker_host` 和 `gateway_command` 均为可在 `/etc/awesome-deploy/config.json` 覆盖的配置项；源码中的值是默认值，不要求目标机必须使用 UID `1001`。先运行 `id -u awesome` 确认实际 UID，再核对以下配置，不能只替换 socket 路径：
+
+| 配置位置 | 应与实际环境一致的值 |
+| --- | --- |
+| 平台 `config.json` | `docker_host: unix:///run/user/<UID>/docker.sock`；自定义 `rootlesskit_socket`、启用公网出口时的 `egress_docker_pid_file` 也须对应同一 daemon |
+| 网关 `gateway.json` | `allowed_uid: <UID>` |
+| `awesome-worker.service`；启用存储巡检时的 `awesome-storage-patrol.service` | `User=awesome`、`Group=awesome`、`XDG_RUNTIME_DIR=/run/user/<UID>` |
+| 启用 XFS 配额时的 `storage.json` | `rootless_uid` 和 `rootless_daemon_pid_file`；按 [存储配额说明](STORAGE-QUOTA.md) 核对实际 UID 映射 |
+
+修改配置中的 `<UID>` 时写入实际数字；JSON 不会展开 shell 变量或占位符。
+
 | 路径 | 归属与用途 |
 | --- | --- |
 | `/opt/awesome-deploy` | 管理员维护的代码和 `.venv`，服务账号只需读取和执行 |
@@ -77,8 +88,11 @@ RootlessKit 数字 ID 会重用，清理必须按当前完整目标匹配，先�
 用服务账号检查实际信息：
 
 ```sh
-/usr/bin/docker --host unix:///run/user/1001/docker.sock info
+# 在 awesome 用户会话内执行；非标准安装应使用 config.json 中的实际 docker_host。
+/usr/bin/docker --host "unix:///run/user/$(id -u)/docker.sock" info
 ```
+
+该命令只查询已运行的 daemon，不会启动或重启 Docker。平台运行时另行拒绝非 Unix socket、非 socket 文件、root 所有、属主不是当前 worker UID 或允许所有用户写入的 socket；仅配置一个路径不能绕过这些检查。
 
 主机整体还要为操作系统、Nginx、Docker daemon 和构建器留资源。`max_cpu`/`max_memory_mib` 限制的是被预留的应用实例总和，builder 自身单独检查上限；不能把 6 CPU/6144 MiB 当作平台所有进程的整体上限。
 
@@ -117,6 +131,8 @@ builder 检查使用普通文本 `buildx inspect` 和真实容器 inspect，不�
 
 安装后确认 helper、其父目录 `/usr/local/libexec`、`/etc/awesome-deploy`、`/etc/nginx/conf.d` 均为 root 所有且不可被服务账号修改。helper 不导入项目包，读取固定 root 配置，仅从 stdin 接受受验证的 JSON 操作；worker 不能指定路径或任意命令参数。
 
+`gateway_command` 默认是 `["sudo", "-n", "/usr/local/libexec/awesome-gateway"]`，表示以非交互方式执行已安装的 helper。它可由运维配置覆盖，例如使用系统上的 sudo 绝对路径；这是参数数组，不是 shell 命令字符串。修改入口时须同步核对实际可执行文件、受限 sudoers 规则和 stdin JSON 协议，不能改成任意 shell 或可写脚本。以下命令按默认入口示例。
+
 用 `visudo -f /etc/sudoers.d/awesome-gateway` 创建最窄授权：
 
 ```sudoers
@@ -126,10 +142,17 @@ awesome ALL=(root) NOPASSWD: /usr/local/libexec/awesome-gateway ""
 末尾 `""` 将授权限制为空参数列表。不要授予 `sudo python`、`sudo sh`、任意 Nginx/Certbot 命令、checkout 脚本或 `awesome-gateway *`。helper 还会核对 `SUDO_UID` 与 `gateway.json.allowed_uid`；worker 无权传入 `--reload`。
 
 ```sh
+# 管理员检查文件存在、类型、属主/权限和 sudoers 语法；这些命令不执行 helper。
+sudo stat -c '%F %U:%G %a %n' /usr/local/libexec/awesome-gateway /usr/local/libexec
+sudo -u awesome test -x /usr/local/libexec/awesome-gateway
 sudo visudo -cf /etc/sudoers.d/awesome-gateway
-# 然后以 awesome 身份验证 stdin 协议：
+# 然后在 awesome 用户会话内查询授权；核对结果包含上面的 NOPASSWD 空参数规则。
+sudo -n -l
+# 确认安装和授权后，再以 awesome 身份验证 stdin 协议及非交互执行：
 printf '%s\n' '{"op":"check"}' | sudo -n /usr/local/libexec/awesome-gateway
 ```
+
+`check` 不发布路由、不申请证书，也不 reload Nginx；但会创建或修正网关状态目录与 ACME webroot 的权限、创建锁文件，并执行 `nginx -t`，因此不是完全只读命令。纯审查时先使用上述文件与授权查询；安装验收时再运行协议检查。检查成功只证明这一层依赖与授权可用，不能代替实际 HTTPS 发布验收。
 
 helper 将应用配置写为 `/etc/nginx/conf.d/awesome-app-<subdomain>.conf`，探针日志定义写为 `00-awesome-probes.conf`。这些名称由平台管理，不能与既有配置争用。每次路由替换先保存回滚日志，再进行 `nginx -t` 和 reload；失败会尝试恢复先前配置。
 
@@ -153,7 +176,7 @@ location / {
 
 根域名原有 `/.well-known/acme-challenge/` location 继续指向 `/var/www/certbot`；既有 HTTP 到 HTTPS 跳转和证书路径保持不变。只有新部署的应用子域由 helper 写入自己的 ACME location，并使用 `/var/www/awesome-acme`。
 
-API 按 `auth_mode` 使用兼容的 HTTP Basic 或飞书独立会话；多人使用按 [飞书登录操作说明](FEISHU-LOGIN.md) 配置后者。不要改写或移除 Authorization、Cookie、Origin、X-CSRF-Token 等认证请求头，也不要记录其值。飞书回调还须禁止日志记录含 code 的查询参数，具体反代片段见该说明。管理员可在管理域名入口限制可信网络，但不要影响应用域名的 ACME 验证。
+API 按 `auth_mode` 使用兼容的 HTTP Basic 或飞书独立会话；多人使用按 [飞书登录操作说明](FEISHU-LOGIN.md) 配置后者。`feishu_app_id` 在本平台统一校验为 `cli_` 后接 1–80 个 ASCII 字母或数字，不允许额外下划线；这是平台本地配置约束，不代表飞书官方所有 App ID 的通用长度规范。不要改写或移除 Authorization、Cookie、Origin、X-CSRF-Token 等认证请求头，也不要记录其值。飞书回调还须禁止日志记录含 code 的查询参数，具体反代片段见该说明。管理员可在管理域名入口限制可信网络，但不要影响应用域名的 ACME 验证。
 
 **保留现有 `certbot.timer`/续期调度，不禁用它，不另建一套竞争的续期 timer。** 把目录 deploy hook 安装到既有 Certbot 流程：
 
@@ -233,6 +256,14 @@ API unit 启用 `NoNewPrivileges` 和只读系统保护；worker 必须调用精
 私有 Git 使用 root 管理、服务账号可执行的绝对路径 `git_askpass`。helper 应按提示读取仓库外的受限凭证，并只输出 Git 所需值，不输出调试信息。Git 会清除普通用户配置、credential helper 和任意继承环境；不要假设 `HOME`、shell profile 或交互登录中的 token 对 worker 可见。模板默认 `git_askpass: null`，只适合无交互可读取的公开仓库。
 
 应用秘密通过 `secret-set --repository ... --subdomain ... --name ...` 交互输入；详见主 README。备份 state 时包含版本化秘密及凭证，按秘密备份管理；不要把 SQLite 或 state 打包上传为公开诊断附件。
+
+### AI 建议等待与超时
+
+在平台 `config.json` 中配置 `ai_base_url`、`ai_model`、`ai_api_key_file`；密钥保存在受限文件，不能写入配置示例或 Git。`ai_poll_wait_seconds` 控制一次分析 HTTP 请求等待结果的时间，默认 `8.0` 秒，允许 `0.1`–`30` 秒的有限数值（不接受字符串或布尔值）。例如加入 `"ai_poll_wait_seconds": 15.0`；按实际反向代理和客户端超时选择更小的等待值，并为网络往返留出余量，配置更新后重启 API 生效。
+
+这个等待值不是大模型请求的总时限。等待结束但分析尚未完成时，接口返回 HTTP `202`、`{"status":"pending"}` 和 `Retry-After: 1`；客户端按接口协议轮询，同一次生成会继续执行并被复用，不会因为每次等待结束就重新请求模型。模型服务调用另有 `240` 秒总时限（连接超时为 `10` 秒）；超过实际调用时限才返回 `AI_TIMEOUT`。因此提高轮询等待值不能解决模型调用超过总时限的问题。
+
+### 日志
 
 API/worker 输出进入 journald。Docker 应用容器使用 local 日志驱动，每个容器约束为 `5m × 2` 文件；镜像和 builder 缓存仍需管理员在专用磁盘边界内管理。可评估安装 `awesome-gateway.logrotate` 轮转 root 所有的探针日志；先排查是否与已有 Nginx logrotate 通配规则重复，避免同一路径重复定义。它使用 `nginx -s reopen` 重新打开日志，不替代证书 deploy hook 的加锁 reload。
 

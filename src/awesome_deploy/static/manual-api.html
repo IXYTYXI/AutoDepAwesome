@@ -721,7 +721,7 @@ Cookie: &lt;PLATFORM_SESSION_COOKIE&gt;</code></pre>
 <pre tabindex="0" aria-label="代码示例"><code translate="no">POST https://awesome.guanghexinzhi.cn/api/v1/deployments/{job_id}/analyze</code></pre>
 <p><strong>认证要求</strong></p>
 <p>平台网页登录会话。</p>
-<p>操作权限：管理员/owner/maintainer + canDeploy。仅 failed/recovery_required 且有 error；其余 409。poll=true 只轮询已有分析，false 可发起。单次等待最多 8 秒，忙/限流 429，AI 超时 504，其余 AI 异常 503。未配置 AI 为 503 AI_NOT_CONFIGURED。只向 AI 发标准化错误与平台规则。</p>
+<p>操作权限：管理员/owner/maintainer + canDeploy。仅 failed/recovery_required 且有 error；其余 409。poll=true 只轮询已有分析，false 可发起。单次等待默认最多 8 秒，运维可通过 ai_poll_wait_seconds 配置为 0.1–30 秒。未完成返回 202 pending，后台生成继续执行，后续轮询复用同一次生成；模型服务调用总时限仍为 240 秒。忙/限流 429，AI 超时 504，其余 AI 异常 503。未配置 AI 为 503 AI_NOT_CONFIGURED。只向 AI 发标准化错误与平台规则。</p>
 <p><strong>路径参数</strong></p>
 <table><colgroup><col><col><col><col><col></colgroup><thead><tr><th><p>参数</p></th><th><p>类型</p></th><th><p>必填</p></th><th><p>默认值</p></th><th><p>说明</p></th></tr></thead><tbody><tr><td><p>job_id</p></td><td><p>string</p></td><td><p>是</p></td><td><p>—</p></td><td><p>部署任务 ID。</p></td></tr></tbody></table>
 <p><strong>JSON 请求体</strong></p>
