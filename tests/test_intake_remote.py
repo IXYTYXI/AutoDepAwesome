@@ -8,6 +8,15 @@ import pytest
 from awesome_deploy.intake_remote import BaseIntake, PlatformClient, PlatformRejected
 
 
+@pytest.mark.parametrize('field', ['base_token', 'table_id'])
+@pytest.mark.parametrize('value', [None, 123, True, [], {}])
+def test_base_intake_identifiers_reject_non_strings_before_transport(field, value):
+    args = {'base_token': 'base1234567890123', 'table_id': 'tbl12345678'}
+    args[field] = value
+    with pytest.raises(ValueError, match='多维表格标识无效'):
+        BaseIntake(object(), **args, client=object())
+
+
 def test_platform_client_uses_one_key_for_submission_and_reads_status(tmp_path):
     token_file = tmp_path / 'token'
     token_file.write_text('adp_example')

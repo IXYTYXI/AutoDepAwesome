@@ -3,12 +3,13 @@
 import json
 from pathlib import Path
 import re
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 import uuid
 
 import httpx
 
 from .base_sync import BASE_ORIGIN, BaseRemote, BaseSyncError
+from .config_validation import validate_http_origin
 from .feishu import _read_secret
 
 
@@ -28,10 +29,7 @@ class PlatformUnavailable(ConnectionError):
 
 class PlatformClient:
     def __init__(self, origin: str, token_file: Path, *, client=None):
-        parts = urlsplit(origin)
-        if (parts.scheme != 'https' or not parts.hostname or parts.username or parts.password
-                or parts.path not in ('', '/') or parts.query or parts.fragment):
-            raise ValueError('平台地址必须是 HTTPS 站点根地址。')
+        validate_http_origin(origin)
         self.origin = origin.rstrip('/')
         self.token_file = token_file
         self.client = client or httpx.Client(timeout=httpx.Timeout(10, connect=5),
@@ -88,8 +86,9 @@ def _text(value):
 
 class BaseIntake(BaseRemote):
     def __init__(self, settings, base_token, table_id, *, client=None):
-        if not re.fullmatch(r'[A-Za-z0-9]{16,80}', base_token) or not re.fullmatch(
-                r'tbl[A-Za-z0-9]{8,80}', table_id):
+        if (not isinstance(base_token, str) or not isinstance(table_id, str)
+                or not re.fullmatch(r'[A-Za-z0-9]{16,80}', base_token) or not re.fullmatch(
+                r'tbl[A-Za-z0-9]{8,80}', table_id)):
             raise ValueError('多维表格标识无效')
         super().__init__(settings, {'base_token': base_token}, client=client)
         self.path = f'{BASE_ORIGIN}/open-apis/bitable/v1/apps/{base_token}/tables/{table_id}/records'

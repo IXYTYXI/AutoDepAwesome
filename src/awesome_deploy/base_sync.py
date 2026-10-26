@@ -230,9 +230,12 @@ def load_base_config(path: Path):
         raise BaseSyncError('无法读取多维表格同步配置') from None
     if not isinstance(value, dict) or set(value) != {'base_token', 'app_table_id', 'deployment_table_id'}:
         raise BaseSyncError('多维表格同步配置字段错误')
-    if not re.fullmatch(r'[A-Za-z0-9]{16,80}', value['base_token']) or any(
+    if not all(isinstance(item, str) for item in value.values()) or not re.fullmatch(
+            r'[A-Za-z0-9]{16,80}', value['base_token']) or any(
             not re.fullmatch(r'tbl[A-Za-z0-9]{8,80}', value[k]) for k in ('app_table_id', 'deployment_table_id')):
         raise BaseSyncError('多维表格同步配置标识错误')
+    if value['app_table_id'] == value['deployment_table_id']:
+        raise BaseSyncError('应用表与部署记录表必须使用不同的表 ID')
     return value
 
 

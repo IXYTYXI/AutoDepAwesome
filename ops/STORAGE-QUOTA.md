@@ -1,8 +1,8 @@
 # XFS 业务存储硬配额
 
-代码版本 0.8.0，基于平台 0.7.0。依据：[审查后的存储硬配额设计](https://guanghe.feishu.cn/docx/Cy1Tdi4qwo4lHoxqXqic6Wndnrl)。
+本文始于代码版本 0.8.0、平台 0.7.0 的初始实施记录，后续安装仍须按当前配置和下文检查项核验。依据：[审查后的存储硬配额设计](https://guanghe.feishu.cn/docx/Cy1Tdi4qwo4lHoxqXqic6Wndnrl)。
 
-本次交付包含代码、模拟故障测试和运维模板。**尚未部署，也未完成真实 Linux/XFS/Rootless Docker 验收。** `DEC-QUOTA-001` 仍待确认，原硬配额准入要求未取消。默认 `storage_backend: local` 保持原行为，不代表已有卷具备硬配额。
+初始 0.8.0 交付仅包含代码、模拟故障测试和运维模板，当时尚未部署或完成真实 Linux/XFS/Rootless Docker 验收；这段历史说明不代表当前目标机状态，也不代表后续所有故障场景已验收。原硬配额准入要求仍适用。新安装默认 `storage_backend: local`，不会使已有卷自动具备硬配额；是否启用 XFS 应以目标机配置、能力快照和实测记录为准。
 
 ## 支持边界
 

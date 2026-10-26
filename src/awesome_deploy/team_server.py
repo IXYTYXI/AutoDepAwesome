@@ -12,7 +12,9 @@ import uvicorn
 from .feishu import _read_secret
 from .team_client import TeamPlatformClient as TeamPlatformClient, TeamSearchError as TeamSearchError
 from .team_outbox import TeamOutbox
-from .team_sessions import SessionError, SessionUnavailable, load_shared_sessions
+from .team_sessions import (
+    SessionError, SessionUnavailable, load_shared_sessions, session_config_path, validate_session_source,
+)
 from .team_api import TeamAppSearch, TeamOwnerSearch
 
 
@@ -171,9 +173,12 @@ def load_team_outbox(path):
     if not isinstance(cfg, dict) or set(cfg) != fields:
         raise ValueError('同组接入配置字段无效。')
     for name in ('shared_sessions_file', 'database_path', 'platform_token_file', 'intake_token_file'):
-        if not Path(cfg[name]).is_absolute():
-            raise ValueError('配置路径必须为绝对路径。')
-    sessions = load_shared_sessions(cfg['shared_sessions_file'])[cfg['source']]
+        session_config_path(cfg[name])
+    validate_session_source(cfg['source'])
+    registry = load_shared_sessions(cfg['shared_sessions_file'])
+    if cfg['source'] not in registry:
+        raise ValueError('同组接入来源未配置共享会话。')
+    sessions = registry[cfg['source']]
     platform = TeamPlatformClient(cfg['platform_origin'], Path(cfg['platform_token_file']), host=cfg['platform_host'])
     return TeamOutbox(Path(cfg['database_path']), sessions, platform), _read_secret(Path(cfg['intake_token_file']))
 

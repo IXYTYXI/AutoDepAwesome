@@ -306,7 +306,7 @@ curl --user operator --fail-with-body \
   https://awesome.guanghexinzhi.cn/api/v1/deployments/JOB_ID
 ```
 
-部署状态为 `queued`、`running`、`succeeded`、`failed` 或 `recovery_required`，`phase` 单独表示执行阶段。仅 `succeeded` 表示发布并验证完成；是否仍在线以应用当前版本和管理状态为准。清理仅覆盖平台管理的该应用持久卷与秘密配置；不会删除外部数据库、第三方 API 账号、手工备份、部署历史、仓库代码或构建缓存。该服务没有多租户权限系统、审批流或删除应用记录 API；部署的 `recovery_required` 需要运维诊断，不能直接修改数据库标志来跳过回滚和资源确认。下线操作的 `recovery_required` 可使用原数据策略、原请求和同一幂等键显式重试，继续核验原目标；版本变化返回冲突，不会下线更新后的版本。
+部署状态为 `queued`、`running`、`succeeded`、`failed` 或 `recovery_required`，`phase` 单独表示执行阶段。仅 `succeeded` 表示发布并验证完成；是否仍在线以应用当前版本和管理状态为准。清理仅覆盖平台管理的该应用持久卷与秘密配置；不会删除外部数据库、第三方 API 账号、手工备份、部署历史、仓库代码或构建缓存。当前提供管理员及应用 owner/maintainer/viewer 权限，不提供跨企业租户隔离、审批流或删除应用记录 API；部署的 `recovery_required` 需要运维诊断，不能直接修改数据库标志来跳过回滚和资源确认。下线操作的 `recovery_required` 可使用原数据策略、原请求和同一幂等键显式重试，继续核验原目标；版本变化返回冲突，不会下线更新后的版本。
 
 ## 中文诊断与可选 AI 建议
 
@@ -347,6 +347,6 @@ node --test tests/ui_*.test.cjs
 
 在飞书登录模式下，平台可将应用与部署记录只读镜像到专用多维表格。平台 SQLite 仍是唯一权威；同步故障不会阻断部署。飞书表仅包含应用标识、仓库公开 URL、版本、域名、状态、时间与负责人/提交人，不包含密码、密钥、原始日志或错误详情。应用表「负责人」是飞书人员字段，映射应用当前负责人登录时的 open_id；转移负责人后同步更新。「访问地址」是在线版本完整 HTTPS 根链接，「访问路径」列出当前清单声明的全部路由路径；「服务器部署路径」是该版本的固定源码快照目录，不是容器运行目录或业务数据目录。下线后三列清空；源码目录不存在时，服务器路径清空。
 
-先以平台飞书应用作为 Base 编辑协作者，并授予该应用 `bitable:app` 权限。将 Base token 和「应用」「部署记录」两张表 ID 填入 `/etc/awesome-deploy/base-sync.json`（格式见 `ops/base-sync.example.json`，文件 0600，属主 awesome）。执行 `awesome-deploy --config /etc/awesome-deploy/config.json base-sync --once` 回填并核对，再启用 `ops/awesome-base-sync.service`。使用 `base-sync --status` 查看本地总量、待办与错误数；进程每 15 秒扫描平台状态，变化时更新对应 Base 行。失败指数退避、重启后继续；同一业务 ID 先查找后创建，避免重复。
+先以平台飞书应用作为 Base 编辑协作者，并授予该应用 `bitable:app` 权限。将非空 Base token 和「应用」「部署记录」两个不同的表 ID 填入 `/etc/awesome-deploy/base-sync.json`（格式见 `ops/base-sync.example.json`，标识必须为字符串且符合示例的字段约定；文件 0600，属主 awesome）。执行 `awesome-deploy --config /etc/awesome-deploy/config.json base-sync --once` 回填并核对，再启用 `ops/awesome-base-sync.service`。使用 `base-sync --status` 查看本地总量、待办与错误数；进程每 15 秒扫描平台状态，变化时更新对应 Base 行。失败指数退避、重启后继续；同一业务 ID 先查找后创建，避免重复。
 
 若调用方要求平台不可达时仍保留请求，应在另一台主机运行[独立请求登记服务](docs/intake-relay.md)。它先持久保存请求，再同步尝试写入独立的飞书「部署请求」表，由后台自动按同一幂等键投递；平台现有两张结果镜像表不能作为待投递队列。接入服务和平台不应部署在同一故障域。

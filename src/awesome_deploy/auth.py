@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from .errors import DeployError
+from .config_validation import is_basic_username
 
 ITERATIONS = 600_000
 
@@ -14,9 +15,7 @@ ITERATIONS = 600_000
 def initialize_credentials(path: Path, username: str, password: str) -> None:
     if (
         not 12 <= len(password) <= 1024
-        or not 1 <= len(username) <= 128
-        or ":" in username
-        or any(not 33 <= ord(char) <= 126 for char in username)
+        or not is_basic_username(username)
         or any(not 32 <= ord(char) <= 126 for char in password)
     ):
         raise DeployError(

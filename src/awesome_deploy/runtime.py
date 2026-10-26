@@ -22,6 +22,7 @@ import tempfile
 import time
 
 from .errors import DeployError
+from .config_validation import is_runtime_user
 from .gateway import Gateway
 from .port_forward import RootlessPortForwarder
 from .processes import run_command, http_status
@@ -98,7 +99,7 @@ class DeploymentBackend:
             )
 
     def _runtime_preflight(self, timeout=120, deadline=None):
-        if not re.fullmatch(r"[1-9][0-9]*(?::[1-9][0-9]*)?", self.settings.runtime_user):
+        if not is_runtime_user(self.settings.runtime_user):
             raise DeployError("HOST_UNSAFE", "Runtime user must be a numeric nonroot UID and GID")
         self._check_socket()
         info = json.loads(self._docker(["info", "--format", "{{json .}}"], timeout=timeout))

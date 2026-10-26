@@ -12,7 +12,9 @@ import secrets
 import time
 from urllib.parse import urlsplit
 
+from .config_validation import is_nonempty_text
 from .feishu import _read_secret
+from .feishu_identifiers import is_valid_feishu_app_id, is_valid_feishu_tenant_key
 
 
 class SessionError(ValueError):
@@ -21,6 +23,22 @@ class SessionError(ValueError):
 
 class SessionUnavailable(RuntimeError):
     pass
+
+
+def _validate_namespace(app_id, tenant_key):
+    if not is_valid_feishu_app_id(app_id) or not is_valid_feishu_tenant_key(tenant_key):
+        raise ValueError('共享会话飞书应用或企业标识无效。')
+
+
+def validate_session_source(source):
+    if not isinstance(source, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,39}', source):
+        raise ValueError('共享会话来源无效。')
+
+
+def session_config_path(value):
+    if not is_nonempty_text(value) or not Path(value).is_absolute():
+        raise ValueError('配置路径必须为不含不可打印字符的绝对路径。')
+    return Path(value)
 
 
 def canonical(value):
@@ -44,7 +62,9 @@ def deployment_body(value):
 
 class SharedSessions:
     def __init__(self, redis, *, source, key, app_id, tenant_key, clock=time.time):
-        if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,39}', source) or len(key) < 32:
+        validate_session_source(source)
+        _validate_namespace(app_id, tenant_key)
+        if not isinstance(key, bytes) or len(key) < 32:
             raise ValueError('共享会话来源或签名密钥无效。')
         self.redis, self.source, self.key = redis, source, key
         self.app_id, self.tenant_key, self.clock = app_id, tenant_key, clock
@@ -152,20 +172,35 @@ def load_shared_sessions(path):
                     'feishu_app_id', 'tenant_key'}
         if not isinstance(item, dict) or set(item) != required:
             raise ValueError('共享会话配置字段无效。')
-        u = urlsplit(item['redis_url'])
-        if (u.scheme not in ('redis', 'rediss') or not u.hostname or u.username or u.password
+        validate_session_source(item['source'])
+        _validate_namespace(item['feishu_app_id'], item['tenant_key'])
+        if (not isinstance(item['redis_username'], str) or not item['redis_username']
+                or any(not 33 <= ord(c) <= 126 for c in item['redis_username'])):
+            raise ValueError('Redis ACL 用户名必须为非空且不含空白的 ASCII 字符串。')
+        raw_url = item['redis_url']
+        if (not isinstance(raw_url, str) or not raw_url
+                or any(c in raw_url for c in ('\\', '?', '#'))
+                or any(c.isspace() or not c.isprintable() for c in raw_url)):
+            raise ValueError('Redis 地址格式无效。')
+        try:
+            u = urlsplit(raw_url)
+            port = u.port
+        except ValueError:
+            raise ValueError('Redis 地址格式无效。') from None
+        if (u.scheme not in ('redis', 'rediss') or not u.hostname
+                or u.username is not None or u.password is not None
+                or u.netloc.endswith(':') or port is not None and not 1 <= port <= 65535
                 or u.query or u.fragment or not re.fullmatch(r'/[0-9]{1,2}', u.path)
                 or u.scheme == 'redis' and u.hostname not in ('127.0.0.1', '::1', 'localhost')):
             raise ValueError('Redis 仅本机可使用 redis://；远端必须 rediss://，凭证通过文件配置。')
         for field in ('redis_password_file', 'signing_key_file'):
-            if not Path(item[field]).is_absolute():
-                raise ValueError('密钥文件必须使用绝对路径。')
-        client = redis.Redis.from_url(item['redis_url'], username=item['redis_username'],
-            password=_read_secret(Path(item['redis_password_file'])), socket_timeout=2,
-            socket_connect_timeout=2, decode_responses=True, max_connections=16)
+            session_config_path(item[field])
         source = item['source']
         if source in result:
             raise ValueError('共享会话来源重复。')
+        client = redis.Redis.from_url(item['redis_url'], username=item['redis_username'],
+            password=_read_secret(Path(item['redis_password_file'])), socket_timeout=2,
+            socket_connect_timeout=2, decode_responses=True, max_connections=16)
         result[source] = SharedSessions(client, source=source,
             key=_read_secret(Path(item['signing_key_file'])).encode(),
             app_id=item['feishu_app_id'], tenant_key=item['tenant_key'])

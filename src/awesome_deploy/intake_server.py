@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 import uvicorn
 
 from .config import Settings
+from .config_validation import is_nonempty_text
 from .feishu import _read_secret
 from .feishu_identifiers import is_valid_feishu_app_id
 from .intake_relay import IntakeError, IntakeRelay
@@ -98,8 +99,8 @@ def load_relay(config_path):
         raise ValueError('接入服务配置字段错误。')
     for key in ('database_path', 'platform_token_file', 'intake_token_file',
                 'integrity_key_file', 'feishu_app_secret_file'):
-        if not isinstance(values[key], str) or not Path(values[key]).is_absolute():
-            raise ValueError(f'{key} 必须是绝对路径。')
+        if not is_nonempty_text(values[key]) or not Path(values[key]).is_absolute():
+            raise ValueError(f'{key} 必须是不含不可打印字符的绝对路径。')
     if not is_valid_feishu_app_id(values['feishu_app_id']):
         raise ValueError('飞书 App ID 无效。')
     token = _read_secret(Path(values['intake_token_file']))

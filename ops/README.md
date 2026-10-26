@@ -17,6 +17,18 @@
 
 修改配置中的 `<UID>` 时写入实际数字；JSON 不会展开 shell 变量或占位符。
 
+### 配置文件校验约定
+
+平台主配置只接受已声明的字段。`state_dir` 必须是非空路径，不能填 `null`；可选文件项只有允许省略时才能用 `null`，空字符串、错误类型和控制字符都会拒绝。主配置的相对路径以配置文件所在目录解析；合法目录名中的空格不会被删掉。`egress_docker_pid_file` 例外，必须是没有 `..` 段的绝对路径。同组接入服务与共享会话 registry 的数据库、配置和密钥文件路径均须是非空绝对路径。
+
+`public_url` 必须是完整的 HTTPS 原点，例如 `https://deploy.example.com`，允许尾部 `/`，不允许子路径、URL 用户名/密码、查询参数、片段、空白或反斜杠。兼容 Basic 模式可使用 `http://127.0.0.1:8088`、`http://localhost:8088` 或 `http://[::1]:8088`；飞书模式必须使用 HTTPS。显式端口为 1–65535。`listen_port` 为 1–65535；应用映射范围必须满足 `1024 <= port_start <= port_end <= 65535`，并与网关一致。`base_domain` 使用小写 ASCII 域名，总长不超过 253 字符。
+
+`git_hosts` 是非空主机名数组，不带协议、端口或路径；大小写统一转成小写后匹配仓库域名。自建 GitLab 域名须显式加入；允许主机并不会自动配置仓库凭证。`gateway_command` 是直接执行的参数数组，不经过 shell；不能用空项或控制字符，不能靠一整段 shell 命令替代参数。`storage_command` 固定为示例中的受限 helper 入口。
+
+`runtime_user` 必须是非 root 的正整数 UID，或正整数 `UID:GID`，不能填用户名、0 或负数；启用 `xfs-project` 时必须明确为 `UID:GID`，每部分 1–10 位数字，并与存储 helper 配置一致。内存、容量及 git_timeout/build_timeout/health_timeout 须为正整数（CPU 可为有限正数）；`max_app_memory_mib` 与全平台 `max_memory_mib` 是两个同时生效的预算，不会自动扩容或修改已有容器。
+
+配置示例中的 `cli_REPLACE`、tenant、表 ID、文件路径均须替换为实际值；不要把占位符当作可部署配置。飞书 App ID 的平台格式为 `cli_` 后接 1–80 个 ASCII 字母或数字；tenant 标识为 1–128 个 ASCII 字母、数字、下划线或中划线，A/B 两侧必须相同。多维表格同步配置的标识均为字符串，「应用」与「部署记录」必须使用不同的表 ID。主配置与同组来源配置修改后，应按实际受影响服务重启并检查；字段校验通过不代表网络、文件权限或目标服务已验收。
+
 | 路径 | 归属与用途 |
 | --- | --- |
 | `/opt/awesome-deploy` | 管理员维护的代码和 `.venv`，服务账号只需读取和执行 |

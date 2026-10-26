@@ -10,11 +10,11 @@ from pathlib import Path
 import re
 import sys
 import time
-from urllib.parse import urlsplit
 
 from .auth import initialize_credentials
 from .config import (Settings, validate_ai_settings, validate_git_proxy_settings, validate_storage_settings,
-                     validate_identity_settings, validate_vault_settings)
+                     validate_identity_settings, validate_vault_settings, validate_execution_settings)
+from .config_validation import is_nonempty_text, validate_http_origin
 from .errors import DeployError
 
 
@@ -31,10 +31,14 @@ def load_settings(path: Path | None) -> Settings:
     if not isinstance(values, dict) or set(values) - {f.name for f in dataclasses.fields(Settings)}:
         raise DeployError("INVALID_CONFIG", "运维配置包含未知字段或不是对象。")
     for key in ("state_dir", "auth_file", "rootlesskit_socket", "ai_api_key_file", "egress_docker_pid_file", "feishu_app_secret_file", "secret_kek_file", "shared_sessions_file"):
+        if key == "state_dir" and key in values and values[key] is None:
+            raise DeployError("INVALID_CONFIG", "state_dir 必须是非空路径。")
         if key in values and values[key] is not None:
+            if not is_nonempty_text(values[key]):
+                raise DeployError("INVALID_CONFIG", f"{key} 必须是非空路径。")
             try:
                 candidate = Path(values[key]).expanduser()
-            except TypeError as exc:
+            except (TypeError, ValueError, RuntimeError) as exc:
                 raise DeployError("INVALID_CONFIG", f"{key} 必须是路径。") from exc
             if key == "egress_docker_pid_file":
                 if not candidate.is_absolute() or any(part == ".." for part in candidate.parts):
@@ -52,10 +56,17 @@ def load_settings(path: Path | None) -> Settings:
             if (
                 not isinstance(values[key], list)
                 or not values[key]
-                or not all(isinstance(v, str) for v in values[key])
+                or not all(is_nonempty_text(v) for v in values[key])
             ):
                 raise DeployError("INVALID_CONFIG", f"{key} 必须是非空字符串数组。")
             values[key] = tuple(values[key])
+    if "git_hosts" in values:
+        hosts = tuple(host.lower() for host in values["git_hosts"])
+        if any(len(host) > 253 or any(not re.fullmatch(
+            r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label
+        ) for label in host.split(".")) for host in hosts):
+            raise DeployError("INVALID_CONFIG", "git_hosts 必须仅包含主机名，不含协议、路径或端口。")
+        values["git_hosts"] = hosts
     for key in ("runtime_dns", "runtime_blocked_ips"):
         if key in values:
             if not isinstance(values[key], list) or not all(isinstance(v, str) for v in values[key]):
@@ -70,6 +81,7 @@ def load_settings(path: Path | None) -> Settings:
         validate_storage_settings(settings)
         validate_identity_settings(settings)
         validate_vault_settings(settings)
+        validate_execution_settings(settings)
         from .egress import policy
 
         try:
@@ -100,30 +112,17 @@ def load_settings(path: Path | None) -> Settings:
             or settings.max_cpu <= 0
         ):
             raise ValueError("CPU limit")
-        if not 1 <= settings.port_start <= settings.port_end <= 65535 or settings.listen_port > 65535:
+        if not 1024 <= settings.port_start <= settings.port_end <= 65535 or settings.listen_port > 65535:
             raise ValueError("ports")
-        if not re.fullmatch(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", settings.base_domain):
+        if (not isinstance(settings.base_domain, str) or len(settings.base_domain) > 253
+                or not re.fullmatch(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", settings.base_domain)):
             raise ValueError("domain")
         if settings.build_network != "none":
             raise ValueError("build network")
-        public = urlsplit(settings.public_url)
-        if not public.hostname or (public.port is not None and not 1 <= public.port <= 65535):
-            raise ValueError("public URL host and port")
-        if (
-            public.username
-            or public.password
-            or public.query
-            or public.fragment
-            or public.path not in ("", "/")
-        ):
-            raise ValueError("public URL")
-        if public.scheme != "https" and not (
-            public.scheme == "http" and public.hostname in ("127.0.0.1", "localhost")
-        ):
-            raise ValueError("HTTP only allowed for loopback")
+        validate_http_origin(settings.public_url, allow_loopback_http=True)
         if not isinstance(settings.docker_host, str) or not settings.docker_host.startswith("unix:///"):
             raise ValueError("local rootless Docker socket required")
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise DeployError("INVALID_CONFIG", "运维配置中的域名、URL、端口、资源限制、网络或 AI 配置无效。") from exc
     return settings
 

@@ -4,7 +4,8 @@ from pathlib import Path
 import re
 from urllib.parse import urlsplit
 
-from .feishu_identifiers import is_valid_feishu_app_id
+from .feishu_identifiers import is_valid_feishu_app_id, is_valid_feishu_tenant_key
+from .config_validation import is_basic_username, is_nonempty_text, is_runtime_user, validate_http_origin
 
 
 @dataclass(frozen=True)
@@ -85,13 +86,22 @@ def validate_identity_settings(settings: Settings) -> None:
             raise ValueError("Feishu settings require explicit Feishu mode")
         return
     if (not is_valid_feishu_app_id(settings.feishu_app_id)
-            or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", settings.feishu_tenant_key)
+            or not is_valid_feishu_tenant_key(settings.feishu_tenant_key)
             or not isinstance(settings.feishu_app_secret_file, Path)):
         raise ValueError("Feishu identity settings")
-    public = urlsplit(settings.public_url)
-    if (public.scheme != "https" or not public.hostname or public.username or public.password
-            or public.query or public.fragment or public.path not in ("", "/")):
-        raise ValueError("Feishu login requires a fixed HTTPS origin")
+    validate_http_origin(settings.public_url)
+
+
+def validate_execution_settings(settings: Settings) -> None:
+    for value in (settings.docker_binary, settings.builder_name):
+        if not is_nonempty_text(value):
+            raise ValueError("execution command or builder name")
+    if settings.git_askpass is not None and not is_nonempty_text(settings.git_askpass):
+        raise ValueError("Git askpass command")
+    if not is_runtime_user(settings.runtime_user):
+        raise ValueError("runtime user must be a numeric non-root UID, optionally with GID")
+    if not is_basic_username(settings.admin_user):
+        raise ValueError("administrator username")
 
 
 def validate_vault_settings(settings: Settings) -> None:

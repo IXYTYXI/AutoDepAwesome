@@ -1,11 +1,36 @@
 from concurrent.futures import ThreadPoolExecutor
+import json
 from threading import Event
 
 from fastapi.testclient import TestClient
 import pytest
 
 from awesome_deploy.intake_relay import IntakeRelay
-from awesome_deploy.intake_server import create_app
+from awesome_deploy.intake_server import create_app, load_relay
+
+
+@pytest.mark.parametrize('field', ['database_path', 'platform_token_file', 'intake_token_file',
+                                  'integrity_key_file', 'feishu_app_secret_file'])
+@pytest.mark.parametrize('value', [None, 123, '', 'relative', '/tmp/SENSITIVE_VALUE\x00',
+                                  '/tmp/SENSITIVE_VALUE\n', '/tmp/SENSITIVE_VALUE\u200b'])
+def test_relay_rejects_invalid_paths_before_reading_credentials(tmp_path, monkeypatch, field, value):
+    config = dict(database_path='/tmp/database.sqlite3', platform_origin='https://deploy.example.test',
+                  platform_token_file='/tmp/platform-token', intake_token_file='/tmp/intake-token',
+                  integrity_key_file='/tmp/integrity-key', feishu_app_id='cli_test',
+                  feishu_app_secret_file='/tmp/app-secret', base_token='base1234567890123',
+                  intake_table_id='tbl12345678')
+    config[field] = value
+    path = tmp_path / 'intake.json'
+    path.write_text(json.dumps(config))
+
+    def unexpected_secret_read(_path):
+        raise AssertionError('invalid paths must be rejected before reading credentials')
+
+    monkeypatch.setattr('awesome_deploy.intake_server._read_secret', unexpected_secret_read)
+    with pytest.raises(ValueError) as error:
+        load_relay(path)
+    assert field in str(error.value)
+    assert 'SENSITIVE_VALUE' not in str(error.value)
 
 
 class Platform:

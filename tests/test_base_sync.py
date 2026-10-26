@@ -2,7 +2,60 @@ import json
 import sqlite3
 import time
 
-from awesome_deploy.base_sync import BaseMirror, project_app, project_job
+import pytest
+
+from awesome_deploy.base_sync import BaseMirror, BaseSyncError, load_base_config, project_app, project_job
+
+
+def base_config():
+    return {'base_token': 'base1234567890123', 'app_table_id': 'tbl12345678',
+            'deployment_table_id': 'tbl87654321'}
+
+
+@pytest.mark.parametrize('field', ['base_token', 'app_table_id', 'deployment_table_id'])
+@pytest.mark.parametrize('value', [None, 123, True, [], {}])
+def test_base_config_rejects_non_string_identifiers(tmp_path, field, value):
+    config = base_config()
+    config[field] = value
+    path = tmp_path / 'base.json'
+    path.write_text(json.dumps(config))
+    with pytest.raises(BaseSyncError, match='配置标识错误'):
+        load_base_config(path)
+
+
+def test_base_config_requires_distinct_result_tables(tmp_path):
+    config = base_config()
+    config['deployment_table_id'] = config['app_table_id']
+    path = tmp_path / 'base.json'
+    path.write_text(json.dumps(config))
+    with pytest.raises(BaseSyncError, match='不同'):
+        load_base_config(path)
+
+
+def test_base_config_accepts_valid_distinct_result_tables(tmp_path):
+    path = tmp_path / 'base.json'
+    path.write_text(json.dumps(base_config()))
+    assert load_base_config(path) == base_config()
+
+
+@pytest.mark.parametrize('config', [None, [], {}, {'base_token': 'x' * 16},
+                                  {**base_config(), 'unknown': 'field'}])
+def test_base_config_requires_exact_configuration_fields(tmp_path, config):
+    path = tmp_path / 'base.json'
+    path.write_text(json.dumps(config))
+    with pytest.raises(BaseSyncError, match='配置字段错误'):
+        load_base_config(path)
+
+
+@pytest.mark.parametrize('field,value', [('base_token', 'x' * 15), ('base_token', 'x' * 81),
+                                         ('app_table_id', 'tblshort'), ('deployment_table_id', 'tblbad_id')])
+def test_base_config_rejects_invalid_identifier_formats(tmp_path, field, value):
+    config = base_config()
+    config[field] = value
+    path = tmp_path / 'base.json'
+    path.write_text(json.dumps(config))
+    with pytest.raises(BaseSyncError, match='配置标识错误'):
+        load_base_config(path)
 
 
 class FakeBase:

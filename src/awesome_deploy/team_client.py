@@ -1,10 +1,11 @@
 """Source-authenticated transport for delegated deployments and applicant searches."""
 
-from urllib.parse import urlsplit
+import re
 
 import httpx
 
 from .feishu import FeishuUnavailable
+from .config_validation import validate_http_origin
 from .intake_remote import PlatformClient, PlatformRejected, PlatformUnavailable
 from .team_sessions import request_key
 
@@ -17,13 +18,10 @@ class TeamSearchError(Exception):
 
 class TeamPlatformClient(PlatformClient):
     def __init__(self, origin, token_file, *, host=None, client=None):
-        parts = urlsplit(origin)
-        if (parts.scheme not in ('http', 'https') or not parts.hostname
-                or parts.username or parts.password or parts.query or parts.fragment
-                or parts.path not in ('', '/')
-                or parts.scheme == 'http' and parts.hostname not in ('127.0.0.1', '::1', 'localhost')):
-            raise ValueError('平台地址只允许本机 HTTP 或 HTTPS。')
-        if host is not None and (not isinstance(host, str) or not host or any(c in host for c in '/\r\n :')):
+        validate_http_origin(origin, allow_loopback_http=True)
+        if host is not None and (not isinstance(host, str) or len(host) > 253 or not re.fullmatch(
+                r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+                r'(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?', host)):
             raise ValueError('Host 必须是纯域名。')
         self.origin, self.token_file, self.host = origin.rstrip('/'), token_file, host
         self.client = client or httpx.Client(timeout=httpx.Timeout(10, connect=3),
