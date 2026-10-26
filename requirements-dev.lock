@@ -23,6 +23,7 @@ pydantic_core==2.50.1
 Pygments==2.21.0
 pytest==9.1.1
 PyYAML==6.0.3
+redis==6.4.0
 referencing==0.37.0
 rpds-py==2026.9.1
 ruff==0.17.0
