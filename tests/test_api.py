@@ -1,3 +1,5 @@
+from importlib.metadata import version
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -22,6 +24,13 @@ def headers(key="request-1"):
 
 AUTH = ("operator", "long-test-password")
 BODY = {"repository": "https://github.com/org/repo.git", "ref": "main", "subdomain": "demo"}
+
+
+def test_openapi_info_uses_installed_platform_version(client):
+    response = client.get("/api/v1/openapi.json", auth=AUTH)
+
+    assert response.status_code == 200
+    assert response.json()["info"]["version"] == version("awesome-deploy")
 
 
 def test_management_endpoints_are_protected(client):
