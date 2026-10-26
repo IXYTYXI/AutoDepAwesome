@@ -1,5 +1,5 @@
 <h1>同组网页项目接入 Awesome Deploy API｜后端实施手册</h1>
-<p>适用版本 0.11.3，更新于 2026-10-23。本文面向同组项目开发者和 AI：A/B 先同机部署，Redis 可迁移。A 业务项目尚未创建，本次交付可接入组件、项目搜索和进度查询能力，不代表 A 已完成真实登录联调。</p>
+<p>适用版本 0.11.4，更新于 2026-10-26。本文面向同组项目开发者和 AI：A/B 先同机部署，Redis 可迁移。A 业务项目尚未创建，本次交付可接入组件、项目搜索和进度查询能力，不代表 A 已完成真实登录联调。</p>
 <aside class="manual-callout"><p>浏览器只访问 A；内部接入凭证、平台来源凭证、签名受理凭据均不得下发到前端。A 返回 202 表示申请已保存，B 返回 202 表示部署已入队，都不代表上线成功。</p></aside>
 <h2 id="doxcnYGpk2ivYz29vaz0uC4itWg" tabindex="-1">1. 服务与身份</h2>
 <p>A 是同组项目的后端，B 是 Awesome Deploy。A 可以使用自己已验证的登录态，也可以继承可信上游服务验证过的实际用户身份：后者必须通过可信的服务端登录校验取得身份和剩余有效期，再用受保护的内部凭证签发共享会话，不能接收浏览器自报的 openId、角色或负责人。会话存 Redis，默认 8 小时绝对过期，可配置更短时间，无滑动续期。B 验证来源凭证及共享身份，按实际用户在 B 中的本地权限搜索和部署。只接受与 B 相同飞书 App ID、tenant_key 的 open_id；不同 App 的 open_id 不能直接互换，也不按姓名匹配。</p>
@@ -28,6 +28,39 @@ Idempotency-Key: project-a-request-001
 <p>B 接收后 jobId、appId 非空，A 外层状态 submitted。部署排队、执行阶段和结果看 deployment；同组调用方可按第 2.2 节返回的 pollAfterSeconds 查询进度。202、pending、submitted 都不表示已上线。</p>
 <p>更新已有应用：仍提交 POST /requests，在 deployment 中加入 appId，仓库与当前绑定域名须匹配，申请人必须有该应用的部署权限。deployment.ref 可省略，默认 main；显式传入其他分支、标签或完整 commit 时按指定版本部署。页面“项目名称”对应 deployment.subdomain：1–7 位小写字母、数字或中划线，首尾为字母或数字，不含中文、空格或大写字母，并与 awesome.yaml 的 app.subdomain 一致。每次新部署新请求 ID；同次超时重试始终保留 ID 和请求内容。请求 ID 为 1–128 位 <code translate="no">[A-Za-z0-9._:-]</code>。一次来源凭证可持续创建和更新多个获授权应用，没有累计申请数量上限；现有 worker 仍串行执行，受资源硬配额限制。</p>
 <h3 id="doxcnPIfdCdKDQ0wRxsVOx566oc" tabindex="-1">2.1 搜索项目并更新部署</h3>
+<h4 id="doxcnk3nWnqdklUSwZHpCuEl7Zc" tabindex="-1">2.1.1 按负责人查找项目</h4>
+<p>普通用户只能查询本人拥有或明确授予 maintainer 权限的项目及其相关负责人；管理员可查询全部项目及其相关负责人。该接口不提供全员通讯录，没有项目或没有可见项目的人员不会出现。姓名可能重复，必须按 ownerId 区分并由操作者确认目标，不能自动选第一项。</p>
+<p>sessionId 表示当前操作者，ownerId 表示要筛选的当前项目负责人。ownerId 是平台用户 ID，不是飞书 open_id，也不是来源凭证持有人 ID。查询负责人不会切换登录身份、授予权限或改变项目归属。</p>
+<p>A 使用内部接入 Bearer 调用 POST http://127.0.0.1:8099/owners/search。B 对应接口是 POST /api/v1/integrations/owners/search，使用专用来源 Bearer。两层 JSON 相同。</p>
+<pre tabindex="0" aria-label="代码示例"><code translate="no">{
+  &quot;sessionId&quot;: &quot;REPLACE_WITH_SHARED_SESSION_ID&quot;,
+  &quot;query&quot;: &quot;示例用户&quot;,
+  &quot;limit&quot;: 20,
+  &quot;offset&quot;: 0
+}</code></pre>
+<pre tabindex="0" aria-label="代码示例"><code translate="no">{
+  &quot;items&quot;: [
+    {
+      &quot;ownerId&quot;: &quot;33333333333333333333333333333333&quot;,
+      &quot;displayName&quot;: &quot;示例用户&quot;
+    }
+  ],
+  &quot;total&quot;: 1,
+  &quot;limit&quot;: 20,
+  &quot;offset&quot;: 0,
+  &quot;nextOffset&quot;: null
+}</code></pre>
+<p>确认负责人后，使用当前操作者的同一 sessionId 调用 POST /apps/search：</p>
+<pre tabindex="0" aria-label="代码示例"><code translate="no">{
+  &quot;sessionId&quot;: &quot;REPLACE_WITH_SHARED_SESSION_ID&quot;,
+  &quot;ownerId&quot;: &quot;33333333333333333333333333333333&quot;,
+  &quot;query&quot;: &quot;&quot;,
+  &quot;limit&quot;: 20,
+  &quot;offset&quot;: 0
+}</code></pre>
+<p>ownerId 可选，省略或 null 保持原搜索范围；传入时为 1–128 字符非空、非纯空白平台用户 ID。query 在负责人搜索中匹配姓名或 ID，在项目搜索中匹配项目名称、仓库或 appId。两者均最多 200 字符；limit 默认 20、范围 1–20；offset 默认 0、范围 0–1000000。先按权限过滤，再筛选和分页；未知或不可见负责人返回空结果。</p>
+<p>未分配负责人的历史项目仅管理员可见，应用结果的 ownerId/ownerName 为 null，负责人候选列表不会伪造一个用户。负责人账号停用不删除其项目或历史归属；操作权限取决于当前操作者。查找和筛选不会创建任务，不要求 Idempotency-Key。</p>
+<h4 id="doxcnM55aWoNzsJ6Lp4Kfysk0zJ" tabindex="-1">2.1.2 搜索项目与更新部署</h4>
 <p>A 后端调用 <code translate="no">POST http://127.0.0.1:8099/apps/search</code>，携带内部接入 Bearer；适配服务使用平台专用委托来源凭证调用 B 的 <code translate="no">POST /api/v1/integrations/apps/search</code>。两层请求体相同，<strong>sessionId 必填</strong>，只能取自已验证的服务端登录上下文，放入 JSON，不放在 URL。查询时实时读取 Redis 检查会话，不接受 receipt 代替，也不能省略会话改用无用户服务身份。所有这些接口仅供后端，内部接入凭证与来源凭证不能发送到浏览器。</p>
 <pre tabindex="0" aria-label="代码示例"><code translate="no">POST /apps/search HTTP/1.1
 Host: 127.0.0.1:8099
@@ -44,7 +77,9 @@ Content-Type: application/json
       &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,
       &quot;subdomain&quot;: &quot;demo&quot;,
       &quot;lastSubdomain&quot;: &quot;demo&quot;,
-      &quot;domainBound&quot;: true
+      &quot;domainBound&quot;: true,
+      &quot;ownerId&quot;: &quot;33333333333333333333333333333333&quot;,
+      &quot;ownerName&quot;: &quot;示例用户&quot;
     }
   ],
   &quot;total&quot;: 1,
@@ -52,7 +87,7 @@ Content-Type: application/json
   &quot;offset&quot;: 0,
   &quot;nextOffset&quot;: null
 }</code></pre>
-<p>先按实际用户的部署权限过滤，再计算 total 和分页，因此不能通过总数推断其他人的项目。nextOffset 为下一页偏移；null 表示没有下一页。下一页保持 query、limit 和会话不变，offset 使用 nextOffset。来源凭证即使绑定管理员，也不会扩大实际用户的搜索范围；能搜索到不保证提交时权限或域名未发生变化，部署接口仍重新校验。账号失效或 can_deploy=false 时拒绝访问，不以空列表掩盖权限问题。</p>
+<p>先按实际用户的部署权限过滤，再按 ownerId、query 筛选并计算 total 和分页，因此不能通过总数推断其他人的项目。nextOffset 为下一页偏移；null 表示没有下一页。下一页保持 ownerId、query、limit 和会话不变，offset 使用 nextOffset。来源凭证即使绑定管理员，也不会扩大实际用户的搜索范围；能搜索到不保证提交时权限或域名未发生变化，部署接口仍重新校验。账号失效或 can_deploy=false 时拒绝访问，不以空列表掩盖权限问题。</p>
 <p>domainBound=true 时，更新保留返回的 repository、subdomain，并携带 appId。domainBound=false 时 subdomain=null，lastSubdomain 只是曾用名称，不代表现在仍可用；先选择空闲且符合 awesome.yaml 的项目名称，不能直接把 null 或历史名称当作已保留域名提交。搜索结果只供选择，出现多个匹配时必须由用户明确选择 appId。</p>
 <p>搜索不创建部署请求，不使用 Idempotency-Key，也不会进入部署队列。会话失效返回 401，来源凭证过期/撤销也可能返回 401；先核对用户会话，来源凭证由运维轮换。权限拒绝为 403，参数错误为 422，Redis 或 B 暂不可用为 503。不可用时应显示查询失败，不把错误当成空列表；无须申请额外飞书通讯录权限。</p>
 <p>以下连贯示例演示“搜索 → 选定 appId → 更新 → 查询进度”。authenticated_user 与 deployment_request 是 A 自己的已验证登录对象及持久业务记录，需要接入实际代码；这是后端集成示例，不是可直接粘到浏览器执行的脚本。HTTP 错误应交给 A 处理并向用户展示：搜索失败不提交，POST 响应不明时保留相同业务 ID 与请求内容重试，GET 失败时稍后恢复查询。</p>

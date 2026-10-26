@@ -122,6 +122,9 @@ test('save precedes a fresh deployment with the failed task identity and clears 
   assert.deepEqual(JSON.parse(writes[0].options.body),{values:{password:'private-password'}});
   assert.deepEqual(JSON.parse(writes[1].options.body),{repository:job.repository,ref:job.ref,subdomain:job.subdomain,appId:'original-app'});
   assert.equal(password.value,'');assert.equal(h.input('MASTER_KEY'),undefined);
+  assert.equal(h.get('submit').disabled,true);
+  await h.get('deploy-form').listeners.submit({preventDefault(){}});
+  assert.equal(h.calls.filter(call=>call.url==='/api/v1/deployments' && call.options.method==='POST').length,1);
 });
 
 test('a failed deployment submission retries the same key without saving or generating again',async()=>{
@@ -173,7 +176,11 @@ test('continuation identity survives a page reload and differs for a new failed 
   const original=await harness();const before=await submit(original,job);
   const reloaded=await harness();reloaded.run('crypto.randomUUID();crypto.randomUUID()');
   assert.equal(await submit(reloaded,job),before);
-  assert.notEqual(await submit(reloaded,{...job,id:'failed-next'}),before);
+  // A response-lost request must be resolved before another failed task can continue.
+  const attempts=reloaded.calls.filter(call=>call.url==='/api/v1/deployments' && call.options.method==='POST').length;
+  await submit(reloaded,{...job,id:'failed-next'});
+  assert.equal(reloaded.calls.filter(call=>call.url==='/api/v1/deployments' && call.options.method==='POST').length,attempts);
+  const next=await harness();assert.notEqual(await submit(next,{...job,id:'failed-next'}),before);
 });
 
 test('GET failure is visible and retryable; saving failure never starts a deployment',async()=>{
@@ -194,6 +201,18 @@ test('late save after navigating away cannot submit or overwrite the new task',a
   await h.show({...job,id:'other',error:null});finish(response({...requirements(),items:[]}));await pending;
   assert.equal(h.calls.filter(call=>call.url==='/api/v1/deployments' && call.options.method==='POST').length,0);
   assert.ok(h.nodes().some(node=>node.textContent.startsWith('demo ·')));
+});
+
+test('switching accounts during a secret save clears its draft and cannot continue the old deployment',async()=>{
+  const h=await harness();let userId='member-one',finish;
+  h.context.window={AwesomeAuth:{session:()=>({mode:'feishu',canDeploy:true,userId}),fetch:h.context.fetch}};
+  h.handler=secretRouter(requirements(),()=>new Promise(resolve=>{finish=resolve;}));await h.show();
+  const password=h.input('password');password.value='old-account-password';
+  const pending=h.button('保存并继续部署').listeners.click();await tick();
+  userId='member-two';h.run('syncDeployPermission()');assert.equal(password.value,'');
+  finish(response({...requirements(),items:requirements().items.map(item=>({...item,state:'configured'}))}));await pending;
+  assert.equal(h.calls.filter(call=>call.url==='/api/v1/deployments' && call.options.method==='POST').length,0);
+  assert.equal(h.run('secretEditor'),null);
 });
 
 test('partial saving refreshes state, clears only saved fields and keeps unsaved drafts',async()=>{

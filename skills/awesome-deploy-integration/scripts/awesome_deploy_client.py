@@ -153,14 +153,31 @@ class AwesomeDeployClient:
             raise ClientError("接口未确认共享会话已撤销。")
         return result
 
-    def search_apps(self, session_id, *, query="", limit=20, offset=0):
+    def search_apps(self, session_id, *, query="", limit=20, offset=0, owner_id=None):
+        if owner_id is not None and (not isinstance(owner_id, str) or not 1 <= len(owner_id) <= 128
+                                     or not owner_id.strip()):
+            raise ValueError("owner_id 必须为负责人查询返回的平台用户 ID（1–128 字符）。")
+        filters = {} if owner_id is None else {"ownerId": owner_id}
+        return self._search("/apps/search", session_id, query, limit, offset, **filters)
+
+    def search_owners(self, session_id, *, query="", limit=20, offset=0):
+        """Find owners only within the operator's deployable projects, never all employees."""
+        result = self._search("/owners/search", session_id, query, limit, offset)
+        for item in result["items"]:
+            if (not isinstance(item, dict) or not isinstance(item.get("ownerId"), str)
+                    or not 1 <= len(item["ownerId"]) <= 128
+                    or not isinstance(item.get("displayName"), str)):
+                raise ClientError("负责人搜索返回格式无效；不能据此选择负责人。")
+        return result
+
+    def _search(self, path, session_id, query, limit, offset, **filters):
         _session(session_id)
         if not isinstance(query, str) or len(query) > 200:
             raise ValueError("query 最多 200 字符。")
         if type(limit) is not int or not 1 <= limit <= 20 or type(offset) is not int or not 0 <= offset <= 1000000:
             raise ValueError("limit 为 1–20、offset 为 0–1000000 的整数。")
-        result = self._call("POST", "/apps/search", body={"sessionId": session_id, "query": query,
-                                                          "limit": limit, "offset": offset})
+        result = self._call("POST", path, body={"sessionId": session_id, "query": query,
+                                               "limit": limit, "offset": offset, **filters})
         next_offset = result.get("nextOffset")
         if (not isinstance(result.get("items"), list) or "nextOffset" not in result
                 or type(result.get("total")) is not int or result["total"] < 0
@@ -226,6 +243,11 @@ def main():
     search.add_argument("--query", default="")
     search.add_argument("--limit", type=int, default=20)
     search.add_argument("--offset", type=int, default=0)
+    search.add_argument("--owner-id", help="按负责人查询返回的平台用户 ID 筛选；不改变调用身份")
+    owners = commands.add_parser("owners", help="查询当前用户可部署项目中的负责人")
+    owners.add_argument("--query", default="")
+    owners.add_argument("--limit", type=int, default=20)
+    owners.add_argument("--offset", type=int, default=0)
     status = commands.add_parser("status", help="查询已受理请求")
     status.add_argument("request_id")
     wait = commands.add_parser("wait", help="有期限地等待已受理请求")
@@ -236,7 +258,10 @@ def main():
         client = AwesomeDeployClient(args.origin, timeout=args.timeout)
         if args.command == "search":
             result = client.search_apps(os.environ.get("AWESOME_SHARED_SESSION_ID", ""),
-                                        query=args.query, limit=args.limit, offset=args.offset)
+                                        query=args.query, limit=args.limit, offset=args.offset, owner_id=args.owner_id)
+        elif args.command == "owners":
+            result = client.search_owners(os.environ.get("AWESOME_SHARED_SESSION_ID", ""),
+                                          query=args.query, limit=args.limit, offset=args.offset)
         elif args.command == "status":
             result = client.get_request(args.request_id)
         else:

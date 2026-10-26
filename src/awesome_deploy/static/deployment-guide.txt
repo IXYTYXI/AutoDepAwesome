@@ -128,3 +128,5 @@ CMD ["python", "-u", "/app/server.py"]
 完整 API 接口、认证、搜索 appId、更新部署与进度查询示例：
 https://guanghe.feishu.cn/docx/DxI1dW2LOoDjssxtaAfcrdOCnNg
 登录后的网页入口：https://awesome.guanghexinzhi.cn/document?doc=api
+
+同组负责人搜索（0.11.4）：A 的 POST /owners/search 或 B 的 POST /api/v1/integrations/owners/search 使用当前操作者的共享 sessionId、query、limit、offset，返回 ownerId/displayName。仅返回操作者可部署项目相关负责人，不开放全员目录。项目搜索可选 ownerId（平台用户 ID，不是飞书 open_id），先权限后负责人/关键词过滤再分页；不传保持兼容。项目响应新增 ownerId/ownerName，无负责人为 null。普通用户不能借服务 Key 查到未授权项目，管理员可查全部。

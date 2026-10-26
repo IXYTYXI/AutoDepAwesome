@@ -40,6 +40,19 @@ test('all console requests wait for session; writes alone carry a fresh CSRF tok
   assert.equal(h.calls[2].options.credentials,'same-origin');
 });
 
+test('a deployment bound to the previous account cannot pass a pending authentication refresh',async()=>{
+  const h=harness({data:{...session,userId:'member-one'}});await h.auth.ready;let finish;
+  h.handler=async url=>url==='/auth/session'?new Promise(resolve=>{finish=resolve;}):response({});
+  const refreshing=h.auth.refresh();await tick();
+  const write=h.auth.fetch('/api/v1/deployments',{method:'POST',body:'{}',expectedUserId:'member-one'});
+  finish(response({...session,userId:'member-two'}));await refreshing;
+  await assert.rejects(write,error=>error.auth===true && /账号已切换/.test(error.message));
+  assert.equal(h.calls.filter(call=>call.options.method==='POST').length,0);
+  h.handler=async()=>response({});
+  await h.auth.fetch('/api/v1/deployments',{method:'POST',body:'{}',expectedUserId:'member-two'});
+  assert.equal(h.calls.at(-1).options.expectedUserId,undefined);
+});
+
 test('external destinations cannot receive a session or CSRF token',async()=>{
   const h=harness();await h.auth.ready;
   await assert.rejects(h.auth.fetch('https://evil.example/action',{method:'POST'}),/同源/);

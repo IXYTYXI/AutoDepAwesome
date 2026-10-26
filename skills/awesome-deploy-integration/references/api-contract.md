@@ -1,6 +1,6 @@
 # API 契约
 
-适用于 Awesome Deploy 0.11.3。来源：`docs/team-integration.md` 和 `src/awesome_deploy/team_server.py`、`team_api.py`、`team_outbox.py`、`team_sessions.py`（2026-10-23）。本文件随 Skill 分发，不依赖读者拥有源码；若目标版本不同，先让平台运维确认差异，不猜接口。
+适用于 Awesome Deploy 0.11.4。来源：`docs/team-integration.md` 和 `src/awesome_deploy/team_server.py`、`team_api.py`、`team_outbox.py`、`team_sessions.py`（2026-10-26）。本文件随 Skill 分发，不依赖读者拥有源码；若目标版本不同，先让平台运维确认差异，不猜接口。
 
 ## 地址、凭证和身份
 
@@ -28,24 +28,43 @@ sessionId 实际为 43 位 `[A-Za-z0-9_-]` 随机标识。示例字符串不是�
 
 `POST /sessions/revoke`，body 为 `{"sessionId":"服务端保存的会话"}` → `{"revoked":true}`。退出和重新登录时撤销原会话；撤销失败不得声称成功。会话过期/退出阻止新申请，不取消已持久受理的任务。
 
-## 2. 搜索和选择应用
+## 2. 搜索负责人和选择应用
+
+### 2.1 按姓名查询负责人
+
+`POST /owners/search` → HTTP 200：
+
+```json
+{"sessionId":"当前操作者服务端保存的会话","query":"张三","limit":20,"offset":0}
+```
+
+```json
+{"items":[{"ownerId":"platform-user-123","displayName":"张三"}],"total":1,"limit":20,"offset":0,"nextOffset":null}
+```
+
+负责人候选仅来自当前用户有权部署的项目：普通用户可查本人拥有、明确授权维护的项目的负责人；启用且有 can_deploy 的管理员可查全部项目的负责人。没有可部署项目的人员不出现在候选中，这不是企业通讯录接口。先限制项目权限，再按姓名或平台用户 ID 不分大小写包含匹配、去重并分页。query 省略或为空表示列出权限范围内的候选；分页约束同项目搜索。
+
+同名人员可能返回多条，按 ownerId 区分并由调用者明确选择。不能仅凭同名自动选首项、用飞书 openId 代替 ownerId，或换用目标负责人的 sessionId。sessionId 始终是当前操作者自己的共享会话。
+
+### 2.2 搜索项目
 
 `POST /apps/search` → HTTP 200：
 
 ```json
-{"sessionId":"服务端保存的会话","query":"demo","limit":20,"offset":0}
+{"sessionId":"当前操作者服务端保存的会话","ownerId":"platform-user-123","query":"demo","limit":20,"offset":0}
 ```
 
 - sessionId 必填，放在 JSON，不放 URL；receipt 不能代替它。不得退化为无用户的全项目查询。
 - query 最多 200 字符；按当前/历史 subdomain、repository 或 appId 不分大小写包含匹配。空 query 表示当前用户可部署项目。
+- ownerId 可选，省略或 null 时不按负责人筛选；填写时必须为负责人查询返回的平台用户 ID，1–128 字符。空字符串无效。它只筛选项目当前所有者，不代表部署提交人、不转移归属，也不授予权限。目标不在当前权限范围内时返回空结果，不能泄露他人项目是否存在。
 - limit 是 1–20 的整数，默认 20；offset 是 0–1000000 的整数，默认 0。布尔值不是整数参数。
-- 权限过滤先于匹配、total 和分页：owner / maintainer 可部署，viewer 不够；启用且有 can_deploy 的 admin 可查全部。
+- 权限过滤先于负责人筛选、关键词匹配、total 和分页：owner / maintainer 可部署，viewer 不够；启用且有 can_deploy 的 admin 可查全部。
 
 ```json
-{"items":[{"appId":"app-example","projectName":"demo","repository":"https://github.com/example/demo.git","subdomain":"demo","lastSubdomain":"demo","domainBound":true}],"total":1,"limit":20,"offset":0,"nextOffset":null}
+{"items":[{"appId":"app-example","projectName":"demo","repository":"https://github.com/example/demo.git","subdomain":"demo","lastSubdomain":"demo","domainBound":true,"ownerId":"platform-user-123","ownerName":"张三"}],"total":1,"limit":20,"offset":0,"nextOffset":null}
 ```
 
-nextOffset 为数字时原样用于下一页，保持 sessionId/query/limit；null 表示结束。错误不能转换成空 items。由用户明确选择目标，或核实其已经明确给出的 appId；不按排序选首项。`domainBound=false` 时 subdomain 为 null，lastSubdomain 不代表域名仍归该项目。
+nextOffset 为数字时原样用于下一页，保持 sessionId/ownerId/query/limit；null 表示结束。返回的 ownerId/ownerName 表示项目当前负责人；历史项目未分配负责人时两者可为 null，这种项目不产生负责人候选。错误不能转换成空 items。由用户明确选择目标，或核实其已经明确给出的 appId；不按排序选首项。`domainBound=false` 时 subdomain 为 null，lastSubdomain 不代表域名仍归该项目。
 
 ## 3. 持久受理
 
@@ -96,7 +115,7 @@ nextOffset 为数字时原样用于下一页，保持 sessionId/query/limit；nu
 
 ## 5. B 端协议（仅维护直接集成时读取）
 
-推荐通过适配服务接入。B 的接口为 POST `/api/v1/integrations/apps/search`、POST `/api/v1/integrations/deployments`、GET `/api/v1/integrations/deployments/{jobId}`。B Bearer 必须是运维签发且配置 delegation_source 的专用 source 凭证；普通 personal/source 不自动获得委托权。
+推荐通过适配服务接入。B 的接口为 POST `/api/v1/integrations/owners/search`、POST `/api/v1/integrations/apps/search`、POST `/api/v1/integrations/deployments`、GET `/api/v1/integrations/deployments/{jobId}`。B Bearer 必须是运维签发且配置 delegation_source 的专用 source 凭证；普通 personal/source 不自动获得委托权。
 
 委托 source 凭证不能调用普通 `/api/v1/automation/deployments` 提交或查询接口；需要普通自动化调用时，使用独立非委托凭证，不能绕过 integrations 的实际申请人校验。
 

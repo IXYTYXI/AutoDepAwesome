@@ -145,6 +145,28 @@ class AccessStore:
         with self._connection() as db:
             return self._require(db, actor, app_id, action)
 
+    def deployment_owners(self, actor):
+        """Return owner metadata only for applications the current actor may deploy.
+
+        Owner identity is scoped to this actor's Feishu namespace. Disabled owners
+        remain identifiable; their account status does not erase application
+        ownership. Unassigned legacy applications are visible only to admins.
+        """
+        with self._connection() as db:
+            db.execute('BEGIN')
+            fresh = self._actor(db, actor)
+            if not fresh['can_deploy']:
+                raise denied()
+            rows = db.execute('''SELECT a.id AS app_id, u.id AS owner_id, u.name AS owner_name
+                FROM apps a LEFT JOIN app_access access ON access.app_id=a.id
+                LEFT JOIN auth_users u ON u.id=access.owner_id AND u.app_id=? AND u.tenant_key=?
+                WHERE ? OR (u.id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM app_members m WHERE m.app_id=a.id AND m.user_id=?
+                    AND m.enabled=1 AND m.role IN ('owner','maintainer')))''',
+                (fresh['app_id'], fresh['tenant_key'], fresh['is_admin'], fresh['id']))
+            return {row['app_id']: {'ownerId': row['owner_id'], 'ownerName': row['owner_name']}
+                    for row in rows}
+
     def require_job(self, actor, job, action='detail'):
         if job.get('app_id'):
             return self.require_app(actor, job['app_id'], action)

@@ -53,6 +53,7 @@ def test_search_uses_applicant_permissions_before_filter_and_pagination(team, se
     assert first['items'][0] == {
         'appId': own, 'projectName': 'own', 'repository': payload()['repository'],
         'subdomain': None, 'lastSubdomain': 'own', 'domainBound': False,
+        'ownerId': actor['id'], 'ownerName': actor['name'],
     }
     second = search(team, sid, limit=1, offset=1).json()
     assert [item['appId'] for item in second['items']] == [maintained]
@@ -67,7 +68,7 @@ def test_search_uses_applicant_permissions_before_filter_and_pagination(team, se
 def test_search_matches_name_previous_name_repository_and_app_id(team, sessions):
     _, app, _, _ = team
     app_id, _ = create_project(team, sessions, 'alpha', repository='https://github.com/org/Alpha.git')
-    unbound, _ = create_project(team, sessions, 'oldname')
+    unbound, actor = create_project(team, sessions, 'oldname')
     with app.state.store._connection() as db:
         db.execute('UPDATE apps SET subdomain=? WHERE id=?', ('alpha', app_id))
         db.execute('UPDATE apps SET subdomain=NULL WHERE id=?', (unbound,))
@@ -79,6 +80,7 @@ def test_search_matches_name_previous_name_repository_and_app_id(team, sessions)
     assert previous == [{
         'appId': unbound, 'projectName': 'oldname', 'repository': payload()['repository'],
         'subdomain': None, 'lastSubdomain': 'oldname', 'domainBound': False,
+        'ownerId': actor['id'], 'ownerName': actor['name'],
     }]
     assert search(team, sid, query='  ').json()['total'] == 2
     assert search(team, sid, query='no-such-project').json()['total'] == 0
@@ -98,6 +100,7 @@ def test_search_does_not_create_deployment_or_return_internal_application_fields
     assert counts() == before
     assert set(result['items'][0]) == {
         'appId', 'projectName', 'repository', 'subdomain', 'lastSubdomain', 'domainBound',
+        'ownerId', 'ownerName',
     }
 
 

@@ -18,7 +18,8 @@
 已有授权会话后，只读工具示例（在本 Skill 目录执行）：
 
 ```sh
-python3 -B scripts/awesome_deploy_client.py search --query demo
+python3 -B scripts/awesome_deploy_client.py owners --query 张三
+python3 -B scripts/awesome_deploy_client.py search --owner-id platform-user-123 --query demo
 python3 -B scripts/awesome_deploy_client.py status example-request-001
 python3 -B scripts/awesome_deploy_client.py wait example-request-001 --max-seconds 60
 ```
@@ -49,17 +50,23 @@ def on_verified_login(server_login):
     }, ttl=ttl)
     db.save_shared_session(server_login.user_id, shared["sessionId"], shared["expiresIn"])
 
-def list_candidates(current_login, query, offset=0):
+def list_owners(current_login, name, offset=0):
     user = auth.require_login(current_login)
+    return client.search_owners(db.shared_session_for(user.id), query=name,
+                                limit=20, offset=offset)
+
+def list_candidates(current_login, query, offset=0, owner_id=None):
+    user = auth.require_login(current_login)
+    # owner_id is an explicit selection from list_owners, not an identity claim.
     return client.search_apps(db.shared_session_for(user.id), query=query,
-                              limit=20, offset=offset)
+                              limit=20, offset=offset, owner_id=owner_id)
 
 def submit_selected_update(current_login, business_request_id, selected_app_id,
-                           query, selected_page_offset, ref):
+                           query, selected_page_offset, ref, owner_id=None):
     user = auth.require_login(current_login)
     policy.require_deployment_request(user)
     # selected_app_id 来自用户明确选择；重新搜索核实当前权限和绑定信息。
-    page = list_candidates(current_login, query, selected_page_offset)
+    page = list_candidates(current_login, query, selected_page_offset, owner_id)
     selected = next((item for item in page["items"]
                      if item["appId"] == selected_app_id), None)
     if selected is None:
@@ -93,7 +100,7 @@ def on_logout(current_login):
     auth.finish_logout(current_login)
 ```
 
-新建时无需选既有 appId，但必须有明确新建指令和名称/仓库/ref；以同样事务规则保存记录，deployment 省略 appId。不要将“搜索没找到”直接变成新建。分页 UI 保留 query/limit，nextOffset 为数字才加载下一页；选择结果须按 appId 绑定，不能用数组下标。
+新建时无需选既有 appId，但必须有明确新建指令和名称/仓库/ref；以同样事务规则保存记录，deployment 省略 appId。不要将“搜索没找到”直接变成新建。按人筛选时先调用 list_owners，显示姓名和 ownerId 让用户选择；同名不能自动挑第一条，不能索取目标负责人的登录态。两步始终使用当前操作者的共享会话。分页 UI 保留 ownerId/query/limit，nextOffset 为数字才加载下一页；选择结果须按 appId 绑定，不能用数组下标。
 
 可在后端工作线程调用 `wait_for_request(id, max_seconds=60)`；抛出 `WaitTimeout` 时保存其 `request_id` / `last_request`，显示仍在处理中，后续查询原 ID。不要占用网页请求线程无限等待。助手只发送一次 POST；网络错误须按 API 契约区分结果未知和明确拒绝。
 
@@ -105,11 +112,12 @@ def on_logout(current_login):
 python3 -B scripts/test_awesome_deploy_client.py
 ```
 
-测试使用虚构 token/session 和内存 HTTP 替身，不读取默认生产凭证、不连接服务器。覆盖会话→分页搜索→显式 appId 提交→进度→撤销，保持幂等键/内容，拒绝重定向和不安全 origin，保留 401/403/409 等错误，网络超时、不合法响应与有界等待。
+测试使用虚构 token/session 和内存 HTTP 替身，不读取默认生产凭证、不连接服务器。覆盖会话→分页搜索→显式 appId 提交→进度→撤销，以及同名负责人显式选择→ownerId 筛选项目（不更换操作者会话），保持幂等键/内容，拒绝重定向和不安全 origin，保留 401/403/409 等错误，网络超时、不合法响应与有界等待。
 
 真实联调在用户授权的测试环境完成，至少用两个普通用户和管理员核查：
 
 - 甲的 owner 项目不会出现在无授权乙的搜索/total 中，乙猜 appId 更新仍被拒绝；viewer 不能部署；授予 maintainer 后乙可搜索和更新，owner 仍是甲。
+- 负责人候选、total 和分页不包含无权限项目的人员；普通用户传他人的 ownerId 也不能看到无权项目，同名按平台用户 ID 选择。
 - 同一 source 凭证不提升普通用户权限；已禁用或无 can_deploy 的管理员也被拒绝；新建应用归实际用户。
 - 同 ID/同人/同内容只生成一个任务；同 ID 换内容/人被拒绝；网络响应丢失后按原 ID 恢复。
 - 退出或 session 过期阻止新申请；已受理任务仍能继续；来源/本地账号/应用权限撤销遵循平台规则。

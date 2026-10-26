@@ -63,11 +63,15 @@
     if(destination.origin!==window.location.origin)throw new Error('平台请求必须使用同源地址。');
     await (pending || ready);
     if(!current)throw authError();
-    const headers=new Headers(options.headers || {});
+    const {expectedUserId,...requestOptions}=options;
+    if(expectedUserId!==undefined && expectedUserId!==(current.userId || current.mode)) {
+      throw Object.assign(new Error('登录账号已切换，请重新确认后再操作。'),{auth:true});
+    }
+    const headers=new Headers(requestOptions.headers || {});
     headers.delete('X-CSRF-Token');
     const method=(options.method || 'GET').toUpperCase();
     if(current.mode==='feishu' && !['GET','HEAD','OPTIONS'].includes(method))headers.set('X-CSRF-Token',current.csrfToken);
-    const response=await nativeFetch(url,{...options,headers,credentials:'same-origin'});
+    const response=await nativeFetch(url,{...requestOptions,headers,credentials:'same-origin'});
     if(response.status===401)blocked(notices.expired);
     else if(response.status===403) {
       let code;

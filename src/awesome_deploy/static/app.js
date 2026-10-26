@@ -19,6 +19,74 @@ let activeAppIndex = 0;
 let secretEditor = null;
 let deploymentSubmitting = false;
 let authFailed = false;
+const deploymentStorageKey = 'awesome-deploy.active-deployment.v1';
+let activeDeployment = restoreActiveDeployment();
+let activeDeploymentTimer;
+let deploymentMessage = '';
+function restoreActiveDeployment() {
+  try {
+    const saved=JSON.parse(globalThis.sessionStorage?.getItem(deploymentStorageKey) || 'null');
+    if(!saved || typeof saved.key!=='string' || !saved.key || !saved.payload
+      || !['repository','ref','subdomain'].every(field=>typeof saved.payload[field]==='string')
+      || (saved.jobId!==null && typeof saved.jobId!=='string'))return null;
+    const payload={repository:saved.payload.repository,ref:saved.payload.ref,subdomain:saved.payload.subdomain};
+    if(typeof saved.payload.appId==='string')payload.appId=saved.payload.appId;
+    return {key:saved.key,payload,jobId:saved.jobId || null,status:saved.status,uncertain:!saved.jobId,userId:saved.userId || null};
+  } catch {return null;}
+}
+function persistActiveDeployment() {
+  // Only request identity and non-secret deployment fields survive a reload in this tab.
+  try {
+    if(activeDeployment)globalThis.sessionStorage?.setItem(deploymentStorageKey,JSON.stringify(activeDeployment));
+    else globalThis.sessionStorage?.removeItem(deploymentStorageKey);
+  } catch { /* Private browsing may deny storage; keep the in-memory lock. */ }
+}
+function continuationBlocked(editor) {
+  return Boolean(activeDeployment && (activeDeployment.jobId || activeDeployment.key!==editor.requestKey));
+}
+function deploymentUserId() {
+  const session=globalThis.window?.AwesomeAuth?.session();
+  return session ? session.userId || session.mode : null;
+}
+function syncDeploymentState() {
+  const button=$('submit');
+  button.disabled=deploymentSubmitting || Boolean(activeDeployment) || !mayDeploy();
+  button.setAttribute('aria-busy',String(deploymentSubmitting || Boolean(activeDeployment)));
+  button.textContent=deploymentSubmitting ? '正在提交…' : !activeDeployment ? '开始部署'
+    : !activeDeployment.jobId ? '提交结果待确认' : activeDeployment.status==='queued' ? '正在排队…'
+    : activeDeployment.status==='recovery_required' ? '等待恢复处理' : '正在部署…';
+  const status=$('deployment-status');
+  if(status) {
+    const message=activeDeployment ? deploymentSubmitting ? '正在提交，请勿重复操作。'
+      : !activeDeployment.jobId ? '提交结果尚未确认。请重试确认，平台会沿用同一请求，不会重复创建部署。'
+      : activeDeployment.status==='recovery_required' ? '本次部署需要管理员处理恢复状态，按钮将在确认部署成功或失败后恢复。'
+      : `本次部署${activeDeployment.status==='queued' ? '正在排队' : '正在执行'}；完成或失败前，不能再次提交。可以继续查看历史记录。` : deploymentMessage;
+    if(status.textContent!==message)status.textContent=message;
+    status.hidden=!message;
+  }
+  const retry=$('deployment-retry');
+  if(retry){retry.hidden=!activeDeployment || Boolean(activeDeployment.jobId);retry.disabled=deploymentSubmitting || !mayDeploy(activeDeployment?.payload.appId);}
+}
+function observeActiveDeployment(job) {
+  if(!activeDeployment?.jobId || activeDeployment.jobId!==job.id)return;
+  if(['succeeded','failed'].includes(job.status)) {
+    deploymentMessage=job.status==='succeeded' ? '本次部署已成功，可以继续部署。' : '本次部署已失败，可以检查原因后重新部署。';
+    activeDeployment=null;clearTimeout(activeDeploymentTimer);
+  } else activeDeployment.status=job.status;
+  persistActiveDeployment();syncDeployPermission();
+}
+function scheduleActiveDeployment() {
+  clearTimeout(activeDeploymentTimer);
+  if(activeDeployment?.jobId)activeDeploymentTimer=setTimeout(checkActiveDeployment,2500);
+}
+async function checkActiveDeployment() {
+  const id=activeDeployment?.jobId;if(!id)return;
+  try {
+    if(selectedJob===id)await watch(id);
+    else observeActiveDeployment(await api(`/api/v1/deployments/${encodeURIComponent(id)}`));
+  } catch(error) {$('form-error').textContent=`暂时无法确认部署状态，仍会继续查询。${error.message}`;}
+  finally {if(activeDeployment?.jobId===id)scheduleActiveDeployment();}
+}
 function mayDeploy(appId=$('appId').value) {
   const session=typeof window!=='undefined' && window.AwesomeAuth ? window.AwesomeAuth.session() : null;
   if(typeof window!=='undefined' && window.AwesomeAuth && (!session || (session.mode==='feishu' ? session.canDeploy!==true : session.canDeploy===false)))return false;
@@ -26,7 +94,16 @@ function mayDeploy(appId=$('appId').value) {
   return app?.permissions?.deploy!==false;
 }
 function syncDeployPermission() {
-  const allowed=mayDeploy();$('submit').disabled=deploymentSubmitting || !allowed;
+  const userId=deploymentUserId();
+  if(userId && activeDeployment && activeDeployment.userId!==userId) {
+    activeDeployment=null;deploymentMessage='';clearTimeout(activeDeploymentTimer);persistActiveDeployment();
+  }
+  if(userId && secretEditor && secretEditor.userId!==userId) {
+    clearSecretEditor();currentJob=null;selectedJob=null;
+    $('current').replaceChildren(text('p','登录账号已切换，请重新选择部署记录。','hint'));
+    $('events').textContent='';
+  }
+  const allowed=mayDeploy();syncDeploymentState();
   const session=typeof window!=='undefined' && window.AwesomeAuth ? window.AwesomeAuth.session() : undefined;
   if(session && authFailed){$('form-error').textContent='';authFailed=false;}
   const hint=$('deploy-permission');if(hint){hint.hidden=allowed;hint.textContent=session===null?'登录尚未确认，请使用页面上方的登录提示恢复会话。当前填写内容会保留。':'当前账号没有此应用的部署权限。可在应用管理中查看已有应用，或联系管理员授权。';}
@@ -37,16 +114,16 @@ const phaseLabels = {source:'获取代码',prepared:'配置已校验',freeze:'�
 async function api(url, options={}) {
   let response;
   try {response = await (typeof window!=='undefined' && window.AwesomeAuth ? window.AwesomeAuth.fetch : fetch)(url, {credentials:'same-origin', ...options});}
-  catch (error) {if(error?.auth){authFailed=true;throw error;}throw new Error('网络连接失败，请检查连接后重试。');}
+  catch (error) {if(error?.auth){authFailed=true;throw error;}throw Object.assign(new Error('网络连接失败，请检查连接后重试。'),{uncertain:true});}
   let data;
   try {data = await response.json();}
-  catch {throw new Error('无法读取服务器响应，请稍后重试。');}
+  catch {throw Object.assign(new Error('无法读取服务器响应，请稍后重试。'),{uncertain:true});}
   if (!response.ok) {
     if(response.status===401)authFailed=true;
     const parts=[data.error?.message || (typeof data.detail === 'string' ? data.detail : '请求未通过校验，请检查输入。')];
     if(data.error?.steps?.length)parts.push(...data.error.steps);
     else if(data.error?.suggestion)parts.push(data.error.suggestion);
-    throw new Error(parts.join('\n'));
+    throw Object.assign(new Error(parts.join('\n')),{uncertain:response.status>=500 || response.status===408,status:response.status});
   }
   return data;
 }
@@ -60,7 +137,7 @@ function secretConfigurationBlocked(editor) {return editor.items.some(item=>item
 function secretControls(editor) {
   const missing=editor.items.some(item=>item.state==='missing');
   editor.submit.textContent=editor.busy ? '正在处理…' : missing ? '保存并继续部署' : '继续部署';
-  editor.submit.disabled=!mayDeploy(editor.payload?.appId) || deploymentSubmitting || editor.busy || editor.loading || !editor.loaded || secretConfigurationBlocked(editor);
+  editor.submit.disabled=!mayDeploy(editor.payload?.appId) || deploymentSubmitting || continuationBlocked(editor) || editor.busy || editor.loading || !editor.loaded || secretConfigurationBlocked(editor);
   editor.retry.disabled=editor.busy || editor.loading;
   for(const field of editor.fields.values()) {
     field.input.disabled=editor.busy || editor.loading;
@@ -123,11 +200,37 @@ async function loadSecretRequirements(editor,{preserveMessage=false}={}) {
     editor.loaded=false;editor.retry.hidden=false;editor.message.textContent=`无法读取配置：${error.message}`;
   } finally {if(secretEditorActive(editor)){editor.loading=false;secretControls(editor);}}
 }
-async function submitDeployment(body,key) {
-  return api('/api/v1/deployments',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify(body)});
+async function submitDeployment(body,key,userId) {
+  return api('/api/v1/deployments',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify(body),expectedUserId:userId});
+}
+async function submitTrackedDeployment(body,key) {
+  const pending=activeDeployment || {key,payload:body,jobId:null,status:'submitting',uncertain:false,userId:deploymentUserId()};
+  activeDeployment=pending;deploymentMessage='';persistActiveDeployment();syncDeployPermission();
+  try {
+    const job=await submitDeployment(pending.payload,pending.key,pending.userId);
+    if(activeDeployment!==pending)throw new Error('登录账号已切换，请在原账号中查看这次部署。');
+    if(typeof job.id!=='string' || !job.id)throw Object.assign(new Error('服务器未返回部署编号，请重试确认提交结果。'),{uncertain:true});
+    activeDeployment={...pending,jobId:job.id,status:job.status,uncertain:false};
+    observeActiveDeployment(job);scheduleActiveDeployment();return job;
+  } catch(error) {
+    if(activeDeployment!==pending)throw error;
+    if(error.uncertain || pending.uncertain){pending.uncertain=true;activeDeployment=pending;}
+    else activeDeployment=null;
+    persistActiveDeployment();syncDeployPermission();throw error;
+  }
+}
+async function retryDeploymentConfirmation() {
+  if(!activeDeployment || activeDeployment.jobId || deploymentSubmitting || !mayDeploy(activeDeployment.payload.appId))return;
+  deploymentSubmitting=true;syncDeployPermission();$('form-error').textContent='';
+  try {
+    const job=await submitTrackedDeployment(activeDeployment.payload,activeDeployment.key);
+    await watch(job.id);await refresh();
+  } catch(error){$('form-error').textContent=error.message;}
+  finally{deploymentSubmitting=false;syncDeployPermission();}
 }
 async function saveSecretsAndContinue(editor) {
-  if(!secretEditorActive(editor) || deploymentSubmitting || editor.busy || editor.loading || !editor.loaded || secretConfigurationBlocked(editor))return;
+  if(!secretEditorActive(editor) || deploymentSubmitting || continuationBlocked(editor) || editor.busy || editor.loading || !editor.loaded || secretConfigurationBlocked(editor))return;
+  const userId=deploymentUserId();
   const values=Object.create(null);
   for(const item of editor.items)if(item.state==='missing' && !item.managed) {
     const input=editor.fields.get(item.name).input;
@@ -136,18 +239,19 @@ async function saveSecretsAndContinue(editor) {
     }
     values[item.name]=input.value;
   }
-  deploymentSubmitting=true;$('submit').disabled=true;
+  deploymentSubmitting=true;syncDeployPermission();
   editor.busy=true;editor.message.textContent='正在安全保存配置…';secretControls(editor);
   let saving=editor.items.some(item=>item.state==='missing');
   try {
     if(saving) {
-      const data=await api(`/api/v1/deployments/${encodeURIComponent(editor.jobId)}/secrets`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({values})});
-      if(!secretEditorActive(editor))return;
+      const data=await api(`/api/v1/deployments/${encodeURIComponent(editor.jobId)}/secrets`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({values}),expectedUserId:userId});
+      if(!secretEditorActive(editor) || deploymentUserId()!==userId)return;
       renderSecretRequirements(editor,data);editor.saved=true;saving=false;
     }
+    if(deploymentUserId()!==userId)return;
     if(editor.items.some(item=>item.state!=='configured'))throw new Error('仍有配置未就绪，请核对配置状态后继续。');
     editor.message.textContent='配置已保存，正在提交新的部署…';
-    const job=await submitDeployment(editor.payload,editor.requestKey);
+    const job=await submitTrackedDeployment(editor.payload,editor.requestKey);
     if(!secretEditorActive(editor))return;
     historyFilter='all';$('history').scrollTop=0;
     await refresh();
@@ -163,7 +267,7 @@ async function saveSecretsAndContinue(editor) {
   }
 }
 function createSecretEditor(job) {
-  const editor=text('section','','secret-editor');editor.jobId=job.id;
+  const editor=text('section','','secret-editor');editor.jobId=job.id;editor.userId=deploymentUserId();
   editor.payload={repository:job.repository,ref:job.ref,subdomain:job.subdomain};if(job.appId)editor.payload.appId=job.appId;
   editor.fields=new Map();editor.items=[];editor.loaded=false;editor.loading=false;editor.busy=false;editor.saved=false;
   // One failed task has one continuation, including retries after navigation or a page reload.
@@ -442,12 +546,13 @@ async function watch(id,{focus=false}={}) {
   }
   try {
     const job=await api(`/api/v1/deployments/${encodeURIComponent(id)}`);
+    observeActiveDeployment(job);
     if(selectedJob!==id)return;
     showJob(job);
     const events=await api(`/api/v1/deployments/${encodeURIComponent(id)}/events`);
     if(selectedJob!==id)return;
     $('events').textContent=events.items.map(e=>`${phaseLabels[e.phase] || '部署记录'}  ${e.message}`).join('\n') || '暂无执行记录。';
-    if(['queued','running'].includes(job.status))pollTimer=setTimeout(()=>watch(id),2500);
+    if(['queued','running'].includes(job.status)){if(activeDeployment?.jobId!==id)pollTimer=setTimeout(()=>watch(id),2500);}
     else await refresh();
   } catch(error) {
     if(selectedJob===id) {
@@ -502,26 +607,27 @@ form.addEventListener('input',event=>{
   if(['repository','ref','subdomain','appId'].some(id=>$(id)===event.target))requestKey=crypto.randomUUID();
 });
 form.addEventListener('submit',async(event)=>{
-  event.preventDefault();if(deploymentSubmitting || !mayDeploy()){syncDeployPermission();return;}
+  event.preventDefault();if(deploymentSubmitting || activeDeployment || !mayDeploy()){syncDeployPermission();return;}
   if(!validateProjectName(true)){$('subdomain').focus();return;}
-  deploymentSubmitting=true;$('submit').disabled=true;$('form-error').textContent='';
+  deploymentSubmitting=true;syncDeployPermission();$('form-error').textContent='';
   if(secretEditor)secretControls(secretEditor);
   try {
     const body=Object.fromEntries(new FormData(form));if(!body.appId)delete body.appId;
-    const job=await submitDeployment(body,requestKey);
-    requestKey=crypto.randomUUID();historyFilter='all';$('history').scrollTop=0;await refresh();await watch(job.id);
+    const job=await submitTrackedDeployment(body,requestKey);
+    requestKey=crypto.randomUUID();historyFilter='all';$('history').scrollTop=0;await watch(job.id);await refresh();
   } catch(error){$('form-error').textContent=error.message;}
   finally{deploymentSubmitting=false;syncDeployPermission();if(secretEditor)secretControls(secretEditor);}
 });
 $('refresh').addEventListener('click',()=>refresh().catch(error=>{$('form-error').textContent=error.message;}));
+$('deployment-retry')?.addEventListener('click',retryDeploymentConfirmation);
+syncDeployPermission();scheduleActiveDeployment();
 api('/api/v1/capabilities').then(renderCapabilities).catch(error=>{renderCapabilities({});$('form-error').textContent=error.message;});
 updateDomainPreview();
 renderHistory();
 refresh().catch(error=>{$('form-error').textContent=error.message;}).then(()=>{
-  if(globalThis.location?.search) {
-    const id=new URLSearchParams(location.search).get('deployment');
-    if(id)watch(id,{focus:true});
-  }
+  const linked=globalThis.location?.search ? new URLSearchParams(location.search).get('deployment') : null;
+  const id=linked || activeDeployment?.jobId;
+  if(id)watch(id,{focus:Boolean(linked)});
 });
 
 if(typeof window!=='undefined' && window.AwesomeAuth){window.AwesomeAuth.onChange(syncDeployPermission);window.AwesomeAuth.ready.then(syncDeployPermission);}

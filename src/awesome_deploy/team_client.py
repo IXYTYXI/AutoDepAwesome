@@ -50,8 +50,14 @@ class TeamPlatformClient(PlatformClient):
         return self._call('GET', '/api/v1/integrations/deployments/' + job_id)
 
     def search(self, body):
+        return self._search('/api/v1/integrations/apps/search', body)
+
+    def search_owners(self, body):
+        return self._search('/api/v1/integrations/owners/search', body)
+
+    def _search(self, path, body):
         try:
-            return self._call('POST', '/api/v1/integrations/apps/search', json=body,
+            return self._call('POST', path, json=body,
                              headers={'Content-Type': 'application/json'})
         except PlatformRejected as exc:
             raise TeamSearchError(exc.status_code) from None

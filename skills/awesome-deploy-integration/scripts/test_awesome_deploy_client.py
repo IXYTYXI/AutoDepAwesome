@@ -94,6 +94,70 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(json.loads(submission.data)["deployment"]["appId"], "app-second")
         self.assertNotIn("Idempotency-key", transport.calls[1].headers)
 
+    def test_search_named_owner_then_filter_apps_keeps_operator_session(self):
+        owners = [{"ownerId": "user-first", "displayName": "张三"},
+                  {"ownerId": "user-second", "displayName": "张三"}]
+        app = {"appId": "app-second", "ownerId": "user-second", "ownerName": "张三"}
+        client, transport = self.client(
+            (200, {"items": owners, "total": 2, "limit": 20, "offset": 0, "nextOffset": None}, {}),
+            (200, {"items": [app], "total": 1, "limit": 20, "offset": 0, "nextOffset": None}, {}),
+        )
+        page = client.search_owners(SID, query="张三")
+        # This ID is the user's explicit choice among equal display names.
+        selected_owner = next(item for item in page["items"] if item["ownerId"] == "user-second")
+        found = client.search_apps(SID, owner_id=selected_owner["ownerId"], query="demo")
+        self.assertEqual(found["items"], [app])
+        self.assertEqual([r.selector for r in transport.calls], ["/owners/search", "/apps/search"])
+        self.assertEqual(json.loads(transport.calls[0].data),
+                         {"sessionId": SID, "query": "张三", "limit": 20, "offset": 0})
+        self.assertEqual(json.loads(transport.calls[1].data),
+                         {"sessionId": SID, "query": "demo", "ownerId": "user-second", "limit": 20, "offset": 0})
+        self.assertTrue(all(r.get_header("Authorization") == "Bearer " + TOKEN for r in transport.calls))
+
+    def test_owner_search_errors_and_malformed_results_are_not_empty_results(self):
+        for status in (401, 403, 503):
+            with self.subTest(status=status):
+                client, transport = self.client((status, {"detail": TOKEN + SID}, {}))
+                with self.assertRaises(ClientError) as caught:
+                    client.search_owners(SID)
+                self.assertEqual(caught.exception.status, status)
+                self.assertEqual(len(transport.calls), 1)
+                self.assertNotIn(TOKEN, str(caught.exception))
+        for item in ({"ownerId": "", "displayName": "张三"}, {"ownerId": "user-1"},
+                     {"ownerId": "user-1", "displayName": 123}, None):
+            with self.subTest(item=item):
+                client, _ = self.client((200, {"items": [item], "total": 1, "limit": 20,
+                                              "offset": 0, "nextOffset": None}, {}))
+                with self.assertRaises(ClientError):
+                    client.search_owners(SID)
+
+    def test_search_owners_and_filter_validate_before_transport(self):
+        client, transport = self.client()
+        invalid_calls = [lambda: client.search_apps(SID, owner_id=""),
+                         lambda: client.search_apps(SID, owner_id="x" * 129),
+                         lambda: client.search_apps(SID, owner_id="   "),
+                         lambda: client.search_apps(SID, owner_id=True),
+                         lambda: client.search_owners("oauth-token"),
+                         lambda: client.search_owners(SID, limit=True),
+                         lambda: client.search_owners(SID, query="x" * 201)]
+        for call in invalid_calls:
+            with self.assertRaises(ValueError):
+                call()
+        self.assertEqual(transport.calls, [])
+
+    def test_cli_owner_search_and_explicit_owner_filter(self):
+        cases = [("owners", ["--query", "张三"], "search_owners", {"query": "张三", "limit": 20, "offset": 0}),
+                 ("search", ["--owner-id", "user-2"], "search_apps",
+                  {"query": "", "limit": 20, "offset": 0, "owner_id": "user-2"})]
+        for command, options, method, expected in cases:
+            with self.subTest(command=command), patch.dict(os.environ, {"AWESOME_SHARED_SESSION_ID": SID}), \
+                    patch.object(module.sys, "argv", ["client", command, *options]), \
+                    patch.object(module, "AwesomeDeployClient") as factory, \
+                    patch.object(module.sys, "stdout", new_callable=io.StringIO):
+                getattr(factory.return_value, method).return_value = {"items": []}
+                self.assertEqual(module.main(), 0)
+                getattr(factory.return_value, method).assert_called_once_with(SID, **expected)
+
     def test_repeat_preserves_id_and_exact_body(self):
         client, transport = self.client((202, progress(), {}), (202, progress(), {}))
         client.submit("test-001", PAYLOAD, SID)

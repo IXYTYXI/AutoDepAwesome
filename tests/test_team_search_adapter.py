@@ -20,11 +20,17 @@ def adapter(tmp_path):
     sessions = SharedSessions(MemoryRedis(), source='project-a', key=b'k' * 32,
                               app_id='cli_test', tenant_key='tenant')
     class Platform:
-        calls = []
+        def __init__(self):
+            self.calls = []
+            self.owner_calls = []
         def search(self, body):
             self.calls.append(body)
             return {'items': [{'appId': 'existing-app'}], 'total': 1, 'offset': 0,
                     'limit': 20, 'nextOffset': None}
+        def search_owners(self, body):
+            self.owner_calls.append(body)
+            return {'items': [{'ownerId': 'user-1', 'displayName': '张三'}], 'total': 1,
+                    'offset': body['offset'], 'limit': body['limit'], 'nextOffset': None}
     platform = Platform()
     outbox = TeamOutbox(tmp_path / 'a' / 'db', sessions, platform)
     client = TestClient(create_team_app(outbox, 'internal-token', start_worker=False))
@@ -172,3 +178,52 @@ def test_search_update_and_poll_progress_through_adapter(tmp_path, team, session
         assert final['status'] == 'succeeded' and final['pollAfterSeconds'] == 0
         assert final['deployment']['terminal'] is True and final['deployment']['active'] is True
         assert final['deployment']['url'].startswith('https://flow.')
+
+
+def test_adapter_forwards_owner_filter_without_changing_operator_session(tmp_path):
+    client, _, platform, sessions = adapter(tmp_path)
+    sid = sessions.issue(person())
+    body = {'sessionId': sid, 'ownerId': 'other-user', 'query': 'demo', 'limit': 5, 'offset': 10}
+    response = client.post('/apps/search', json=body, headers=HEADERS)
+    assert response.status_code == 200, response.text
+    assert platform.calls == [body]
+
+
+def test_owner_search_requires_service_credential_and_live_operator_session(tmp_path):
+    client, outbox, platform, sessions = adapter(tmp_path)
+    body = {'sessionId': sessions.issue(person()), 'query': '张', 'limit': 5, 'offset': 0}
+    assert client.post('/owners/search', json=body).status_code == 401
+    assert client.post('/owners/search', json=body, headers={**HEADERS, 'Origin': 'https://a'}).status_code == 401
+    response = client.post('/owners/search', json=body, headers=HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json()['items'] == [{'ownerId': 'user-1', 'displayName': '张三'}]
+    assert platform.owner_calls == [body]
+    with outbox._db() as db:
+        assert db.execute('SELECT count(*) FROM team_requests').fetchone()[0] == 0
+    sessions.logout(body['sessionId'])
+    assert client.post('/owners/search', json=body, headers=HEADERS).status_code == 401
+    assert len(platform.owner_calls) == 1
+
+
+@pytest.mark.parametrize('extra', [{'limit': True}, {'limit': 21}, {'offset': -1},
+                                  {'query': 'x' * 201}, {'ownerId': 'user-1'}])
+def test_owner_search_rejects_invalid_fields_without_forwarding(tmp_path, extra):
+    client, _, platform, sessions = adapter(tmp_path)
+    response = client.post('/owners/search', json={'sessionId': sessions.issue(person()), **extra}, headers=HEADERS)
+    assert response.status_code == 422
+    assert platform.owner_calls == []
+
+
+@pytest.mark.parametrize('upstream,expected', [(401, 401), (403, 403), (422, 422), (500, 503)])
+def test_owner_search_preserves_actionable_upstream_statuses(tmp_path, upstream, expected):
+    client, outbox, _, sessions = adapter(tmp_path)
+    token = tmp_path / 'source-token'
+    token.write_text('source-credential')
+    token.chmod(0o600)
+    outbox.platform = TeamPlatformClient('http://127.0.0.1:8088', token,
+        client=httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(upstream, json={'detail': 'private-upstream-detail'}))))
+    response = client.post('/owners/search', json={'sessionId': sessions.issue(person())}, headers=HEADERS)
+    assert response.status_code == expected
+    assert 'private-upstream-detail' not in response.text
+    assert 'source-credential' not in response.text

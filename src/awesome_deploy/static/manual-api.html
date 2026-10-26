@@ -1,6 +1,6 @@
 <h1>Awesome Deploy API 参考文档</h1>
 <nav class="manual-toc" aria-label="本文目录"><p><strong>本文目录</strong></p><ol><li><a href="#doxcnsLS4zAQLyPR4mdi47vsFSe">1. 快速开始</a></li><li><a href="#doxcnQkJcO6yi27LdFd1TSYPKQg">2. 认证与权限</a></li><li><a href="#doxcn7aV96fP1L8TB31cnUmib0e">3. 同组接入服务接口</a></li><li><a href="#doxcnJD33i8beq3edkRRzwxGebb">4. 平台同组部署接口</a></li><li><a href="#doxcnNHNkFcaLOLeSQJu1a3kCrf">5. 普通自动化接口</a></li><li><a href="#doxcnU0dr7vSQHi6Qrmn98wYmEO">6. 控制台部署与项目管理</a></li><li><a href="#doxcn4RojJqrJOvnaimwL0uEzSg">7. 控制台 API 凭证管理</a></li><li><a href="#doxcnd9MVUVsWQAiXgBrfDXBGwc">8. 控制台应用配置与密钥</a></li><li><a href="#doxcnpdAYb7et8nAHASx0syVi2f">9. 控制台成员与权限管理</a></li><li><a href="#doxcnPqYCphaHn0wDe5WKXoIzDP">10. 公共响应字段与状态</a></li><li><a href="#doxcnMpPHdshWOTGNRKaztnr8Xb">11. 登录、错误与其他路由</a></li></ol></nav>
-<p>版本：0.11.3　更新日期：2026-10-23</p>
+<p>版本：0.11.4　更新日期：2026-10-26</p>
 <p>本文用于后端开发者和 AI 编程工具接入项目搜索、部署提交及进度查询。每个接口均提供请求方法、地址、认证、参数、请求示例、响应示例和错误处理。接口均为 HTTP；JSON 使用 UTF-8，字段区分大小写。示例中的尖括号内容和演示 ID 需要替换为实际值。</p>
 <p><a href="https://guanghe.feishu.cn/docx/DSUwdxpXhot6fQx2YticNCtWnHe" target="_blank" rel="noopener noreferrer">仓库与 awesome.yaml 要求：部署接入技术协议</a></p>
 <h2 id="doxcnsLS4zAQLyPR4mdi47vsFSe" tabindex="-1">1. 快速开始</h2>
@@ -38,8 +38,10 @@
 <p><strong>认证要求</strong></p>
 <p>接入服务凭证。</p>
 <p>只返回当前共享登录用户有权部署的项目。选择返回的 appId 后可更新部署；不要自动选择搜索结果的第一项。</p>
+<p>sessionId 表示当前操作者，ownerId 表示要筛选的当前项目负责人。ownerId 是平台用户 ID，不是飞书 open_id，也不是来源凭证持有人 ID。查询负责人不会切换登录身份、授予权限或改变项目归属。</p>
+<p>先按真实用户的部署权限过滤，再按 ownerId 与 query 筛选，最后计算 total 和分页。未知或不可见的 ownerId 返回 items=[]、total=0，不泄露其他人的项目。下一页保持 sessionId、ownerId、query、limit 不变，仅将 offset 改为 nextOffset。ownerId 筛选只限定搜索结果，不代表已获得更新权限。负责人查找见 3.6 / 4.4；普通用户不会因同组服务 Key 而获得全局搜索权限。</p>
 <p><strong>JSON 请求体</strong></p>
-<table><colgroup><col><col><col><col><col></colgroup><thead><tr><th><p>参数</p></th><th><p>类型</p></th><th><p>必填</p></th><th><p>默认值</p></th><th><p>说明</p></th></tr></thead><tbody><tr><td><p>sessionId</p></td><td><p>string</p></td><td><p>是</p></td><td><p>—</p></td><td><p>由接入服务签发并保存在业务后端的有效共享会话标识。</p></td></tr><tr><td><p>query</p></td><td><p>string</p></td><td><p>否</p></td><td><p>空字符串</p></td><td><p>搜索项目名称、历史名称、仓库地址或 appId；最多 200 字符，忽略大小写。</p></td></tr><tr><td><p>limit</p></td><td><p>integer</p></td><td><p>否</p></td><td><p>20</p></td><td><p>每页 1–20 条。</p></td></tr><tr><td><p>offset</p></td><td><p>integer</p></td><td><p>否</p></td><td><p>0</p></td><td><p>从第几条开始；0–1000000。</p></td></tr></tbody></table>
+<table><colgroup><col><col><col><col><col></colgroup><thead><tr><th><p>参数</p></th><th><p>类型</p></th><th><p>必填</p></th><th><p>默认值</p></th><th><p>说明</p></th></tr></thead><tbody><tr><td><p>sessionId</p></td><td><p>string</p></td><td><p>是</p></td><td><p>—</p></td><td><p>由接入服务签发并保存在业务后端的有效共享会话标识。</p></td></tr><tr><td><p>query</p></td><td><p>string</p></td><td><p>否</p></td><td><p>空字符串</p></td><td><p>搜索项目名称、历史名称、仓库地址或 appId；最多 200 字符，忽略大小写。</p></td></tr><tr><td><p>limit</p></td><td><p>integer</p></td><td><p>否</p></td><td><p>20</p></td><td><p>每页 1–20 条。</p></td></tr><tr><td><p>offset</p></td><td><p>integer</p></td><td><p>否</p></td><td><p>0</p></td><td><p>从第几条开始；0–1000000。</p></td></tr><tr><td><p>ownerId</p></td><td><p>string | null</p></td><td><p>否</p></td><td><p>null</p></td><td><p>按当前负责人筛选；1–128 字符且不能只有空白。取自负责人搜索返回的 ownerId。省略或 null 不限制负责人；空字符串无效。</p></td></tr></tbody></table>
 <p><strong>请求示例</strong></p>
 <pre tabindex="0" aria-label="代码示例"><code translate="no">POST /apps/search HTTP/1.1
 Host: 127.0.0.1:8099
@@ -48,6 +50,7 @@ Content-Type: application/json
 
 {
   &quot;sessionId&quot;: &quot;REPLACE_WITH_SHARED_SESSION_ID&quot;,
+  &quot;ownerId&quot;: &quot;33333333333333333333333333333333&quot;,
   &quot;query&quot;: &quot;demo&quot;,
   &quot;limit&quot;: 20,
   &quot;offset&quot;: 0
@@ -62,7 +65,9 @@ Content-Type: application/json
       &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,
       &quot;subdomain&quot;: &quot;demo&quot;,
       &quot;lastSubdomain&quot;: &quot;demo&quot;,
-      &quot;domainBound&quot;: true
+      &quot;domainBound&quot;: true,
+      &quot;ownerId&quot;: &quot;33333333333333333333333333333333&quot;,
+      &quot;ownerName&quot;: &quot;示例用户&quot;
     }
   ],
   &quot;total&quot;: 1,
@@ -70,7 +75,7 @@ Content-Type: application/json
   &quot;offset&quot;: 0,
   &quot;nextOffset&quot;: null
 }</code></pre>
-<table><colgroup><col><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>类型</p></th><th><p>说明</p></th></tr></thead><tbody><tr><td><p>items</p></td><td><p>array&lt;object&gt;</p></td><td><p>项目列表；空结果为 []。</p></td></tr><tr><td><p>items[].appId</p></td><td><p>string</p></td><td><p>更新部署使用的项目 ID。</p></td></tr><tr><td><p>items[].projectName</p></td><td><p>string|null</p></td><td><p>当前或最近使用的项目名称。</p></td></tr><tr><td><p>items[].repository</p></td><td><p>string</p></td><td><p>已登记仓库地址。</p></td></tr><tr><td><p>items[].subdomain</p></td><td><p>string|null</p></td><td><p>当前域名前缀；未绑定时为 null。</p></td></tr><tr><td><p>items[].lastSubdomain</p></td><td><p>string|null</p></td><td><p>最近使用的域名前缀。</p></td></tr><tr><td><p>items[].domainBound</p></td><td><p>boolean</p></td><td><p>是否仍绑定域名。</p></td></tr><tr><td><p>total</p></td><td><p>integer</p></td><td><p>权限过滤及关键词匹配后的总条数。</p></td></tr><tr><td><p>limit / offset</p></td><td><p>integer</p></td><td><p>本页大小与起始位置。</p></td></tr><tr><td><p>nextOffset</p></td><td><p>integer|null</p></td><td><p>下一页 offset；末页为 null。</p></td></tr></tbody></table>
+<table><colgroup><col><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>类型</p></th><th><p>说明</p></th></tr></thead><tbody><tr><td><p>items</p></td><td><p>array&lt;object&gt;</p></td><td><p>项目列表；空结果为 []。</p></td></tr><tr><td><p>items[].appId</p></td><td><p>string</p></td><td><p>更新部署使用的项目 ID。</p></td></tr><tr><td><p>items[].projectName</p></td><td><p>string|null</p></td><td><p>当前或最近使用的项目名称。</p></td></tr><tr><td><p>items[].repository</p></td><td><p>string</p></td><td><p>已登记仓库地址。</p></td></tr><tr><td><p>items[].subdomain</p></td><td><p>string|null</p></td><td><p>当前域名前缀；未绑定时为 null。</p></td></tr><tr><td><p>items[].lastSubdomain</p></td><td><p>string|null</p></td><td><p>最近使用的域名前缀。</p></td></tr><tr><td><p>items[].domainBound</p></td><td><p>boolean</p></td><td><p>是否仍绑定域名。</p></td></tr><tr><td><p>total</p></td><td><p>integer</p></td><td><p>权限、负责人筛选及关键词匹配后的总条数。</p></td></tr><tr><td><p>limit / offset</p></td><td><p>integer</p></td><td><p>本页大小与起始位置。</p></td></tr><tr><td><p>nextOffset</p></td><td><p>integer|null</p></td><td><p>下一页 offset；末页为 null。</p></td></tr><tr><td><p>items[].ownerId</p></td><td><p>string | null</p></td><td><p>当前负责人的平台用户 ID；未分配负责人为 null。</p></td></tr><tr><td><p>items[].ownerName</p></td><td><p>string | null</p></td><td><p>当前负责人显示名；未分配或身份信息不可读取为 null。</p></td></tr></tbody></table>
 <p><strong>常见错误</strong></p>
 <table><colgroup><col><col><col></colgroup><thead><tr><th><p>HTTP 状态</p></th><th><p>错误或原因</p></th><th><p>处理方式</p></th></tr></thead><tbody><tr><td><p>401</p></td><td><p>凭证或共享会话无效</p></td><td><p>重新确认登录或维护凭证。</p></td></tr><tr><td><p>403</p></td><td><p>用户无部署权限</p></td><td><p>检查账号状态、项目角色。</p></td></tr><tr><td><p>422</p></td><td><p>查询参数无效</p></td><td><p>检查 query、limit、offset 类型和范围。</p></td></tr><tr><td><p>503</p></td><td><p>查询服务暂不可用</p></td><td><p>保留查询条件稍后重试，不显示为空列表。</p></td></tr></tbody></table>
 <h3 id="doxcnAV9sHfybTt0B9Y56iVQhxb" tabindex="-1">3.2 提交新建或更新部署</h3>
@@ -224,6 +229,35 @@ Content-Type: application/json
 <table><colgroup><col><col><col></colgroup><thead><tr><th><p>字段</p></th><th><p>类型</p></th><th><p>说明</p></th></tr></thead><tbody><tr><td><p>revoked</p></td><td><p>boolean</p></td><td><p>true 表示撤销处理成功。</p></td></tr></tbody></table>
 <p><strong>常见错误</strong></p>
 <table><colgroup><col><col><col></colgroup><thead><tr><th><p>HTTP 状态</p></th><th><p>错误或原因</p></th><th><p>处理方式</p></th></tr></thead><tbody><tr><td><p>400</p></td><td><p>会话格式无效</p></td><td><p>检查 sessionId。</p></td></tr><tr><td><p>401</p></td><td><p>内部认证失败</p></td><td><p>检查接入服务凭证。</p></td></tr><tr><td><p>503</p></td><td><p>共享登录服务不可用</p></td><td><p>不能确认撤销；保留失败状态并补做撤销。</p></td></tr></tbody></table>
+<h3 id="doxcn0L7PBoktucJswxdBw2tDKb" tabindex="-1">3.6 查找项目负责人</h3>
+<pre tabindex="0" aria-label="代码示例"><code translate="no">POST http://127.0.0.1:8099/owners/search</code></pre>
+<p>认证要求：Authorization: Bearer &lt;INTAKE_TOKEN&gt;；Content-Type: application/json。</p>
+<p>普通用户只能查询本人拥有或明确授予 maintainer 权限的项目及其相关负责人；管理员可查询全部项目及其相关负责人。该接口不提供全员通讯录，没有项目或没有可见项目的人员不会出现。姓名可能重复，必须按 ownerId 区分并由操作者确认目标，不能自动选第一项。</p>
+<p>sessionId 表示当前操作者，ownerId 表示要筛选的当前项目负责人。ownerId 是平台用户 ID，不是飞书 open_id，也不是来源凭证持有人 ID。查询负责人不会切换登录身份、授予权限或改变项目归属。</p>
+<p>JSON 请求体</p>
+<table><colgroup><col><col><col><col><col></colgroup><thead><tr><th><p>参数</p></th><th><p>类型</p></th><th><p>必填</p></th><th><p>默认值</p></th><th><p>说明</p></th></tr></thead><tbody><tr><td><p>sessionId</p></td><td><p>string</p></td><td><p>是</p></td><td><p>—</p></td><td><p>当前操作者的有效共享会话；不是目标负责人的会话。</p></td></tr><tr><td><p>query</p></td><td><p>string</p></td><td><p>否</p></td><td><p>空字符串</p></td><td><p>姓名或平台用户 ID 的包含匹配，忽略大小写；最多 200 字符。</p></td></tr><tr><td><p>limit</p></td><td><p>integer</p></td><td><p>否</p></td><td><p>20</p></td><td><p>每页 1–20 条。</p></td></tr><tr><td><p>offset</p></td><td><p>integer</p></td><td><p>否</p></td><td><p>0</p></td><td><p>从第几条开始；0–1000000。</p></td></tr></tbody></table>
+<pre tabindex="0" aria-label="代码示例"><code translate="no">{
+  &quot;sessionId&quot;: &quot;REPLACE_WITH_SHARED_SESSION_ID&quot;,
+  &quot;query&quot;: &quot;示例用户&quot;,
+  &quot;limit&quot;: 20,
+  &quot;offset&quot;: 0
+}</code></pre>
+<p>成功响应：HTTP 200。</p>
+<pre tabindex="0" aria-label="代码示例"><code translate="no">{
+  &quot;items&quot;: [
+    {
+      &quot;ownerId&quot;: &quot;33333333333333333333333333333333&quot;,
+      &quot;displayName&quot;: &quot;示例用户&quot;
+    }
+  ],
+  &quot;total&quot;: 1,
+  &quot;limit&quot;: 20,
+  &quot;offset&quot;: 0,
+  &quot;nextOffset&quot;: null
+}</code></pre>
+<p>items[].ownerId 为平台用户 ID，items[].displayName 为显示名。返回的负责人按显示名（忽略大小写）与 ID 稳定排序；total 只统计权限范围内匹配的唯一负责人。nextOffset 为 null 时已到末页。管理员仍可找到已停用账号名下的项目；这不恢复该账号的登录权限。未分配负责人的项目不进入负责人候选列表。</p>
+<p>下一步将选定 ownerId 原样传入项目搜索接口，仍使用当前操作者的 sessionId。</p>
+<table><colgroup><col><col><col></colgroup><thead><tr><th><p>HTTP 状态</p></th><th><p>原因</p></th><th><p>处理方式</p></th></tr></thead><tbody><tr><td><p>401</p></td><td><p>凭证或会话无效</p></td><td><p>重新确认真实登录或维护来源凭证。</p></td></tr><tr><td><p>403</p></td><td><p>账号无部署权限</p></td><td><p>检查账号状态及部署权限。</p></td></tr><tr><td><p>422</p></td><td><p>查询参数无效</p></td><td><p>检查字段类型、长度和分页范围。</p></td></tr><tr><td><p>503</p></td><td><p>Redis 或平台查询暂不可用</p></td><td><p>保留条件稍后重试；不要显示为空结果。</p></td></tr></tbody></table>
 <h2 id="doxcnJD33i8beq3edkRRzwxGebb" tabindex="-1">4. 平台同组部署接口</h2>
 <p>服务地址：https://awesome.guanghexinzhi.cn。以下接口通常由同组接入服务自动调用。业务项目按第 3 章接入即可；自行替换接入服务时，才需要实现本章协议。所有请求使用已登记的专用来源凭证。</p>
 <h3 id="doxcnfkKukLp4yRAuXna2pr1Ttb" tabindex="-1">4.1 按共享用户权限搜索项目</h3>
@@ -232,8 +266,10 @@ Content-Type: application/json
 <p><strong>认证要求</strong></p>
 <p>平台来源凭证。</p>
 <p>权限与分页规则与 3.1 相同。sessionId 必填；来源凭证本身不能用于无用户身份的全量搜索。</p>
+<p>sessionId 表示当前操作者，ownerId 表示要筛选的当前项目负责人。ownerId 是平台用户 ID，不是飞书 open_id，也不是来源凭证持有人 ID。查询负责人不会切换登录身份、授予权限或改变项目归属。</p>
+<p>先按真实用户的部署权限过滤，再按 ownerId 与 query 筛选，最后计算 total 和分页。未知或不可见的 ownerId 返回 items=[]、total=0，不泄露其他人的项目。下一页保持 sessionId、ownerId、query、limit 不变，仅将 offset 改为 nextOffset。ownerId 筛选只限定搜索结果，不代表已获得更新权限。负责人查找见 3.6 / 4.4；普通用户不会因同组服务 Key 而获得全局搜索权限。</p>
 <p><strong>JSON 请求体</strong></p>
-<table><colgroup><col><col><col><col><col></colgroup><thead><tr><th><p>参数</p></th><th><p>类型</p></th><th><p>必填</p></th><th><p>默认值</p></th><th><p>说明</p></th></tr></thead><tbody><tr><td><p>sessionId</p></td><td><p>string</p></td><td><p>是</p></td><td><p>—</p></td><td><p>由接入服务签发并保存在业务后端的有效共享会话标识。</p></td></tr><tr><td><p>query</p></td><td><p>string</p></td><td><p>否</p></td><td><p>空字符串</p></td><td><p>搜索项目名称、历史名称、仓库地址或 appId；最多 200 字符，忽略大小写。</p></td></tr><tr><td><p>limit</p></td><td><p>integer</p></td><td><p>否</p></td><td><p>20</p></td><td><p>每页 1–20 条。</p></td></tr><tr><td><p>offset</p></td><td><p>integer</p></td><td><p>否</p></td><td><p>0</p></td><td><p>从第几条开始；0–1000000。</p></td></tr></tbody></table>
+<table><colgroup><col><col><col><col><col></colgroup><thead><tr><th><p>参数</p></th><th><p>类型</p></th><th><p>必填</p></th><th><p>默认值</p></th><th><p>说明</p></th></tr></thead><tbody><tr><td><p>sessionId</p></td><td><p>string</p></td><td><p>是</p></td><td><p>—</p></td><td><p>由接入服务签发并保存在业务后端的有效共享会话标识。</p></td></tr><tr><td><p>query</p></td><td><p>string</p></td><td><p>否</p></td><td><p>空字符串</p></td><td><p>搜索项目名称、历史名称、仓库地址或 appId；最多 200 字符，忽略大小写。</p></td></tr><tr><td><p>limit</p></td><td><p>integer</p></td><td><p>否</p></td><td><p>20</p></td><td><p>每页 1–20 条。</p></td></tr><tr><td><p>offset</p></td><td><p>integer</p></td><td><p>否</p></td><td><p>0</p></td><td><p>从第几条开始；0–1000000。</p></td></tr><tr><td><p>ownerId</p></td><td><p>string | null</p></td><td><p>否</p></td><td><p>null</p></td><td><p>按当前负责人筛选；1–128 字符且不能只有空白。取自负责人搜索返回的 ownerId。省略或 null 不限制负责人；空字符串无效。</p></td></tr></tbody></table>
 <p><strong>请求示例</strong></p>
 <pre tabindex="0" aria-label="代码示例"><code translate="no">POST /api/v1/integrations/apps/search HTTP/1.1
 Host: awesome.guanghexinzhi.cn
@@ -242,6 +278,7 @@ Content-Type: application/json
 
 {
   &quot;sessionId&quot;: &quot;REPLACE_WITH_SHARED_SESSION_ID&quot;,
+  &quot;ownerId&quot;: &quot;33333333333333333333333333333333&quot;,
   &quot;query&quot;: &quot;demo&quot;,
   &quot;limit&quot;: 20,
   &quot;offset&quot;: 0
@@ -256,7 +293,9 @@ Content-Type: application/json
       &quot;repository&quot;: &quot;https://github.com/your-org/your-repo.git&quot;,
       &quot;subdomain&quot;: &quot;demo&quot;,
       &quot;lastSubdomain&quot;: &quot;demo&quot;,
-      &quot;domainBound&quot;: true
+      &quot;domainBound&quot;: true,
+      &quot;ownerId&quot;: &quot;33333333333333333333333333333333&quot;,
+      &quot;ownerName&quot;: &quot;示例用户&quot;
     }
   ],
   &quot;total&quot;: 1,
@@ -347,6 +386,35 @@ Authorization: Bearer &lt;SOURCE_TOKEN&gt;</code></pre>
 }</code></pre>
 <p><strong>常见错误</strong></p>
 <table><colgroup><col><col><col></colgroup><thead><tr><th><p>HTTP 状态</p></th><th><p>错误或原因</p></th><th><p>处理方式</p></th></tr></thead><tbody><tr><td><p>401</p></td><td><p>来源凭证失效</p></td><td><p>维护凭证。</p></td></tr><tr><td><p>403</p></td><td><p>任务不属于该来源</p></td><td><p>检查来源及任务关联。</p></td></tr><tr><td><p>404</p></td><td><p>任务不存在</p></td><td><p>检查 jobId。</p></td></tr></tbody></table>
+<h3 id="doxcnq3yWU00F5VRKfRjnwRPzMb" tabindex="-1">4.4 查找项目负责人</h3>
+<pre tabindex="0" aria-label="代码示例"><code translate="no">POST https://awesome.guanghexinzhi.cn/api/v1/integrations/owners/search</code></pre>
+<p>认证要求：Authorization: Bearer &lt;SOURCE_TOKEN&gt;；Content-Type: application/json。</p>
+<p>普通用户只能查询本人拥有或明确授予 maintainer 权限的项目及其相关负责人；管理员可查询全部项目及其相关负责人。该接口不提供全员通讯录，没有项目或没有可见项目的人员不会出现。姓名可能重复，必须按 ownerId 区分并由操作者确认目标，不能自动选第一项。</p>
+<p>sessionId 表示当前操作者，ownerId 表示要筛选的当前项目负责人。ownerId 是平台用户 ID，不是飞书 open_id，也不是来源凭证持有人 ID。查询负责人不会切换登录身份、授予权限或改变项目归属。</p>
+<p>JSON 请求体</p>
+<table><colgroup><col><col><col><col><col></colgroup><thead><tr><th><p>参数</p></th><th><p>类型</p></th><th><p>必填</p></th><th><p>默认值</p></th><th><p>说明</p></th></tr></thead><tbody><tr><td><p>sessionId</p></td><td><p>string</p></td><td><p>是</p></td><td><p>—</p></td><td><p>当前操作者的有效共享会话；不是目标负责人的会话。</p></td></tr><tr><td><p>query</p></td><td><p>string</p></td><td><p>否</p></td><td><p>空字符串</p></td><td><p>姓名或平台用户 ID 的包含匹配，忽略大小写；最多 200 字符。</p></td></tr><tr><td><p>limit</p></td><td><p>integer</p></td><td><p>否</p></td><td><p>20</p></td><td><p>每页 1–20 条。</p></td></tr><tr><td><p>offset</p></td><td><p>integer</p></td><td><p>否</p></td><td><p>0</p></td><td><p>从第几条开始；0–1000000。</p></td></tr></tbody></table>
+<pre tabindex="0" aria-label="代码示例"><code translate="no">{
+  &quot;sessionId&quot;: &quot;REPLACE_WITH_SHARED_SESSION_ID&quot;,
+  &quot;query&quot;: &quot;示例用户&quot;,
+  &quot;limit&quot;: 20,
+  &quot;offset&quot;: 0
+}</code></pre>
+<p>成功响应：HTTP 200。</p>
+<pre tabindex="0" aria-label="代码示例"><code translate="no">{
+  &quot;items&quot;: [
+    {
+      &quot;ownerId&quot;: &quot;33333333333333333333333333333333&quot;,
+      &quot;displayName&quot;: &quot;示例用户&quot;
+    }
+  ],
+  &quot;total&quot;: 1,
+  &quot;limit&quot;: 20,
+  &quot;offset&quot;: 0,
+  &quot;nextOffset&quot;: null
+}</code></pre>
+<p>items[].ownerId 为平台用户 ID，items[].displayName 为显示名。返回的负责人按显示名（忽略大小写）与 ID 稳定排序；total 只统计权限范围内匹配的唯一负责人。nextOffset 为 null 时已到末页。管理员仍可找到已停用账号名下的项目；这不恢复该账号的登录权限。未分配负责人的项目不进入负责人候选列表。</p>
+<p>下一步将选定 ownerId 原样传入项目搜索接口，仍使用当前操作者的 sessionId。</p>
+<table><colgroup><col><col><col></colgroup><thead><tr><th><p>HTTP 状态</p></th><th><p>原因</p></th><th><p>处理方式</p></th></tr></thead><tbody><tr><td><p>401</p></td><td><p>凭证或会话无效</p></td><td><p>重新确认真实登录或维护来源凭证。</p></td></tr><tr><td><p>403</p></td><td><p>账号无部署权限</p></td><td><p>检查账号状态及部署权限。</p></td></tr><tr><td><p>422</p></td><td><p>查询参数无效</p></td><td><p>检查字段类型、长度和分页范围。</p></td></tr><tr><td><p>503</p></td><td><p>Redis 或平台查询暂不可用</p></td><td><p>保留条件稍后重试；不要显示为空结果。</p></td></tr></tbody></table>
 <h2 id="doxcnNHNkFcaLOLeSQJu1a3kCrf" tabindex="-1">5. 普通自动化接口</h2>
 <p>服务地址：https://awesome.guanghexinzhi.cn。适用于个人脚本、CI 或按凭证负责人身份运行的普通自动化。凭证负责人必须仍有相应项目权限；本组接口不支持共享 sessionId。</p>
 <h3 id="doxcnwOA3XJTpo0qOgUHL8QCGbe" tabindex="-1">5.1 创建或更新部署任务</h3>

@@ -1,6 +1,6 @@
 # 同组后端接入：共享登录态与可靠部署
 
-适用 0.11.3，权限说明核对于 2026-10-23。A 是将来部署在本机的同组项目，B 是 Awesome Deploy。A 项目尚未存在；本次提供 A 端适配服务、共享会话和 B 端委托接口，并不代表 A 业务已接通。原有 `/api/v1/automation` 接口保留普通个人/非委托来源凭证调用，使用凭证负责人的身份；绑定 `delegation_source` 的来源凭证必须走共享登录委托接口，调用普通自动化接口返回 403。同组共享登录态方案使用 `/api/v1/integrations`：新建应用归实际登录申请人；更新已有应用保留原负责人，本次部署提交人记录为实际操作用户。
+适用 0.11.4，权限说明核对于 2026-10-26。A 是将来部署在本机的同组项目，B 是 Awesome Deploy。A 项目尚未存在；本次提供 A 端适配服务、共享会话和 B 端委托接口，并不代表 A 业务已接通。原有 `/api/v1/automation` 接口保留普通个人/非委托来源凭证调用，使用凭证负责人的身份；绑定 `delegation_source` 的来源凭证必须走共享登录委托接口，调用普通自动化接口返回 403。同组共享登录态方案使用 `/api/v1/integrations`：新建应用归实际登录申请人；更新已有应用保留原负责人，本次部署提交人记录为实际操作用户。
 
 ## 1. 服务与身份
 
@@ -66,20 +66,38 @@ B 接收后 jobId、appId 非空，外层状态 submitted。外层 pending/submi
 
 ### 2.1 搜索已有项目
 
+
+先按姓名查找负责人时，A 后端调用 `POST /owners/search`（B 对应 `POST /api/v1/integrations/owners/search`），继续携带实际操作者的共享会话与服务凭证：
+
+```json
+{"sessionId":"当前操作者的共享会话","query":"示例用户","limit":20,"offset":0}
+```
+
+返回 `items: [{"ownerId":"平台用户ID","displayName":"示例用户"}]` 和 `total/limit/offset/nextOffset`。候选人仅来自当前用户有权部署的项目：普通用户是本人及明确授权为 maintainer 的项目所涉及负责人，管理员为全部项目负责人；不提供全员通讯录。姓名可能重复，必须明确选择 ownerId。ownerId 是平台用户 ID，不是飞书 open_id；始终使用操作者自己的 sessionId，不能换用目标负责人的会话。
+
+将选中的 ownerId 带入项目搜索：
+
+```json
+{"sessionId":"当前操作者的共享会话","ownerId":"选中的平台用户ID","query":"","limit":20,"offset":0}
+```
+
+ownerId 可选，省略或 null 保持原范围；提供时为 1–128 字符、非空且非纯空白字符串。普通用户的筛选只能缩小已有权限范围；不可见或未知负责人返回空结果，不能泄露其项目和数量。项目结果新增 ownerId/ownerName。未分配负责人的项目仅管理员可见，这两个字段为 null，且不进入负责人候选。管理员可以管理已停用负责人名下的项目，不恢复该负责人权限。负责人候选按姓名（忽略大小写）与 ID 排序、去重后分页；负责人搜索 query 匹配姓名或 ID，项目 query 匹配项目名称、仓库、appId。
+
 A 后端调用 `POST http://127.0.0.1:8099/apps/search`，使用内部接入 Bearer。适配服务使用专用委托来源凭证调用 B 的 `POST /api/v1/integrations/apps/search`；JSON 相同：
 
 ```json
 {"sessionId":"服务端保存的共享会话标识","query":"demo","limit":20,"offset":0}
 ```
 
-sessionId 必填，取自已验证的上游登录态，放在 JSON，不放 URL。query 最多 200 字符，按当前/历史项目名称（subdomain）、repository 或 appId 不区分大小写包含匹配；空字符串列出当前用户所有有权部署的项目，不是所有人的项目。limit 为 1–20 的整数，默认 20；offset 为 0–1000000 的整数，默认 0。权限过滤先于关键词匹配、total 统计和分页。来源凭证的管理员身份不会扩大实际登录用户的权限；普通 personal 或未开启委托的 source 凭证不能直接调用此接口，普通用户经 A 的共享登录态链路可以搜索。
+sessionId 必填，取自已验证的上游登录态，放在 JSON，不放 URL。query 最多 200 字符，按当前/历史项目名称（subdomain）、repository 或 appId 不区分大小写包含匹配；空字符串列出当前用户所有有权部署的项目，不是所有人的项目。limit 为 1–20 的整数，默认 20；offset 为 0–1000000 的整数，默认 0。权限过滤先于负责人/关键词匹配、total 统计和分页。下一页保持 ownerId、query、limit、sessionId，只更新 offset。来源凭证的管理员身份不会扩大实际登录用户的权限；普通 personal 或未开启委托的 source 凭证不能直接调用此接口，普通用户经 A 的共享登录态链路可以搜索。
 
 ```json
 {
   "items": [{
     "appId": "已有应用编号", "projectName": "demo",
     "repository": "https://github.com/your-org/your-repo.git",
-    "subdomain": "demo", "lastSubdomain": "demo", "domainBound": true
+    "subdomain": "demo", "lastSubdomain": "demo", "domainBound": true,
+    "ownerId": "平台用户ID", "ownerName": "示例用户"
   }],
   "total": 1, "limit": 20, "offset": 0, "nextOffset": null
 }

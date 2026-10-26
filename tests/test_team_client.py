@@ -84,13 +84,14 @@ def test_team_submission_distinguishes_retryable_and_permanent_failures(token_fi
     assert getattr(error.value, 'status_code', 'missing') == status
 
 
+@pytest.mark.parametrize('search_method', ['search', 'search_owners'])
 @pytest.mark.parametrize('status,expected', [(401, 401), (403, 403), (422, 422), (500, 503), (503, 503)])
-def test_team_search_preserves_actionable_http_statuses(token_file, status, expected):
+def test_team_search_preserves_actionable_http_statuses(token_file, status, expected, search_method):
     with httpx.Client(transport=httpx.MockTransport(
             lambda request: httpx.Response(status, json={'detail': 'private'}))) as client:
         remote = TeamPlatformClient('https://platform.test', token_file, client=client)
         with pytest.raises(TeamSearchError) as error:
-            remote.search({'sessionId': 'session'})
+            getattr(remote, search_method)({'sessionId': 'session'})
     assert error.value.status_code == expected
     assert str(error.value) == '项目查询未完成。'
 
@@ -112,8 +113,9 @@ def test_team_failure_classification_is_independent_of_error_wording(token_file,
     assert error.value.status_code == status
 
 
+@pytest.mark.parametrize('search_method', ['search', 'search_owners'])
 @pytest.mark.parametrize('mode', ['network', 'redirect', 'oversized', 'invalid_json', 'invalid_shape'])
-def test_team_search_maps_transport_and_invalid_response_failures_to_unavailable(token_file, mode):
+def test_team_search_maps_transport_and_invalid_response_failures_to_unavailable(token_file, mode, search_method):
     def handle(request):
         if mode == 'network':
             raise httpx.ReadTimeout('private timeout detail', request=request)
@@ -128,7 +130,7 @@ def test_team_search_maps_transport_and_invalid_response_failures_to_unavailable
     with httpx.Client(transport=httpx.MockTransport(handle)) as client:
         remote = TeamPlatformClient('https://platform.test', token_file, client=client)
         with pytest.raises(TeamSearchError) as error:
-            remote.search({'sessionId': 'session'})
+            getattr(remote, search_method)({'sessionId': 'session'})
     assert error.value.status_code == 503
 
 
@@ -158,3 +160,23 @@ def test_team_transport_keeps_host_routes_and_rereads_rotated_token(token_file):
     assert seen[0].headers['Idempotency-Key'] == 'req-1'
     assert json.loads(seen[0].content) == payload
     assert json.loads(seen[2].content) == {'sessionId': 'session'}
+
+
+def test_owner_search_transport_keeps_identity_in_post_body(token_file):
+    seen = []
+    def handle(request):
+        seen.append(request)
+        return httpx.Response(200, json={'items': [{'ownerId': 'user-1', 'displayName': '张三'}],
+                                        'total': 1, 'limit': 20, 'offset': 0, 'nextOffset': None})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as transport:
+        remote = TeamPlatformClient('http://127.0.0.1:8088', token_file,
+                                    host='deploy.example.test', client=transport)
+        body = {'sessionId': 'operator-session', 'query': '张', 'limit': 20, 'offset': 0}
+        assert remote.search_owners(body)['items'][0]['ownerId'] == 'user-1'
+    assert len(seen) == 1
+    request = seen[0]
+    assert request.method == 'POST'
+    assert request.url.path == '/api/v1/integrations/owners/search'
+    assert request.headers['Authorization'] == 'Bearer source-token-one'
+    assert request.headers['Host'] == 'deploy.example.test'
+    assert json.loads(request.content) == body

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Awesome · 自动部署</title>
-  <link rel="stylesheet" href="/assets/app.css?v=0.9.3"><link rel="stylesheet" href="/assets/auth.css?v=0.9.0"><script src="/assets/auth.js?v=0.9.0" defer></script><script src="/assets/app.js?v=0.11.1" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=0.9.3"><link rel="stylesheet" href="/assets/auth.css?v=0.9.0"><script src="/assets/auth.js?v=0.11.5" defer></script><script src="/assets/app.js?v=0.11.5" defer></script>
 <link rel="stylesheet" href="/assets/theme.css?v=0.10.0">
 </head>
 <body><a class="skip-link" href="#console-main">跳到主要内容</a><main id="console-main">
@@ -45,7 +45,9 @@
           <p id="resource-limits-help">多个服务按应用合计。内存按需使用，不固定预占；写满存储会阻止继续写入，内存超限可能终止服务。</p>
           <p id="resource-pool" aria-live="polite">正在读取平台配置…</p>
         </section>
-        <button type="submit" id="submit" aria-describedby="resource-limits-help">开始部署 <span aria-hidden="true">↗</span></button>
+        <button type="submit" id="submit" aria-describedby="resource-limits-help deployment-status">开始部署</button>
+        <p id="deployment-status" class="hint" role="status" aria-live="polite" hidden></p>
+        <button type="button" id="deployment-retry" class="secondary" hidden>重试确认部署</button>
         <p id="deploy-permission" class="permission-hint" role="status" hidden></p><p class="hint submit-hint">当前直接执行部署，尚未接入审核和审批。</p><p id="form-error" role="alert"></p>
       </form>
       <details class="scope-details"><summary>配置准备与支持范围</summary><p>仓库应包含 awesome.yaml，以及构建所需的 Dockerfile；也可按字段规范使用已有镜像。支持 Web 服务和前端/API 路径分流。</p><p id="storage-capability">正在读取持久存储支持情况…</p><p id="runtime-network-capability">正在读取运行网络支持情况…</p><p>数据库迁移和后台任务（worker）仍未支持。构建命令默认不访问网络，基础镜像由平台获取。</p><p>参考<a href="/api/v1/schema" target="_blank" rel="noopener">字段规范</a>确认端口、健康检查和存储配置。若项目缺少秘密配置，当前进度会列出可直接填写的项目；保存后即可继续部署。值保存在部署服务器，无需写入仓库或自行寻找文件位置。</p></details>

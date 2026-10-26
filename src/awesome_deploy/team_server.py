@@ -13,7 +13,7 @@ from .feishu import _read_secret
 from .team_client import TeamPlatformClient as TeamPlatformClient, TeamSearchError as TeamSearchError
 from .team_outbox import TeamOutbox
 from .team_sessions import SessionError, SessionUnavailable, load_shared_sessions
-from .team_api import TeamAppSearch
+from .team_api import TeamAppSearch, TeamOwnerSearch
 
 
 def create_team_app(outbox, token, *, start_worker=True):
@@ -119,29 +119,36 @@ def create_team_app(outbox, token, *, start_worker=True):
         except (ValueError, UnicodeError):
             raise HTTPException(400, 'JSON 无效。') from None
 
-    @app.post('/apps/search')
-    async def search_apps(request: Request):
+    async def search(request, model, forward, label):
         body = await session_body(request)
         if not request.headers.get('content-type', '').lower().startswith('application/json'):
             raise HTTPException(415, '请使用 application/json。')
         from pydantic import ValidationError
         try:
-            query = TeamAppSearch.model_validate(body)
+            query = model.model_validate(body)
         except ValidationError:
-            raise HTTPException(422, '项目查询字段无效，请检查会话、关键词和分页参数。') from None
+            raise HTTPException(422, f'{label}查询字段无效，请检查会话、筛选和分页参数。') from None
         try:
             await asyncio.to_thread(outbox.sessions.read, query.sessionId)
-            return await asyncio.to_thread(outbox.platform.search, query.model_dump())
+            return await asyncio.to_thread(forward, query.model_dump(exclude_none=True))
         except SessionError:
             raise HTTPException(401, '共享会话已失效，请重新登录。') from None
         except SessionUnavailable:
             raise HTTPException(503, '共享登录服务暂不可用，请稍后重试查询。') from None
         except TeamSearchError as exc:
-            messages = {400: '项目查询请求无效。', 401: '共享会话已失效，或来源凭证需要维护。',
-                        403: '当前用户或来源无权查询可部署项目。', 409: '项目查询暂不可用，请重试。',
-                        422: '项目查询字段无效，请检查关键词和分页参数。'}
+            messages = {400: f'{label}查询请求无效。', 401: '共享会话已失效，或来源凭证需要维护。',
+                        403: f'当前用户或来源无权查询{label}。', 409: f'{label}查询暂不可用，请重试。',
+                        422: f'{label}查询字段无效，请检查筛选和分页参数。'}
             raise HTTPException(exc.status_code, messages.get(exc.status_code,
                 '部署平台暂不可用，请稍后重试查询。')) from None
+
+    @app.post('/apps/search')
+    async def search_apps(request: Request):
+        return await search(request, TeamAppSearch, outbox.platform.search, '项目')
+
+    @app.post('/owners/search')
+    async def search_owners(request: Request):
+        return await search(request, TeamOwnerSearch, outbox.platform.search_owners, '负责人')
 
     @app.get('/requests/{request_id}')
     def get(request_id: str, request: Request):
