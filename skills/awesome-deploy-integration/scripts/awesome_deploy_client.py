@@ -43,16 +43,16 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def _origin(value):
-    if not isinstance(value, str) or any(c.isspace() or ord(c) < 32 for c in value):
+    if not isinstance(value, str) or any(c.isspace() or not c.isprintable() for c in value):
         raise ValueError("适配服务地址无效。")
     try:
         parts = urlsplit(value)
         port = parts.port
         valid = (parts.scheme in {"http", "https"} and parts.hostname
-                 and not parts.username and not parts.password
+                 and parts.username is None and parts.password is None
                  and not parts.query and not parts.fragment and parts.path in {"", "/"}
                  and "?" not in value and "#" not in value and "\\" not in value
-                 and (port is None or 1 <= port <= 65535)
+                 and not parts.netloc.endswith(":") and (port is None or 1 <= port <= 65535)
                  and (parts.scheme == "https" or parts.hostname in {"127.0.0.1", "::1", "localhost"}))
     except ValueError:
         valid = False

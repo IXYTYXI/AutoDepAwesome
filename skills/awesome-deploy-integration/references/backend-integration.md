@@ -26,6 +26,14 @@ python3 -B scripts/awesome_deploy_client.py wait example-request-001 --max-secon
 
 CLI 退出码 0 表示查询完成（包括 failed/rejected 任务，须读 status），1 表示接口/输入错误，2 表示等待到期且没有取消任务。CLI 不提供真实会话签发和部署命令，避免把后端认证省略成手填身份；Python 方法支持完整链路。
 
+## 服务端配置约束（0.11.8）
+
+配置中的 source 必须与 registry 和委托来源凭证一致，为 1–40 位小写字母、数字或中划线，首位为字母或数字；registry 最多 32 个来源且不可重名。shared_sessions_file、database_path、platform_token_file、intake_token_file，以及 registry 的两个密钥文件，均使用非空绝对路径，不含控制字符。密钥文件按运行账号所有、0400/0600 权限保管；签名密钥至少 32 字节。
+
+feishu_app_id 使用 cli_ 后接 1–80 位 ASCII 字母或数字，示例 cli_REPLACE 必须换成真实 App ID；tenant_key 使用 1–128 位 ASCII 字母、数字、下划线或中划线。两者必须与 B 相同。redis_username 为不含空白的非空可打印 ASCII 名称，A/B 可以使用各自的 ACL 用户；redis_url 不内嵌账号或密码，不能带查询参数或片段，数据库路径为 /0 至 /99，实际可用库数由 Redis 配置决定。显式端口为 1–65535。
+
+同组 platform_origin 只允许 HTTPS 根地址，或 127.0.0.1、localhost、::1 的本机 HTTP 根地址；独立旧 intake 模块仍要求 HTTPS。地址不能包含 URL 用户名/密码、查询参数、片段、子路径、空白或反斜杠。platform_host 配置项可填 null；设置时只填不带协议、端口和路径的 ASCII 主机名。来源、路径或 URL 配错时会在启动加载配置阶段拒绝，不能把启动失败当成部署请求已受理。
+
 ## 把助手接入真实后端
 
 将 `scripts/awesome_deploy_client.py` 作为模块纳入自己的后端，或在受控 Python 模块路径中引用。下面是框架无关的接线示例；`auth`、`db`、`policy` 是 A 的现有认证、持久化和授权接口，必须由项目实现。助手不验证 OAuth、不代建 A 的数据库、不改变业务逻辑。

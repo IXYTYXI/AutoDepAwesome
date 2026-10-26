@@ -1,6 +1,6 @@
 # API 契约
 
-适用于 Awesome Deploy 0.11.4。来源：`docs/team-integration.md` 和 `src/awesome_deploy/team_server.py`、`team_api.py`、`team_outbox.py`、`team_sessions.py`（2026-10-26）。本文件随 Skill 分发，不依赖读者拥有源码；若目标版本不同，先让平台运维确认差异，不猜接口。
+适用于 Awesome Deploy 0.11.8。来源：`docs/team-integration.md` 和 `src/awesome_deploy/team_server.py`、`team_api.py`、`team_outbox.py`、`team_sessions.py`（2026-10-26）。本文件随 Skill 分发，不依赖读者拥有源码；若目标版本不同，先让平台运维确认差异，不猜接口。
 
 ## 地址、凭证和身份
 
@@ -8,7 +8,7 @@ A 后端 → 适配服务：典型同机地址 `http://127.0.0.1:8099`，以下�
 
 地址来自受控配置，只允许 loopback HTTP 或经正常证书校验的 HTTPS。容器中的 127.0.0.1 是容器自己；需运维提供受控连接，不能擅自开放公网 8099/Redis、启用 host 网络或启动本机 Docker。所有 HTTP 客户端必须设超时且禁用重定向，防止 Bearer 被转发。
 
-同一 Feishu App ID + tenant_key 才能共享 open_id；不同 App 的 open_id 不能直接互换，不用姓名匹配。首次进入 B 的用户是普通成员，既有账号保留 B 的本地角色、禁用状态和 can_deploy。source 标记只确定来源，不能赋予用户 admin。
+App ID 的平台格式为 `cli_` 后接 1–80 个 ASCII 字母或数字；tenant_key 为 1–128 个 ASCII 字母、数字、下划线或中划线。同一 Feishu App ID + tenant_key 才能共享 open_id；不同 App 的 open_id 不能直接互换，不用姓名匹配。首次进入 B 的用户是普通成员，既有账号保留 B 的本地角色、禁用状态和 can_deploy。source 标记只确定来源，不能赋予用户 admin。
 
 ## 1. 会话
 

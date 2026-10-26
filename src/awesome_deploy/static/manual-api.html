@@ -1,6 +1,6 @@
 <h1>Awesome Deploy API 参考文档</h1>
 <nav class="manual-toc" aria-label="本文目录"><p><strong>本文目录</strong></p><ol><li><a href="#doxcnsLS4zAQLyPR4mdi47vsFSe">1. 快速开始</a></li><li><a href="#doxcnQkJcO6yi27LdFd1TSYPKQg">2. 认证与权限</a></li><li><a href="#doxcn7aV96fP1L8TB31cnUmib0e">3. 同组接入服务接口</a></li><li><a href="#doxcnJD33i8beq3edkRRzwxGebb">4. 平台同组部署接口</a></li><li><a href="#doxcnNHNkFcaLOLeSQJu1a3kCrf">5. 普通自动化接口</a></li><li><a href="#doxcnU0dr7vSQHi6Qrmn98wYmEO">6. 控制台部署与项目管理</a></li><li><a href="#doxcn4RojJqrJOvnaimwL0uEzSg">7. 控制台 API 凭证管理</a></li><li><a href="#doxcnd9MVUVsWQAiXgBrfDXBGwc">8. 控制台应用配置与密钥</a></li><li><a href="#doxcnpdAYb7et8nAHASx0syVi2f">9. 控制台成员与权限管理</a></li><li><a href="#doxcnPqYCphaHn0wDe5WKXoIzDP">10. 公共响应字段与状态</a></li><li><a href="#doxcnMpPHdshWOTGNRKaztnr8Xb">11. 登录、错误与其他路由</a></li></ol></nav>
-<p>版本：0.11.4　更新日期：2026-10-26</p>
+<p>版本：0.11.8　更新日期：2026-10-26</p>
 <p>本文用于后端开发者和 AI 编程工具接入项目搜索、部署提交及进度查询。每个接口均提供请求方法、地址、认证、参数、请求示例、响应示例和错误处理。接口均为 HTTP；JSON 使用 UTF-8，字段区分大小写。示例中的尖括号内容和演示 ID 需要替换为实际值。</p>
 <p><a href="https://guanghe.feishu.cn/docx/DSUwdxpXhot6fQx2YticNCtWnHe" target="_blank" rel="noopener noreferrer">仓库与 awesome.yaml 要求：部署接入技术协议</a></p>
 <h2 id="doxcnsLS4zAQLyPR4mdi47vsFSe" tabindex="-1">1. 快速开始</h2>
@@ -950,7 +950,7 @@ Cookie: &lt;PLATFORM_SESSION_COOKIE&gt;</code></pre>
 }</code></pre>
 <p><strong>常见错误</strong></p>
 <table><colgroup><col><col><col></colgroup><thead><tr><th><p>HTTP 状态</p></th><th><p>错误或原因</p></th><th><p>处理方式</p></th></tr></thead><tbody><tr><td><p>401</p></td><td><p>未登录或会话失效</p></td><td><p>重新登录控制台。</p></td></tr><tr><td><p>403</p></td><td><p>权限不足</p></td><td><p>检查当前用户权限。</p></td></tr></tbody></table>
-<p>以上为较大响应的字段节选。完整结构分别为 JSON Schema、平台能力配置与 OpenAPI 文档，请解析实际响应；不要把 OpenAPI 的 info.version 当作平台发布版本。</p>
+<p>以上为较大响应的字段节选。完整结构分别为 JSON Schema、平台能力配置与 OpenAPI 文档，请解析实际响应；当前 info.version 与已安装的平台发布版本一致。</p>
 <h3 id="doxcncGmjrTHCEA9BcaIJX6F7Sg" tabindex="-1">6.12 查询平台能力</h3>
 <p>查询平台能力。</p>
 <pre tabindex="0" aria-label="代码示例"><code translate="no">GET https://awesome.guanghexinzhi.cn/api/v1/capabilities</code></pre>
@@ -994,7 +994,7 @@ Cookie: &lt;PLATFORM_SESSION_COOKIE&gt;</code></pre>
 }</code></pre>
 <p><strong>常见错误</strong></p>
 <table><colgroup><col><col><col></colgroup><thead><tr><th><p>HTTP 状态</p></th><th><p>错误或原因</p></th><th><p>处理方式</p></th></tr></thead><tbody><tr><td><p>401</p></td><td><p>未登录或会话失效</p></td><td><p>重新登录控制台。</p></td></tr><tr><td><p>403</p></td><td><p>权限不足</p></td><td><p>检查当前用户权限。</p></td></tr></tbody></table>
-<p>以上为较大响应的字段节选。完整结构分别为 JSON Schema、平台能力配置与 OpenAPI 文档，请解析实际响应；不要把 OpenAPI 的 info.version 当作平台发布版本。</p>
+<p>以上为较大响应的字段节选。完整结构分别为 JSON Schema、平台能力配置与 OpenAPI 文档，请解析实际响应；当前 info.version 与已安装的平台发布版本一致。</p>
 <h3 id="doxcnVn0ygcSDXsNCNphSKxhmUe" tabindex="-1">6.13 获取平台 OpenAPI 定义</h3>
 <p>获取平台 OpenAPI 定义。</p>
 <pre tabindex="0" aria-label="代码示例"><code translate="no">GET https://awesome.guanghexinzhi.cn/api/v1/openapi.json</code></pre>
@@ -1011,12 +1011,12 @@ Cookie: &lt;PLATFORM_SESSION_COOKIE&gt;</code></pre>
 <pre tabindex="0" aria-label="代码示例"><code translate="no">{
   &quot;info&quot;: {
     &quot;title&quot;: &quot;Awesome Deploy&quot;,
-    &quot;version&quot;: &quot;0.1.0&quot;
+    &quot;version&quot;: &quot;0.11.8&quot;
   }
 }</code></pre>
 <p><strong>常见错误</strong></p>
 <table><colgroup><col><col><col></colgroup><thead><tr><th><p>HTTP 状态</p></th><th><p>错误或原因</p></th><th><p>处理方式</p></th></tr></thead><tbody><tr><td><p>401</p></td><td><p>未登录或会话失效</p></td><td><p>重新登录控制台。</p></td></tr><tr><td><p>403</p></td><td><p>权限不足</p></td><td><p>检查当前用户权限。</p></td></tr></tbody></table>
-<p>以上为较大响应的字段节选。完整结构分别为 JSON Schema、平台能力配置与 OpenAPI 文档，请解析实际响应；不要把 OpenAPI 的 info.version 当作平台发布版本。</p>
+<p>以上为较大响应的字段节选。完整结构分别为 JSON Schema、平台能力配置与 OpenAPI 文档，请解析实际响应；当前 info.version 与已安装的平台发布版本一致。</p>
 <h2 id="doxcn4RojJqrJOvnaimwL0uEzSg" tabindex="-1">7. 控制台 API 凭证管理</h2>
 <p>本章接口仅供平台控制台及其管理功能使用，要求平台网页登录会话。写操作按第 2.3 节携带 CSRF 请求头。</p>
 <h3 id="doxcn2sXqT8S21VvnJv32hWF4Tg" tabindex="-1">7.1 列出个人 API 凭证</h3>
@@ -1640,7 +1640,7 @@ Cookie: &lt;PLATFORM_SESSION_COOKIE&gt;</code></pre>
 <p>以上为结构示例，具体文案及 path 取实际响应。HTTP 400 检查格式和幂等键；401 检查认证；403 检查权限或近期认证；404 检查资源 ID；409 处理资源/版本/幂等冲突；413 减小请求体；415 使用 JSON；422 修正参数；429 退避；503/504 检查依赖服务。</p>
 <h3 id="doxcnUsSjt7r8gCJyZH4NVD2Ehd" tabindex="-1">11.3 页面与资源路由</h3>
 <p>以下返回页面、静态文件或手册内容，不属于部署调用 API；列出以便查阅完整路由。</p>
-<table><colgroup><col><col><col></colgroup><thead><tr><th><p>方法与路径</p></th><th><p>返回内容</p></th><th><p>访问要求</p></th></tr></thead><tbody><tr><td><p>GET /login</p></td><td><p>HTML 登录页</p></td><td><p>登录页/白名单静态资源可匿名访问</p></td></tr><tr><td><p>GET /</p></td><td><p>部署控制台 HTML</p></td><td><p>平台网页登录</p></td></tr><tr><td><p>GET /manage</p></td><td><p>应用管理 HTML</p></td><td><p>平台网页登录</p></td></tr><tr><td><p>GET /api-access</p></td><td><p>个人 API 凭证页面，仅Feishu</p></td><td><p>平台网页登录</p></td></tr><tr><td><p>GET /document</p></td><td><p>网页手册外壳，doc参数在前端选择</p></td><td><p>平台网页登录</p></td></tr><tr><td><p>GET /document/content/{doc_id}</p></td><td><p>对应手册 HTML 内容</p></td><td><p>平台网页登录</p></td></tr><tr><td><p>GET /document/deployment-guide.txt</p></td><td><p>text/plain 附件；服务器资源限额动态填充</p></td><td><p>平台网页登录</p></td></tr><tr><td><p>GET /members</p></td><td><p>成员页面，仅Feishu</p></td><td><p>平台网页登录</p></td></tr><tr><td><p>GET /assets/{name}</p></td><td><p>JS/CSS文件</p></td><td><p>登录页/白名单静态资源可匿名访问</p></td></tr></tbody></table>
+<table><colgroup><col><col><col></colgroup><thead><tr><th><p>方法与路径</p></th><th><p>返回内容</p></th><th><p>访问要求</p></th></tr></thead><tbody><tr><td><p>GET /login</p></td><td><p>HTML 登录页</p></td><td><p>仅飞书登录模式提供，可匿名访问；basic 模式返回 404。</p></td></tr><tr><td><p>GET /</p></td><td><p>部署控制台 HTML</p></td><td><p>平台网页登录</p></td></tr><tr><td><p>GET /manage</p></td><td><p>应用管理 HTML</p></td><td><p>平台网页登录</p></td></tr><tr><td><p>GET /api-access</p></td><td><p>个人 API 凭证页面，仅Feishu</p></td><td><p>平台网页登录</p></td></tr><tr><td><p>GET /document</p></td><td><p>网页手册外壳，doc参数在前端选择</p></td><td><p>平台网页登录</p></td></tr><tr><td><p>GET /document/content/{doc_id}</p></td><td><p>对应手册 HTML 内容</p></td><td><p>平台网页登录</p></td></tr><tr><td><p>GET /document/deployment-guide.txt</p></td><td><p>text/plain 附件；服务器资源限额动态填充</p></td><td><p>平台网页登录</p></td></tr><tr><td><p>GET /members</p></td><td><p>成员页面，仅Feishu</p></td><td><p>平台网页登录</p></td></tr><tr><td><p>GET /assets/{name}</p></td><td><p>JS/CSS文件</p></td><td><p>飞书模式下白名单 JS/CSS 可匿名访问；basic 模式需要 Basic 认证，匿名返回 401。</p></td></tr></tbody></table>
 <p>/document/content/{doc_id} 的 doc_id 只允许 catalog、overview、api、intake、protocol、protocol-legacy、audit。页面访问未登录通常跳转登录；受保护 JSON 和正文接口返回 401。</p>
 <h3 id="doxcnv5JBjeEk4p3qiz2Q7BgwVe" tabindex="-1">11.4 兼容说明</h3>
 <p>旧独立登记模块保留 POST /requests 与 GET /requests/{request_id}，但它并非当前同组接入服务。旧 POST 使用平铺 repository/ref/subdomain/appId，ref 必填；没有 sessionId，也不返回 deployment 进度对象。当前服务必须按第 3 章请求，不能混用。</p>

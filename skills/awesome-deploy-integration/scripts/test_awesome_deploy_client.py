@@ -59,6 +59,11 @@ class ClientTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
+    def test_ambiguous_origin_is_rejected_before_credentials_or_transport(self):
+        for origin in ("https://@example.test", "https://example.test:", "https://example.test\x7f"):
+            with self.subTest(origin=origin), self.assertRaises(ValueError):
+                AwesomeDeployClient(origin)
+
     def client(self, *replies, timeout=4):
         client = AwesomeDeployClient(timeout=timeout)
         transport = MemoryHTTP([(status, body, headers) for status, body, headers in replies])

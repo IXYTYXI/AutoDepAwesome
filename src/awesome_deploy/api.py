@@ -1,6 +1,7 @@
 """HTTP submission is durable and quick; only the worker executes deployments."""
 
 import asyncio
+from importlib.metadata import version
 import base64
 from contextlib import asynccontextmanager
 import hashlib
@@ -172,7 +173,8 @@ def create_app(settings: Settings, store: Store | None = None, *, identity_provi
         if identity:
             identity.provider.close()
 
-    app = FastAPI(title="Awesome Deploy", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    app = FastAPI(title="Awesome Deploy", version=version("awesome-deploy"),
+                  docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.store = store
     app.state.identity, app.state.access = identity, access
     if identity:

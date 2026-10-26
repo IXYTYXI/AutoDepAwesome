@@ -33,6 +33,21 @@ def test_management_endpoints_are_protected(client):
     assert client.post("/api/v1/deployments", json=BODY, headers=headers()).status_code == 401
 
 
+def test_openapi_uses_installed_release_version_and_requires_auth(client):
+    from importlib.metadata import version
+
+    assert client.get("/api/v1/openapi.json").status_code == 401
+    response = client.get("/api/v1/openapi.json", auth=AUTH)
+    assert response.status_code == 200
+    assert response.json()["info"]["version"] == version("awesome-deploy")
+
+
+def test_basic_assets_require_authentication_and_login_route_is_absent(client):
+    assert client.get("/login").status_code == 404
+    assert client.get("/assets/theme.css").status_code == 401
+    assert client.get("/assets/theme.css", auth=AUTH).status_code == 200
+
+
 def test_handbook_download_uses_current_limits_and_document_viewer_is_protected(client, monkeypatch):
     monkeypatch.setattr("awesome_deploy.storage_status.quota_capability", lambda settings: {
         "configured": True, "enabled": True,
