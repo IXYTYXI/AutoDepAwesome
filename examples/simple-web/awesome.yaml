@@ -1,4 +1,4 @@
-schemaVersion: 1
+schemaVersion: 2
 app:
   name: 演示网页
   description: 单服务网页和同域名 API

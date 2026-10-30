@@ -1,40 +1,45 @@
 ---
 name: awesome-deploy-integration
-description: "为可信后端接入 Awesome Deploy 的共享登录态、按用户权限搜索项目、幂等部署申请和进度查询。用于接入开发、联调与排障；不负责自动发布服务或修改业务逻辑。"
+description: "用于 Awesome Deploy 的仓库部署准备、合规检查、控制台或普通 API 部署，以及同组后端共享登录接入。用户要求检查或准备项目上线、选择提交入口、搜索更新项目或查询进度时使用。"
 ---
 
-# Awesome Deploy 接入
+# Awesome Deploy 部署与接入
 
-帮助其他项目和 AI 在实际登录用户的身份下接入 Awesome Deploy。这里 A 是调用方后端，适配服务保存可靠请求，B 是部署平台。契约核对版本：0.11.8，2026-10-26。
+平台契约基线：0.11.8；指导修订：2026-10-30。平台发布版本、技术协议版本和 awesome.yaml 的 schemaVersion 是不同概念。
 
-## 先确定边界
+## 先选择任务路径
 
-- 接入开发、生成代码、离线测试不代表获准真实部署。仅在用户指令覆盖相应外部变更时签发/撤销真实会话或提交部署；已有授权可直接执行，不重复索要确认。不自行修改业务逻辑、启动 Docker、改运维配置或发布接入服务。
-- 浏览器只访问 A。A 必须验证自己的 OAuth 回调或可信上游登录会话；不得相信前端传入的 openId、姓名、角色或负责人。`sessionId` 是不透明的共享身份句柄，不是飞书 OAuth access_token / refresh_token，也不授予飞书文件权限。
-- 普通用户仅搜索本人和明确授予 maintainer 的项目；viewer 不够。启用且有 can_deploy 权限的平台管理员可搜索全部。负责人候选也只来自当前用户可部署的项目，不是全员通讯录。内部凭证/source 凭证不提升用户权限，也不能通过请求字段授予管理员。
-- 配置 delegation_source 的同组 source 凭证仅用于 integrations 接口，不能调用普通 `/api/v1/automation/deployments` 的提交或查询接口。
-- 新建应用归实际操作用户；更新保留原负责人，记录实际提交人。不能以来源凭证负责人替代用户。
+| 用户任务 | 使用方式 | 需要的身份与基础设施 |
+| --- | --- | --- |
+| 检查仓库、补充部署文件 | 读取[仓库部署指南](references/repository-deployment.md)，核对原程序与部署文件 | 仓库及项目事实即可；不要求接入后端、Redis 或飞书 App |
+| 人工部署一个项目 | 准备仓库后，在平台部署控制台提交 | 操作者的平台登录及部署权限；业务应用不因此需要增加登录 |
+| 脚本或 CI 调用 | 使用指南中的普通自动化接口 | 平台个人或非委托来源 Bearer、固定幂等键；不要求共享 sessionId 或 Redis |
+| 同组后端按实际登录用户申请部署 | 读取[API 契约](references/api-contract.md)与[后端实施](references/backend-integration.md) | 可信后端验证用户，专用来源凭证及共享会话；平台侧配置 Redis |
 
-## 实施顺序
+“项目部署准备”默认走第一行；不因浏览器项目没有后端就要求它先增加 OAuth、数据库或 API。没有明确真实提交指令时，交付检查结果和部署文件，不擅自发布。已有授权继续有效，无需重复确认。
 
-接入时读取 [API 契约](references/api-contract.md)；写后端适配代码时再读取 [后端实施与验收](references/backend-integration.md)。不需要本仓库、飞书文档或生产密钥即可使用本包的说明和离线测试。
+## 版本与事实核对
 
-1. 确认适配服务地址、同一飞书 App ID / tenant_key 的约定和凭证已由运维配置。同机助手默认连接 `http://127.0.0.1:8099`，读取 `/etc/awesome-team/intake-token`；支持环境变量覆盖，无需每次手填。HTTP 仅可连接 loopback；其他地址必须有效 HTTPS，不关闭证书验证或跟随重定向。密钥不放在代码、参数、浏览器、Git、聊天、日志或本包中。
-2. A 验证实际登录身份后 `POST /sessions`，将 sessionId 关联到 A 的服务端登录会话。TTL 不超过上游会话剩余时间和 8 小时；重新登录先撤销旧会话。
-3. 更新应用前 `POST /apps/search`，携带当前操作者的服务端 sessionId。按某个人筛选时，先 `POST /owners/search` 按姓名查负责人，明确选择返回的 ownerId，再将 ownerId 加入项目搜索。ownerId 是平台用户 ID，不是飞书 openId，也不代替调用者身份；同名不能自动选第一人，不换用目标负责人的会话。两类查询都按 nextOffset 分页，保持筛选条件。沿用用户明确指定且核实的 appId；否则取得明确选择，不能自动挑第一条或把空结果当作新建授权。新建应用须有明确新建指令。
-4. 选定更新目标后使用其 appId、repository 和当前绑定的 subdomain。`domainBound=false` 的 lastSubdomain 只是曾用名称，须确定新的可用名称并匹配 awesome.yaml。
-5. A 持久化“业务申请 → 用户、固定请求 ID、完整请求内容”，再 `POST /requests`，把固定 ID 放在 Idempotency-Key。同次超时保留 ID、申请人和内容；新部署才用新 ID。202 仅代表持久受理。
-6. `GET /requests/{requestId}` 查询进度，按 pollAfterSeconds 有界轮询。外层 pending/submitted 不是上线；读取 deployment.status / phaseLabel / error。等待超时保存 ID 后结束本次等待，不能重建任务。A 对自己的查询入口另做用户/项目权限检查。
-7. 用户退出时 `POST /sessions/revoke`；已受理任务仍会继续。不要伪造 receipt 或将其暴露给前端。
+- **新生成的清单和当前示例统一使用 `schemaVersion: 2`，包括无状态静态网站。** 当前平台仍兼容已有 v1 清单；兼容不代表新模板应选 v1，也不能把一个能通过 v1 解析的旧项目说成必然无法部署。
+- 生成前读所选任务的参考文件。平台实际版本、运行配置与解析器决定能否执行；现行技术协议决定新交付约定。旧 README、示例或其他 AI 的回答只能作为线索，不能覆盖当前约定。
+- 对照实际源码确认入口、端口、健康路径、依赖和数据位置。模板只提供结构，不能据此声称项目已有某个接口或需要某个密钥。
+- 遇到矛盾，列出文件、规则和实际校验结果，区分“兼容但不符合新交付约定”“明确拒绝”“尚未实测”；按当前约定生成新文件。若执行要求与项目行为冲突，明确阻塞点，不靠改业务或伪造验证绕过。
+- 只拿到本 Skill 时，可先完成静态检查；没有完整平台解析器或实际服务器验收，就不得声称对应检查已通过。普通 Bearer 不能调用控制台 preflight。
 
-## 附带助手与验证
+## 业务与权限边界
 
-`scripts/awesome_deploy_client.py` 是无第三方依赖的 Python 3.9+ 后端客户端：从环境变量或受限文件读取凭证，固定端点，关闭代理继承及重定向，启用 TLS 验证，设置网络超时；不实现登录、项目自动选择或自动提交重试。仅只读查询提供命令行入口。完整用法见实施参考。
+保留用户业务逻辑、鉴权、数据模型和接口语义。可提供保持原行为的清单、Dockerfile、配置映射和镜像引用；业务调整须有用户授权。不自动启动本机 Docker Desktop；容器验收使用用户已有的远端平台，并清理本次临时资源。
 
-在本 Skill 目录执行：
+按原程序决定是否声明 storage、secretRefs；浏览器 localStorage 存档不需要服务器数据卷，不凭空增加 BOOTSTRAP_PASSWORD 或 MASTER_KEY。检查不等于已经提交，HTTP 202 不等于已经上线。
 
-```sh
-python3 -B scripts/test_awesome_deploy_client.py
-```
+同组接入时，专用凭证证明服务来源，sessionId 证明实际用户；不得信任浏览器自报的 openId、角色或负责人，也不把上游 Cookie、密码或飞书 Token 复制给平台。普通用户仅搜索和更新获授权项目；管理员须有效且具备部署权限。新建归实际用户，更新保留原负责人；凭证持有人的管理员身份不能扩大调用者权限。
 
-这些测试用内存 HTTP 替身，不连接生产、Redis、Docker 或飞书。交付时区分“离线契约/助手验证”和“真实环境验收”；没有运行真实链路时不得声称已上线或权限隔离已实测。
+按人筛选时先查询负责人候选，明确选择 ownerId，再搜索项目；不自动选第一条、不换用目标负责人的 sessionId。委托 source 凭证走 integrations 接口，不能代替普通 automation 凭证。
+
+## 工具与验收
+
+`scripts/awesome_deploy_client.py` 是同组后端客户端，默认连接 `http://127.0.0.1:8099`；它不是静态项目的部署前置条件。凭证从环境变量或受限文件读取，详见后端实施参考。真实值不写进业务仓库、浏览器、日志或本包。
+
+离线客户端验证：`python3 -B scripts/test_awesome_deploy_client.py`。测试不连接生产、Redis、Docker 或飞书。
+
+交付时说明审查的 commit、选用路径、改动文件、实际完成的验证和未验证项。部署后保存原请求 ID，按 pollAfterSeconds 有界查询；未知结果不换幂等键重复提交。只做仓库准备时，不要求用户预先提供部署凭证。

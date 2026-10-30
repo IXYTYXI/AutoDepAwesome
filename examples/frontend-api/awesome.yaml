@@ -1,4 +1,4 @@
-schemaVersion: 1
+schemaVersion: 2
 app:
   name: 前端与接口演示
   description: 前端和 API 分别运行，同域名按路径分流

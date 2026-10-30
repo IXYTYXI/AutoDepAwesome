@@ -74,7 +74,7 @@ nextOffset 为数字时原样用于下一页，保持 sessionId/ownerId/query/li
 {"deployment":{"appId":"app-example","repository":"https://github.com/example/demo.git","ref":"main","subdomain":"demo"},"sessionId":"服务端保存的会话"}
 ```
 
-仅新建时省略 appId；更新必须明确 appId，repository 和当前绑定域名须匹配。subdomain 为 1–7 位小写字母、数字或中划线，首尾为字母或数字，且与仓库 awesome.yaml 一致。ref 默认 main。deployment 只接受 repository、ref、subdomain、appId，各值为非空字符串（不超过 4096 字符）；必填 repository、subdomain。服务端仍是仓库、配额、权限和域名可用性校验的最终依据。
+仅新建时省略 appId；更新必须明确原 appId，repository 和当前绑定域名须匹配。若 domainBound=false，保留原 appId 和 repository，另选空闲且与清单一致的 subdomain，通过同一更新接口重新部署；lastSubdomain 不保证空闲。subdomain 为 1–7 位小写字母、数字或中划线，首尾为字母或数字，且与仓库 awesome.yaml 一致。ref 默认 main。deployment 只接受 repository、ref、subdomain、appId，各值为非空字符串（不超过 4096 字符）；必填 repository、subdomain。服务端仍是仓库、配额、权限和域名可用性校验的最终依据。
 
 请求 ID 是 1–128 位 `[A-Za-z0-9._:-]`。A 应在首次 POST 前持久化 ID、申请人、payload 与业务请求关系；同一来源、ID 对同一人同一内容去重，换人或换内容返回 409。响应丢失不证明失败：先 GET 原 ID；若确认未找到且仍需要提交，用原 ID/申请人/内容重试，不能生成新 ID。会话过期时重新验证同一用户，不能伪造身份或 receipt。助手不会自动 POST 重试。
 
@@ -82,7 +82,7 @@ nextOffset 为数字时原样用于下一页，保持 sessionId/ownerId/query/li
 {"requestId":"example-request-001","status":"pending","jobId":null,"appId":null,"error":null,"createdAt":1800000000.0,"updatedAt":1800000000.0,"pollAfterSeconds":5,"deployment":null}
 ```
 
-202 表示适配服务 SQLite 事务已提交。B 不可达时后台仍会保存并退避重试，最长 300 秒；POST 的 400/403/409/422 是明确拒绝，401 保留请求等待凭证维护。用户会话不能替代服务凭证。
+202 表示适配服务 SQLite 事务已提交。B 不可达时后台保存请求并持续退避重试，单次间隔逐步增加至 256 秒；这不是总等待期限。POST 的 400/403/409/422 是明确拒绝，401 保留请求等待凭证维护。用户会话不能替代服务凭证。
 
 ## 4. 查询进度与错误
 

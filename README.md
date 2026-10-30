@@ -108,6 +108,8 @@ python3 -m venv .venv
 
 ## 示例仓库
 
+新项目与当前示例统一使用 `schemaVersion: 2`；`schemaVersion: 1` 仅保留已有项目兼容。仓库准备、控制台与普通 API 使用方式见[可分发 Skill 的仓库部署指南](skills/awesome-deploy-integration/references/repository-deployment.md)；静态项目不需要先搭建同组接入后端或 Redis。
+
 `examples/simple-web` 是单服务网页/API；`examples/frontend-api` 是前端和 API 两个容器，分别匹配 `/` 与 `/abc`，后者使用 `stripPrefix: true`。服务基于 Python 标准库，无须在构建期间联网安装依赖。
 
 **把某个示例目录的内容复制到一个新 Git 仓库的根目录**，再提交并推送。不要把 `examples/simple-web` 作为仓库 URL 或以本项目根目录代替示例仓库；执行器只查找仓库根目录的 `awesome.yaml`。例如已在新建的空目录中时：
@@ -123,7 +125,7 @@ git init
 ## awesome.yaml
 
 ```yaml
-schemaVersion: 1
+schemaVersion: 2
 app:
   name: 示例应用
   description: 无状态网页服务
@@ -150,7 +152,7 @@ routes:
     stripPrefix: false
 ```
 
-支持项和边界以 [Schema](src/awesome_deploy/schema/awesome-v1.json) 与执行器共同为准：
+支持项和边界以 [当前 Schema](src/awesome_deploy/schema/awesome-v2.json)、现行技术协议与执行器共同为准；旧版 v1 兼容不代表新模板应选择 v1：
 
 | 项目 | 阶段一行为 |
 | --- | --- |
