@@ -1,0 +1,90 @@
+import json
+import os
+
+import pytest
+
+from awesome_deploy.cli import load_settings, main
+from awesome_deploy.errors import DeployError
+
+
+@pytest.fixture(autouse=True)
+def restore_cli_umask():
+    previous = os.umask(0o077)
+    os.umask(previous)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
+@pytest.fixture
+def config(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"state_dir": str(tmp_path / "state"), "public_url": "https://console.example.com",
+                                "auth_mode": "feishu", "feishu_app_id": "cli_platform",
+                                "feishu_tenant_key": "tenant", "feishu_app_secret_file": "app-secret"}))
+    return path
+
+
+@pytest.mark.parametrize("patch", [
+    {"auth_mode": "mixed"}, {"auth_mode": "basic"}, {"feishu_app_id": ""}, {"feishu_tenant_key": ""},
+    {"feishu_app_secret_file": None}, {"public_url": "http://127.0.0.1:8088"},
+    {"public_url": "https://console.example.com/path"}, {"public_url": "https://console.example.com?x=y"},
+    {"feishu_eligibility_mode": "fallback"}, {"feishu_eligibility_mode": None},
+    {"feishu_eligibility_mode": True}, {"feishu_eligibility_mode": []},
+])
+def test_incomplete_or_ambiguous_login_config_is_rejected(config, patch):
+    config.write_text(json.dumps({**json.loads(config.read_text()), **patch}))
+    with pytest.raises(DeployError):
+        load_settings(config)
+
+
+def test_eligibility_mode_defaults_to_continuous_and_login_is_explicit(config):
+    assert load_settings(config).feishu_eligibility_mode == "continuous"
+    config.write_text(json.dumps({**json.loads(config.read_text()), "feishu_eligibility_mode": "login"}))
+    assert load_settings(config).feishu_eligibility_mode == "login"
+
+
+def test_cli_user_grant_and_revoke_invalidates_sessions(config, capsys):
+    from awesome_deploy.identity import IdentityStore
+    settings = load_settings(config)
+    assert settings.feishu_app_secret_file == config.parent / "app-secret"
+    identity = IdentityStore(settings)
+    actor = identity.login_user({"open_id": "ou_test", "tenant_key": "tenant", "name": "Test"})
+    token = identity.create_session(actor["id"])
+    assert main(["--config", str(config), "user-set", "--user-id", actor["id"], "--admin", "true"]) == 0
+    assert identity.get_user(actor["id"])["is_admin"] == 1
+    assert identity.session(token) is None
+    main(["--config", str(config), "user-list"])
+    output = capsys.readouterr().out
+    assert actor["id"] in output and token not in output and "csrf" not in output
+    main(["--config", str(config), "auth-revoke-all"])
+    identity.provider.close()
+
+
+def test_cli_explicit_automation_credential_issue_list_and_revoke(config, capsys):
+    from awesome_deploy.api_credentials import ApiCredentialStore
+    from awesome_deploy.identity import IdentityStore
+    from awesome_deploy.store import Store
+
+    settings = load_settings(config)
+    Store(settings)
+    identity = IdentityStore(settings)
+    actor = identity.login_user({'open_id': 'ou_ci_owner', 'tenant_key': 'tenant', 'name': 'Owner'})
+    command = ['--config', str(config)]
+    assert main(command + ['api-token-create', '--user-id', actor['id'], '--name', 'build-server',
+                           '--kind', 'source', '--allow-create', '--days', '7']) == 0
+    issued = json.loads(capsys.readouterr().out)
+    assert issued['token'].startswith('adp_')
+    assert ApiCredentialStore(settings).authenticate(issued['token']) is not None
+    assert main(command + ['api-token-list']) == 0
+    listed = capsys.readouterr().out
+    assert issued['id'] in listed and issued['token'] not in listed
+    assert main(command + ['api-token-revoke', '--id', issued['id']]) == 0
+    assert issued['token'] not in capsys.readouterr().out
+    assert ApiCredentialStore(settings).authenticate(issued['token']) is None
+    assert main(command + ['api-token-create', '--user-id', actor['id'], '--name', 'unbounded-source',
+                           '--kind', 'source', '--all-apps']) == 0
+    broad = json.loads(capsys.readouterr().out)
+    assert broad['allowAnyApp'] is True
+    identity.provider.close()

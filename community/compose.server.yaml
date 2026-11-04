@@ -1,0 +1,65 @@
+# Community HTTP service + dedicated Redis. The Linux deployment executor stays
+# on the host with its own rootless daemon and constrained privileged helpers.
+name: ows-community-server
+services:
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    ports: ["127.0.0.1:${OWS_REDIS_PORT:-6381}:6379"]
+    volumes: ["redis-data:/data"]
+    mem_limit: 512m
+    cpus: 0.5
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  api:
+    build: .
+    restart: unless-stopped
+    init: true
+    env_file: ["${OWS_SERVER_ENV:-.env.server}"]
+    environment:
+      OWS_COMMUNITY_ENVIRONMENT: production
+      OWS_COMMUNITY_STORE_BACKEND: redis
+      OWS_COMMUNITY_REDIS_URL: redis://redis:6379/0
+      OWS_COMMUNITY_MEDIA_ROOT: /app/var/media
+      OWS_COMMUNITY_NEWS_SYNC_STATE_ROOT: /app/var/news-sync
+    user: "${OWS_UID:-1001}:${OWS_GID:-1001}"
+    ports: ["127.0.0.1:${OWS_HTTP_PORT:-8000}:8000"]
+    volumes:
+      - type: bind
+        source: ${OWS_DATA_ROOT:-/var/lib/ows-community}
+        target: /app/var
+        bind: {create_host_path: false}
+      # Keep deployment paths identical inside/outside the container for SQLite.
+      - type: bind
+        source: /var/lib/ows-deployment
+        target: /var/lib/ows-deployment
+        bind: {create_host_path: false}
+      - type: bind
+        source: /etc/ows-deployment
+        target: /etc/ows-deployment
+        read_only: true
+        bind: {create_host_path: false}
+    read_only: true
+    tmpfs: ["/tmp:size=128m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    cpus: 1
+    pids_limit: 128
+    stop_grace_period: 30s
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+    depends_on:
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+volumes:
+  redis-data:

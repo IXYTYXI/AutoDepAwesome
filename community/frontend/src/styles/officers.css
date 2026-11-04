@@ -1,0 +1,131 @@
+/* Light album surface, photographic paper, and complete member details. */
+body[data-page="officers"] {
+  background-color: #f2f4f7;
+  background-image: none;
+}
+.officers-page { padding-top: 28px; padding-bottom: 88px; color: #26394e; }
+.officers-intro { display: flex; align-items: end; justify-content: space-between; margin: 30px 0 32px; }
+.officers-kicker { font-size: 10px; letter-spacing: .22em; color: #7a8a9b; font-weight: 500; }
+.officers-intro h1 { font-size: clamp(30px, 3.5vw, 46px); line-height: 1.25; letter-spacing: -.045em; font-weight: 600; margin: 13px 0 0; color: #22364d; }
+.officers-intro h1 span { color: #2673bf; }
+.officers-intro i { font-style: normal; color: #2673bf; }
+.officers-intro > p { font-size: 12px; color: #718194; margin-bottom: 5px; }
+.people-toolbar { display: flex; gap: 20px; justify-content: space-between; align-items: center; padding: 10px 0 24px; border-bottom: 1px solid #dce2e8; }
+.people-tabs { display: flex; gap: 4px; border: 1px solid #dce2e8; border-radius: 24px; padding: 4px; background: #e8edf2; }
+.people-tabs button { border: 0; background: transparent; border-radius: 20px; padding: 9px 18px; font-size: 12px; color: #64768a; cursor: pointer; }
+.people-tabs button.selected { background: #ffffff; color: #245d97; box-shadow: 0 1px 5px #0002; }
+.people-tabs button:focus-visible { outline: 2px solid #2673bf; outline-offset: 3px; }
+.people-search { display: flex; align-items: center; gap: 10px; color: #718194; }
+.people-search input { border: 0; background: transparent; outline: none; color: #26394e; font: inherit; font-size: 12px; width: 210px; padding: 10px; }
+.people-search input::placeholder { color: #738193; }
+.people-search:focus-within { outline: 2px solid #2673bf; border-radius: 8px; }
+.people-section { margin-top: 32px; }
+.people-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 38px 30px; padding: 6px 7px 18px; }
+.person-card {
+  --paper-angle: -.65deg;
+  position: relative; min-width: 0; padding: 15px 15px 0; display: flex; flex-direction: column;
+  border-radius: 2px; border: 1px solid #e6e5de;
+  background: linear-gradient(145deg, #fffef9, #faf9f3);
+  box-shadow: 0 1px 2px #26394e12, 2px 8px 18px #26394e12, inset 0 0 0 1px #fff9;
+  transform: rotate(var(--paper-angle)); transform-origin: 50% 70%;
+  transition: transform .25s, box-shadow .25s; cursor: pointer; isolation: isolate;
+}
+.person-card::after { content: ""; pointer-events: none; position: absolute; inset: 0; z-index: 2; opacity: .3; background: repeating-linear-gradient(0deg, #78674909 0 1px, transparent 1px 3px); }
+.person-card:nth-child(4n+2) { --paper-angle: .6deg; }
+.person-card:nth-child(4n+3) { --paper-angle: -.4deg; }
+.person-card:nth-child(4n) { --paper-angle: .7deg; }
+.person-card:hover { z-index: 3; transform: translateY(-7px) rotate(0); box-shadow: 0 3px 5px #26394e12, 4px 16px 30px #26394e20; }
+.person-card:focus-visible { outline: 3px solid #2673bf; outline-offset: 6px; transform: translateY(-4px) rotate(0); }
+.person-photo { aspect-ratio: 1; flex-shrink: 0; position: relative; overflow: hidden; background: #d9ddd4; border-radius: 0; }
+.person-photo::after { content: ""; position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 1px #00000012, inset 0 0 16px #2226190a; }
+.person-photo img { display: block; width: 100%; height: 100%; position: absolute; inset: 0; object-fit: cover; object-position: center 28%; }
+.person-initial { position: absolute; inset: 0; display: grid; place-items: center; color: #687260; font-family: "Kaiti SC", STKaiti, KaiTi, serif; font-size: 48px; background: #dce1d5; }
+.person-photo.failed img { display: none; }
+.person-caption { flex: 1; display: flex; flex-direction: column; padding: 20px 7px 24px; color: #354c5d; }
+.person-card .person-bio { font-size: 14px; line-height: 1.85; margin: 20px 0 24px; display: block; overflow: visible; -webkit-line-clamp: unset; }
+.person-card .person-tags { margin-top: auto; padding-top: 14px; border-top: 1px solid #dfe6eb; }
+.person-name-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.person-name-line h3 { font-family: "Kaiti SC", STKaiti, KaiTi, serif; font-size: 28px; line-height: 1.25; letter-spacing: .07em; font-weight: 600; margin: 0; transform: rotate(-2deg); }
+.person-name-line svg { width: 14px; height: 14px; color: #7e8c99; opacity: 0; transition: opacity .2s; }
+.person-card:hover .person-name-line svg, .person-card:focus-visible .person-name-line svg { opacity: 1; }
+.person-team { font-size: 13px; font-weight: 600; color: #373c42; margin-top: 10px; letter-spacing: .02em; }
+.person-bio { font-family: "Songti SC", "Noto Serif CJK SC", STSong, SimSun, serif; font-size: 16px; font-weight: 400; line-height: 1.9; color: #735a46; padding-left: 11px; border-left: 2px solid #d7c5ac; margin: 24px 0; white-space: pre-line; overflow-wrap: anywhere; }
+.person-tags:empty { display: none; }
+.person-tags { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 6px; }
+.person-tag {
+  --tag-paper: #e7e2d8; --tag-ink: #5b5143;
+  font-size: 11px; font-weight: 500; line-height: 1.65; padding: 6px 13px;
+  border: 0; border-radius: 0; color: var(--tag-ink); background-color: var(--tag-paper);
+  background-image: repeating-linear-gradient(12deg, #ffffff18 0 1px, transparent 1px 3px), linear-gradient(100deg, #ffffff24, transparent 40%, #ffffff30);
+  max-width: 100%; overflow-wrap: anywhere; box-sizing: border-box;
+  clip-path: polygon(3px 1px, 21% 0, 43% 1px, 67% 0, 84% 1px, calc(100% - 3px) 0, calc(100% - 1px) 12%, calc(100% - 4px) 27%, 100% 42%, calc(100% - 3px) 57%, calc(100% - 1px) 74%, calc(100% - 4px) 88%, calc(100% - 2px) 100%, 79% calc(100% - 1px), 56% 100%, 32% calc(100% - 1px), 3px 100%, 4px 85%, 0 71%, 3px 54%, 1px 38%, 4px 24%, 0 11%);
+}
+.person-tag[data-tone="blue"] { --tag-paper: #d1e5fa; --tag-ink: #2d537d; }
+.person-tag[data-tone="violet"] { --tag-paper: #e5dbf2; --tag-ink: #62477e; }
+.person-tag[data-tone="amber"] { --tag-paper: #f3e2ad; --tag-ink: #735819; }
+.person-tag[data-tone="peach"] { --tag-paper: #f6d9c5; --tag-ink: #855033; }
+.person-tag[data-tone="sage"] { --tag-paper: #dce6c7; --tag-ink: #4b6437; }
+.person-tag[data-tone="rose"] { --tag-paper: #f0d7dd; --tag-ink: #824857; }
+.person-tag[data-tone="aqua"] { --tag-paper: #cfe7e3; --tag-ink: #326761; }
+.people-loading, .people-empty { padding: 70px 20px; text-align: center; color: #728196; font-size: 14px; }
+.people-notice { font-size: 12px; color: #897043; margin: 18px 0; }
+.people-retry { border: 0; border-radius: 20px; padding: 12px 24px; background: #e7eff8; color: #225689; cursor: pointer; }
+.person-dialog { padding: 0; border: 1px solid #fff; border-radius: 18px; width: min(920px, calc(100% - 32px)); max-height: 90dvh; background: #fffdf8; box-shadow: 0 30px 100px #18314c40; }
+.person-dialog::backdrop { background: #24374b65; backdrop-filter: blur(10px); }
+.person-close { position: absolute; z-index: 4; right: 16px; top: 16px; border: 1px solid #d7dfe6; border-radius: 50%; background: #ffffffbb; color: #4a5a69; width: 34px; height: 34px; display: grid; place-items: center; cursor: pointer; }
+.person-close:hover { background: #e7f0fa; color: #135bb3; }
+.person-close:focus-visible { outline: 3px solid #79b7ed; outline-offset: 3px; }
+.person-close svg { width: 16px; }
+.person-detail-layout { display: grid; grid-template-columns: 46% minmax(0, 1fr); align-items: stretch; }
+.person-detail-visual { position: relative; display: flex; flex-direction: column; justify-content: center; min-width: 0; padding: 36px 30px 38px; background-color: #e8eff4; background-image: repeating-linear-gradient(0deg, #ffffff40 0 1px, transparent 1px 4px), radial-gradient(ellipse at 0 0, #cce5f8, transparent 75%); border-right: 1px solid #dbe4ec; }
+.person-visual-label { display: block; margin-bottom: 32px; color: #64809a; font-size: 9px; font-weight: 600; letter-spacing: .22em; }
+.person-detail-print { position: relative; margin: 0; padding: 12px 12px 0; background: #fffef9; box-shadow: 0 2px 3px #35475812, 4px 14px 28px #35475822; transform: rotate(-3deg); }
+.person-detail-print::before { content: ""; position: absolute; z-index: 2; width: 100px; height: 28px; left: calc(50% - 50px); top: -14px; transform: rotate(5deg); background: #f8efd3b8; border-left: 2px dotted #ffffff90; border-right: 2px dotted #ffffff90; box-shadow: 0 1px 2px #96825410; }
+.person-detail-layout .person-photo { aspect-ratio: 4 / 4.6; margin: 0; border: 0; box-shadow: inset 0 0 0 1px #0001; transform: none; }
+.person-print-caption { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 22px 5px 25px; font: 26px "Kaiti SC", STKaiti, KaiTi, serif; color: #3f5263; }
+.person-print-edition { font: 8px -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: .12em; color: #8e9aa5; }
+.person-detail-copy { display: flex; flex-direction: column; min-width: 0; padding: 52px 38px 32px; }
+.person-detail-eyebrow { color: #2466aa; font-size: 11px; letter-spacing: .12em; margin-bottom: 16px; }
+.person-detail-copy h2 { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; color: #20354c; font-size: 40px; font-weight: 600; line-height: 1.25; letter-spacing: -.03em; margin: 0; overflow-wrap: anywhere; }
+.person-detail-copy .person-team { font-size: 12px; font-weight: 400; color: #687889; margin-top: 12px; }
+.person-detail-copy .person-bio { position: relative; margin: 32px 0 26px; padding: 18px 0 0; border: 0; font-size: 17px; line-height: 1.9; color: #6d5949; }
+.person-detail-copy .person-bio::before { content: "“"; position: absolute; top: -23px; left: -3px; font: 62px Georgia, serif; color: #c7d8e7; pointer-events: none; }
+.person-detail-copy .person-tags { margin-bottom: 30px; }
+body[data-page="officers"] #site-footer { border-top-color: #dce2e8; color: #768596; }
+body[data-page="officers"] #site-footer a, body[data-page="officers"] #site-footer button { color: #768596; }
+@media (min-width: 1440px) { .officers-page { max-width: 1320px; } }
+@media (max-width: 1100px) and (min-width: 761px) { .people-grid { gap: 30px 20px; }.person-card { padding: 11px 11px 0; }.person-name-line h3 { font-size: 24px; }.person-caption { padding: 16px 3px 20px; min-height: 94px; } }
+@media (max-width: 760px) {
+  .officers-intro { margin: 24px 0; display: block; }.officers-intro > p { margin-top: 16px; }
+  .people-toolbar { align-items: stretch; flex-direction: column; gap: 12px; }.people-tabs { align-self: start; max-width: 100%; }
+  .people-tabs button { padding: 9px 12px; font-size: 11px; }.people-search { background: #e8edf2; border-radius: 8px; padding-left: 12px; }.people-search input { width: 100%; }
+  .people-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 26px 18px; padding: 4px 4px 16px; }
+  .person-card { padding: 9px 9px 0; }.person-card .person-bio { font-size: 13px; padding-left: 8px; }.person-card .person-tag { font-size: 10px; padding: 5px 10px; }.person-caption { min-height: 86px; padding: 15px 3px 18px; }.person-name-line h3 { font-size: 24px; }.person-team { font-size: 12px; }
+  .people-section-head { gap: 10px; margin-bottom: 24px; }.people-section h2 { font-size: 18px; }
+  .person-detail-layout { display: block; }
+  .person-detail-visual { padding: 24px 42px 30px; border-right: 0; border-bottom: 1px solid #dbe4ec; }
+  .person-visual-label { margin-bottom: 24px; }
+  .person-detail-layout .person-photo { aspect-ratio: 1; }
+  .person-print-caption { padding: 16px 3px 18px; font-size: 23px; }
+  .person-detail-copy { padding: 28px 24px 24px; }
+  .person-detail-copy h2 { font-size: 34px; }
+  .person-detail-copy .person-bio { font-size: 16px; }
+}
+@media (prefers-reduced-motion: reduce) { .person-card, .person-name-line svg { transition: none; }.person-card:hover { transform: rotate(var(--paper-angle)); } }
+
+.person-contact-actions { display: flex; flex-direction: column; align-items: stretch; gap: 10px; margin-top: auto; padding-top: 4px; }
+.person-contact { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; box-sizing: border-box; padding: 17px 16px 17px 22px; border: 1px solid #1761ca; border-radius: 10px; background: linear-gradient(115deg, #1256ba, #237cdb); color: #fff; font: inherit; text-align: left; text-decoration: none; cursor: pointer; box-shadow: 0 5px 0 #d9e4ed, inset 0 1px 0 #ffffff35; transition: transform .2s, box-shadow .2s; }
+.person-contact-words { display: flex; flex-direction: column; gap: 5px; }
+.person-contact-words strong { font-size: 17px; font-weight: 600; letter-spacing: .04em; }
+.person-contact-words > span { font-size: 10px; font-weight: 400; letter-spacing: .05em; color: #daedff; }
+.person-contact-arrow { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 38px; border-radius: 50%; background: #ddf2ff; color: #145db6; transition: transform .2s; }
+.person-contact svg { width: 18px; height: 18px; }
+.person-contact:hover { transform: translateY(-2px); box-shadow: 0 7px 0 #d9e4ed, 0 10px 20px #1761ca20; }
+.person-contact:hover .person-contact-arrow { transform: rotate(45deg); }
+.person-contact:active { transform: translateY(2px); box-shadow: 0 2px 0 #d9e4ed; }
+.person-contact:focus-visible { outline: 3px solid #79b7ed; outline-offset: 4px; }
+.person-contact:disabled { background: #e8e8e3; border-color: #e0e0d9; color: #7a7c7d; cursor: not-allowed; box-shadow: none; transform: none; }
+.person-contact:disabled .person-contact-words > span { color: #77756d; }
+.person-contact:disabled .person-contact-arrow { background: #f4f4ef; color: #999; transform: none; }
+.person-contact-hint { color: #77756d; font-size: 11px; }
+@media (prefers-reduced-motion: reduce) { .person-contact, .person-contact-arrow { transition: none; }.person-contact:hover, .person-contact:hover .person-contact-arrow { transform: none; } }

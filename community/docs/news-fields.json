@@ -1,0 +1,118 @@
+[
+  {
+    "name": "AIHOT ID",
+    "type": "text"
+  },
+  {
+    "name": "原标题",
+    "type": "text"
+  },
+  {
+    "name": "摘要",
+    "type": "text"
+  },
+  {
+    "name": "原始来源",
+    "type": "text"
+  },
+  {
+    "name": "分类",
+    "type": "text"
+  },
+  {
+    "name": "分类代码",
+    "type": "text"
+  },
+  {
+    "name": "来源署名",
+    "type": "text"
+  },
+  {
+    "name": "来源署名链接",
+    "type": "text"
+  },
+  {
+    "name": "同步指纹",
+    "type": "text"
+  },
+  {
+    "name": "人工标题",
+    "type": "text"
+  },
+  {
+    "name": "人工摘要",
+    "type": "text"
+  },
+  {
+    "name": "原文链接",
+    "type": "text",
+    "style": {
+      "type": "url"
+    }
+  },
+  {
+    "name": "AIHOT链接",
+    "type": "text",
+    "style": {
+      "type": "url"
+    }
+  },
+  {
+    "name": "原文发布时间",
+    "type": "datetime",
+    "style": {
+      "format": "yyyy/MM/dd HH:mm"
+    }
+  },
+  {
+    "name": "发现时间",
+    "type": "datetime",
+    "style": {
+      "format": "yyyy/MM/dd HH:mm"
+    }
+  },
+  {
+    "name": "同步时间",
+    "type": "datetime",
+    "style": {
+      "format": "yyyy/MM/dd HH:mm"
+    }
+  },
+  {
+    "name": "来源评分",
+    "type": "number"
+  },
+  {
+    "name": "排序权重",
+    "type": "number"
+  },
+  {
+    "name": "封面",
+    "type": "attachment"
+  },
+  {
+    "name": "上游精选",
+    "type": "checkbox"
+  },
+  {
+    "name": "隐藏",
+    "type": "checkbox"
+  },
+  {
+    "name": "首页推荐",
+    "type": "checkbox"
+  },
+  {
+    "name": "同步状态",
+    "type": "select",
+    "multiple": false,
+    "options": [
+      {
+        "name": "已同步"
+      },
+      {
+        "name": "已撤选"
+      }
+    ]
+  }
+]

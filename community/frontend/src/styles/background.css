@@ -1,0 +1,53 @@
+/* Shared canvas for the portal and the separate login entry. */
+:root {
+  --site-canvas: #e9eff6;
+  --site-canvas-wash:
+    radial-gradient(ellipse at 5% 0%, #d5e6fa 0%, transparent 54%),
+    radial-gradient(ellipse at 100% 12%, #dbf0fa 0%, transparent 50%),
+    linear-gradient(180deg, #edf2f8 0%, #e9eff6 100%);
+}
+html:root {
+  background: var(--site-canvas);
+}
+html:root body {
+  min-height: 100svh;
+  background-color: var(--site-canvas);
+  background-image: var(--site-canvas-wash);
+  background-repeat: no-repeat;
+  background-size:
+    100% 1000px,
+    100% 1000px,
+    100% 100%;
+}
+/* Keep the pale points surface legible against the shared canvas. */
+.profile-page .points-card {
+  color: #16375e;
+}
+.profile-page .points-state {
+  color: #486889;
+  border-color: #b8d0e9;
+  background: #ffffff80;
+}
+.profile-page .points-card .point-balance,
+.profile-page .points-card .point-balance span,
+.profile-page .points-card .point-caption,
+.profile-page .points-card .points-card-bottom {
+  color: #486889;
+}
+.profile-page .points-card a {
+  color: #245bbb;
+}
+
+/* Canvas particles sit beneath content and never intercept input. */
+html:root body {
+  isolation: isolate;
+}
+.particle-background {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+  pointer-events: none;
+  contain: strict;
+}

@@ -1,0 +1,43 @@
+#!/usr/bin/python3 -I
+"""Install root-owned at /usr/local/libexec/awesome-storage; no checkout imports."""
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+
+LIBRARY = Path("/usr/local/libexec/awesome-storage-lib")
+ENTRYPOINT = Path("/usr/local/libexec/awesome-storage")
+
+
+def trusted(path, directory=False):
+    for component in reversed((path, *path.parents)):
+        info = component.lstat()
+        leaf = component == path
+        if (info.st_uid != 0 or info.st_mode & 0o022 or stat.S_ISLNK(info.st_mode)
+                or (leaf and not directory and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1))
+                or ((not leaf or directory) and not stat.S_ISDIR(info.st_mode))):
+            raise OSError("untrusted installation")
+
+
+try:
+    if os.geteuid() != 0 or Path(__file__) != ENTRYPOINT or not sys.flags.isolated:
+        raise OSError("fixed isolated root installation required")
+    trusted(ENTRYPOINT)
+    trusted(LIBRARY, directory=True)
+    trusted(LIBRARY / "storage_quota", directory=True)
+    sources = {"__init__.py", "errors.py", "service.py", "protocol.py", "xfs.py"}
+    if {path.name for path in LIBRARY.iterdir()} != {"storage_quota"}:
+        raise OSError("unexpected library content")
+    if {path.name for path in (LIBRARY / "storage_quota").iterdir()} != sources:
+        raise OSError("unexpected package content")
+    for name in sources:
+        trusted(LIBRARY / "storage_quota" / name)
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, str(LIBRARY))
+    from storage_quota.protocol import main
+except OSError:
+    print(json.dumps({"ok": False, "error": {"code": "QUOTA_CONFIG_UNTRUSTED",
+                                             "message": "Root-owned isolated helper installation required"}}))
+    sys.exit(1)
+sys.exit(main())

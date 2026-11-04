@@ -79,7 +79,7 @@ class Settings:
 def validate_identity_settings(settings: Settings) -> None:
     if settings.auth_mode not in {"basic", "feishu"}:
         raise ValueError("authentication mode")
-    if settings.feishu_eligibility_mode not in ("login", "continuous"):
+    if settings.feishu_eligibility_mode not in ("login", "continuous", "app_visibility"):
         raise ValueError("Feishu eligibility mode")
     if settings.auth_mode == "basic":
         if settings.feishu_app_id or settings.feishu_tenant_key or settings.feishu_app_secret_file is not None:

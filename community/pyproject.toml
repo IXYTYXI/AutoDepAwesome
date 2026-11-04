@@ -1,0 +1,25 @@
+[project]
+name = "ows-community"
+version = "0.1.0"
+description = "ows-community FastAPI backend foundation"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "awesome-deploy",
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "pydantic-settings>=2.7,<3",
+  "redis>=5.2,<8",
+  "httpx>=0.28,<1",
+  "pillow>=11,<13",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "fakeredis>=2.27,<3"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["."]
+
+[tool.uv.sources]
+awesome-deploy = { path = "packages/deploy-engine", editable = true }

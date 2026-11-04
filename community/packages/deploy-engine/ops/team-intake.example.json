@@ -1,0 +1,9 @@
+{
+  "source": "project-a",
+  "shared_sessions_file": "/etc/awesome-team/sessions.json",
+  "database_path": "/var/lib/awesome-team/requests.sqlite3",
+  "platform_origin": "http://127.0.0.1:8088",
+  "platform_host": "awesome.guanghexinzhi.cn",
+  "platform_token_file": "/etc/awesome-team/platform-token",
+  "intake_token_file": "/etc/awesome-team/intake-token"
+}

@@ -1,0 +1,124 @@
+{
+  "source": "https://guanghe.feishu.cn/docx/Qx1hd8ep7oJGiFx7vDrcxSFAnKg",
+  "channels": [
+    {
+      "id": "expense",
+      "number": "01",
+      "title": "AI 工具报销",
+      "icon": "receipt-text",
+      "description": "自行订阅，按月申请报销。",
+      "amount": "170",
+      "unit": "元 / 人 / 月上限",
+      "rows": [
+        {
+          "label": "适合谁",
+          "text": "适用于自己已经有工具、能够自行订阅或找到付款渠道的光年"
+        },
+        {
+          "label": "谁能报",
+          "text": "全体光年（含试用期未转正员工、外包员工与实习生）"
+        },
+        {
+          "label": "凭证",
+          "text": "不强制中国大陆发票。receipt、订单记录、订阅记录 + 付款截图即可；截图尽量看清工具名称、金额、支付日期"
+        },
+        {
+          "label": "次数",
+          "text": "每月只能提交一次、只能报一种工具。即使没用满 170 元，也不能再提交第二种"
+        },
+        {
+          "label": "年卡",
+          "text": "可报，但需按月提报、公司按月分次支付，每月仍受 170 元上限限制"
+        },
+        {
+          "label": "到账时间",
+          "text": "随当月薪资发放（次月10日），与工资合并计税"
+        },
+        {
+          "label": "能否补报",
+          "text": "不支持向前补报。当月支付的费用须在当月最后一天前提报"
+        }
+      ],
+      "action": "查看报销指引"
+    },
+    {
+      "id": "relay",
+      "number": "02",
+      "title": "内部中转站",
+      "icon": "network",
+      "description": "按量使用，支持开发与高频调用。",
+      "amount": "170",
+      "unit": "元 / 人 / 月公司额度",
+      "rows": [
+        {
+          "label": "适合谁",
+          "text": "用量较大、对成本敏感、有开发需求的光年"
+        },
+        {
+          "label": "注册与登记",
+          "text": "必须用 @guanghe.tv 公司邮箱注册。入口：https://api.m1nt.store/login"
+        },
+        {
+          "label": "公司额度",
+          "text": "每月 1 日或新用户首次注册时，系统自动充值 170 元公司额度"
+        },
+        {
+          "label": "额度有效期",
+          "text": "当月未使用的公司额度月末清零，不累计"
+        },
+        {
+          "label": "提醒",
+          "text": "累计用量达 150 元时发送用量提醒；达 170 元时提示公司额度已用尽"
+        },
+        {
+          "label": "超额",
+          "text": "超出部分在中转站自行充值；个人充值形成的余额可结转下月，且不影响次月完整的 170 元公司额度"
+        },
+        {
+          "label": "计费逻辑",
+          "text": "后台按 1 人民币 = 1 美元计。以 Codex 分组 0.15 倍率为例，170 元可用额度约 1133 美元，约为官方价格的 2%"
+        }
+      ],
+      "action": "中转站使用完整指南",
+      "href": "https://guanghe.feishu.cn/docx/WAs1daEbLo45VWxNs4WcI45EnQc"
+    },
+    {
+      "id": "official",
+      "number": "03",
+      "title": "官方账号直充",
+      "icon": "badge-check",
+      "description": "公司统一采买，个人无需报销。",
+      "amount": "ChatGPT PLUS",
+      "unit": "/ 人 / 月",
+      "recommended": true,
+      "rows": [
+        {
+          "label": "适合谁",
+          "text": "没有官方账号、无法自行注册或付款的非技术岗光年"
+        },
+        {
+          "label": "账号类型",
+          "text": "ChatGPT Plus 官方账号（20 美元/月档），可用于 Codex"
+        },
+        {
+          "label": "采买标准",
+          "text": "ChatGPT PLUS / 人 / 月，公司统一承担，个人无需付费，也无需走任何报销"
+        },
+        {
+          "label": "领取方式",
+          "text": "访问统一自助网页，确认开通后按教程注册，每月自助续费"
+        },
+        {
+          "label": "每月续期",
+          "text": "系统不获取个人账号密码，token 会过期，因此每月到期需按教程重新操作一次"
+        },
+        {
+          "label": "高档位",
+          "text": "本期公司统一采买仅覆盖 Plus；Pro 或更多额度请自费，或联系团队 AI 官申请团队特殊经费"
+        }
+      ],
+      "action": "查看官方账号直充说明",
+      "href": "https://guanghe.feishu.cn/docx/Qx1hd8ep7oJGiFx7vDrcxSFAnKg"
+    }
+  ]
+}

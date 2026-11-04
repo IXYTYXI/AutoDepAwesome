@@ -1,0 +1,45 @@
+# Include inside nginx's http {}. Adapt domain/TLS and allowed_hosts before deploying.
+# TLS termination is assumed to be handled by your existing HTTPS gateway.
+upstream ows_community_api {
+    server 127.0.0.1:8000;
+    keepalive 16;
+}
+
+server {
+    listen 8080;
+    server_name localhost;
+    client_max_body_size 2m;
+    client_body_timeout 15s;
+
+    location /api/ {
+        access_log off; # Never log callback query strings.
+        proxy_pass http://ows_community_api;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 90s;
+        proxy_cache off;
+    }
+
+    location /health/ {
+        allow 127.0.0.1;
+        deny all;
+        proxy_pass http://ows_community_api;
+        proxy_set_header Host $host;
+    }
+
+    # Do not expose the backend directory, .env or media directory as a static root.
+    # /api/v1/officers/media/ is authenticated and served by FastAPI from MEDIA_ROOT.
+    # Pages and assets must pass FastAPI authentication, not a public static root.
+    location / {
+        proxy_pass http://ows_community_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache off;
+        access_log off; # OAuth callbacks contain one-time codes.
+    }
+}

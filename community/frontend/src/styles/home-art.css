@@ -1,0 +1,493 @@
+/* Campaign homepage: local SVG artwork and CSS surfaces; no remote assets. */
+.community-home {
+  padding-top: 28px;
+  position: relative;
+}
+.campaign-banner {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-height: 420px;
+  border-radius: 24px;
+  border: 1px solid #cbdff2;
+  background:
+    radial-gradient(ellipse at 73% 30%, #d2ebff 0%, transparent 55%),
+    linear-gradient(112deg, #f4f9ff 8%, #e2efff 65%, #cbe6fc 100%);
+  box-shadow:
+    inset 0 1px 0 #fff,
+    0 18px 50px -38px #2463a8;
+  display: flex;
+  flex-direction: column;
+  padding: 26px 38px 22px;
+}
+.campaign-banner::after {
+  content: "OWS";
+  position: absolute;
+  z-index: -1;
+  bottom: -68px;
+  right: -10px;
+  font:
+    800 230px/0.9 Arial,
+    sans-serif;
+  letter-spacing: -22px;
+  color: #ffffff3d;
+  pointer-events: none;
+}
+.campaign-grid {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background-image:
+    linear-gradient(#4d8ed10b 1px, transparent 1px),
+    linear-gradient(90deg, #4d8ed10b 1px, transparent 1px);
+  background-size: 36px 36px;
+  mask-image: linear-gradient(90deg, transparent 20%, #000 90%);
+  pointer-events: none;
+}
+.campaign-topline,
+.campaign-baseline {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.campaign-topline > span {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 10px;
+  letter-spacing: 1.3px;
+  font-weight: 600;
+  color: #3e648a;
+}
+.campaign-topline i {
+  height: 7px;
+  width: 7px;
+  background: #2972ef;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px #abcfff75;
+}
+.campaign-topline b {
+  font-weight: 400;
+  color: #8aa5bd;
+  margin-inline: 4px;
+}
+.campaign-copy {
+  position: relative;
+  z-index: 2;
+  width: 55%;
+  padding: 38px 0 40px;
+}
+.campaign-eyebrow {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 12px;
+  color: #426b96;
+  letter-spacing: 1px;
+  margin-bottom: 16px;
+}
+.campaign-rule {
+  width: 24px;
+  height: 1px;
+  background: #397de1;
+}
+.campaign-copy h1 {
+  font-size: clamp(38px, 4.4vw, 62px);
+  line-height: 1.25;
+  font-weight: 700;
+  letter-spacing: -2px;
+  color: #102f62;
+  margin: 0 0 18px;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+.campaign-copy > p {
+  font-size: 15px;
+  line-height: 1.8;
+  color: #557393;
+  max-width: 420px;
+  white-space: pre-line;
+}
+.campaign-copy .campaign-cta {
+  margin-top: 28px;
+  padding: 10px 12px 10px 22px;
+  gap: 24px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #236af2, #174acd);
+  color: #fff;
+  box-shadow:
+    0 7px 17px #2563eb25,
+    inset 0 1px 0 #ffffff40;
+  font-size: 14px;
+}
+.campaign-cta > span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: #ffffff20;
+  transition: background 0.2s;
+}
+.campaign-cta:hover > span {
+  background: #ffffff40;
+}
+.campaign-art {
+  position: absolute;
+  right: -5px;
+  top: 25px;
+  bottom: 12px;
+  width: 54%;
+  z-index: 1;
+  pointer-events: none;
+}
+.community-artwork svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.campaign-baseline {
+  margin-top: auto;
+  border-top: 1px solid #7ba9d42b;
+  padding-top: 17px;
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  color: #557a9c;
+}
+.campaign-issue {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 9px;
+  letter-spacing: 2px;
+}
+.campaign-issue i {
+  display: block;
+  width: 27px;
+  height: 7px;
+  background: repeating-linear-gradient(
+    90deg,
+    #6f99bf 0 1px,
+    transparent 1px 4px
+  );
+}
+.quick-access {
+  border: 0;
+  padding: 0;
+  gap: 14px;
+  margin-top: 20px;
+}
+.quick-access > a,
+.quick-access > button {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid #dce5ef;
+  border-radius: 14px;
+  padding: 19px 18px !important;
+  background: linear-gradient(120deg, #fff, #f6faff);
+  gap: 11px;
+  box-shadow: inset 0 1px 0 #fff;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
+}
+.quick-access > :last-child {
+  border-right: 1px solid #dce5ef;
+}
+.quick-access > a::before,
+.quick-access > button::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  right: -19px;
+  bottom: -31px;
+  width: 76px;
+  height: 76px;
+  border: 1px solid #2374e411;
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 10px #2374e405,
+    0 0 0 21px #2374e404;
+}
+.quick-access > a:hover,
+.quick-access > button:hover {
+  border-color: #9dc3f3;
+  box-shadow: 0 6px 18px #1959a60a;
+}
+.quick-access .quick-icon {
+  position: relative;
+  background: linear-gradient(140deg, #edf8ff, #dceaff);
+  border: 1px solid #fff;
+  box-shadow:
+    0 3px 6px #2769b312,
+    inset 0 1px 0 #fff;
+  color: #2463d7;
+}
+.quick-access .arrow {
+  width: 15px;
+  height: 15px;
+}
+.community-home .section-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.community-home .section-heading h2::before {
+  content: "";
+  display: block;
+  width: 5px;
+  height: 21px;
+  border-radius: 3px;
+  background: linear-gradient(#2361e8, #67cffe);
+  box-shadow: 3px 0 0 #e2efff;
+}
+.community-home .section-heading h2 small {
+  margin-left: 4px;
+}
+.community-home .home-case {
+  box-shadow: 0 3px 12px #25497105;
+}
+.community-home .skill-feature {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(ellipse at 100% 0, #dfeeff, transparent 65%), #fff;
+}
+.skill-vector {
+  position: absolute;
+  z-index: -1;
+  width: 130px;
+  height: 150px;
+  right: 30px;
+  top: 35px;
+  transform: rotate(16deg);
+}
+.skill-vector i {
+  position: absolute;
+  inset: 10px 20px;
+  border: 1px solid #ffffffbf;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #e5f3ff, #a0cbff);
+  box-shadow: 0 8px 22px #265eb013;
+}
+.skill-vector i:nth-child(1) {
+  transform: translate(-14px, 10px) rotate(-18deg);
+  background: #eaf4ff;
+}
+.skill-vector i:nth-child(2) {
+  transform: translate(-7px, 5px) rotate(-9deg);
+  background: #cce5ff;
+}
+.skill-vector span {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font: 52px/1 Arial;
+  color: #fff;
+  text-shadow: 0 2px 4px #3e83ce25;
+}
+@media (max-width: 1050px) {
+  .ows-header nav {
+    gap: 4px;
+  }
+  .campaign-banner {
+    padding-inline: 28px;
+  }
+  .quick-access > a,
+  .quick-access > button {
+    padding: 16px 12px !important;
+  }
+  .quick-access small {
+    font-size: 10px;
+  }
+  .quick-access .quick-icon {
+    width: 32px;
+    height: 34px;
+    flex-shrink: 0;
+  }
+  .quick-access .arrow {
+    display: none;
+  }
+}
+@media (max-width: 760px) {
+  .ows-header nav.ows-mobile-nav {
+    gap: 10px 6px;
+    padding-bottom: 18px;
+  }
+  .ows-header nav a.active::after {
+    bottom: -3px;
+  }
+  .community-home {
+    padding-top: 18px;
+  }
+  .campaign-banner {
+    padding: 19px 22px 16px;
+    min-height: 535px;
+    border-radius: 20px;
+  }
+  .campaign-topline > span {
+    font-size: 8px;
+    gap: 7px;
+    letter-spacing: 0.8px;
+  }
+  .campaign-edit {
+    padding: 5px !important;
+  }
+  .campaign-edit > span {
+    display: none;
+  }
+  .campaign-copy {
+    width: 100%;
+    padding: 27px 0 0;
+  }
+  .campaign-copy h1 {
+    font-size: 40px;
+    letter-spacing: -1.4px;
+    max-width: 100%;
+    margin-bottom: 10px;
+  }
+  .campaign-eyebrow {
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    margin-bottom: 13px;
+  }
+  .campaign-copy > p {
+    font-size: 12px;
+    max-width: 100%;
+  }
+  .campaign-copy .campaign-cta {
+    margin-top: 19px;
+    padding: 8px 10px 8px 16px;
+    font-size: 12px;
+    gap: 18px;
+  }
+  .campaign-art {
+    width: 270px;
+    height: 220px;
+    top: auto;
+    right: -8px;
+    bottom: 25px;
+    opacity: 0.95;
+  }
+  .campaign-baseline {
+    margin-top: 185px;
+    padding-top: 12px;
+    font-size: 9px;
+    letter-spacing: 0.3px;
+  }
+  .campaign-issue {
+    font-size: 6px;
+    letter-spacing: 1px;
+    gap: 5px;
+  }
+  .campaign-issue i {
+    width: 16px;
+  }
+  .campaign-banner::after {
+    font-size: 150px;
+    bottom: 15px;
+    right: 10px;
+    letter-spacing: -14px;
+  }
+  .quick-access {
+    gap: 10px;
+    margin-top: 14px;
+  }
+  .quick-access > a,
+  .quick-access > button {
+    padding: 14px 10px !important;
+    gap: 8px;
+  }
+  .quick-access strong {
+    font-size: 12px;
+  }
+  .quick-access small {
+    font-size: 9px;
+    white-space: normal;
+  }
+  .quick-access > :nth-child(even) {
+    border-right: 1px solid #dce5ef;
+  }
+  .skill-vector {
+    right: 20px;
+    top: 30px;
+    width: 110px;
+    height: 130px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ows-header nav a,
+  .quick-access > a,
+  .quick-access > button,
+  .campaign-cta > span {
+    transition: none;
+  }
+}
+@media(max-width:760px){
+  .campaign-art{position:relative;align-self:flex-end;flex-shrink:0;width:270px;height:200px;right:-20px;top:auto;bottom:auto;margin:0 0 2px;}
+  .campaign-baseline{margin-top:auto;}
+}
+
+/* A stable 16:9 stage keeps square/portrait uploads from stretching the page. */
+.campaign-banner.has-image {
+  min-height: 0;
+  padding: 0;
+  background: #f3f7ff;
+  gap: 0;
+}
+.campaign-banner.has-image::before,
+.campaign-banner.has-image::after {
+  display: none;
+}
+.campaign-media {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  flex-shrink: 0;
+  overflow: hidden;
+  background: #e8eef6;
+}
+.campaign-cover {
+  display: block;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+}
+.campaign-banner.has-image .campaign-copy {
+  width: 100%;
+  padding: 24px 32px;
+  background: #ffffffed;
+  border-top: 1px solid #dce6f3;
+}
+.campaign-banner.has-image .campaign-copy h1 {
+  font-size: clamp(24px, 2.5vw, 36px);
+  letter-spacing: -0.6px;
+  margin-bottom: 10px;
+}
+.campaign-banner.has-image .campaign-copy > p {
+  max-width: 760px;
+}
+.campaign-banner.has-image .campaign-cta {
+  margin-top: 16px;
+}
+.campaign-banner.has-image .campaign-cta:first-child {
+  margin-top: 0;
+}
+@media (max-width: 760px) {
+  .campaign-banner.has-image {
+    border-radius: 16px;
+  }
+  .campaign-banner.has-image .campaign-copy {
+    padding: 18px 20px;
+  }
+}

@@ -1,0 +1,26 @@
+[Unit]
+Description=Awesome Deploy independent request intake
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=awesome-intake
+Group=awesome-intake
+WorkingDirectory=/opt/awesome-deploy
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/awesome-deploy/.venv/bin/awesome-deploy-intake --config /etc/awesome-intake/config.json
+Restart=always
+RestartSec=5
+UMask=0077
+StateDirectory=awesome-intake
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/awesome-intake
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

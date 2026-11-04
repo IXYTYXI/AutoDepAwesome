@@ -1,7 +1,8 @@
 """Server-side Feishu OAuth and eligibility checks; no CLI user session is reused.
 
 Login mode uses OAuth v2 and authen v1 only; continuous mode additionally uses
-OAuth v3 for app tokens, contact v3 and application v6. A fresh platform session
+OAuth v3 for app tokens, contact v3 and application v6. App-visibility mode uses
+only application v6 after the same tenant-bound login. A fresh platform session
 must be created only after ``exchange`` succeeds. User access/refresh tokens are
 never retained here.
 """
@@ -85,7 +86,7 @@ def _object(value):
 
 class FeishuProvider:
     def __init__(self, settings, *, client: httpx.Client | None = None, clock=time.monotonic):
-        if (settings.feishu_eligibility_mode not in ("login", "continuous")
+        if (settings.feishu_eligibility_mode not in ("login", "continuous", "app_visibility")
                 or not is_valid_feishu_app_id(settings.feishu_app_id)):
             raise FeishuUnavailable() from None
         self.settings = settings
@@ -153,14 +154,16 @@ class FeishuProvider:
             started = self._clock()
             if self._tenant_token_value is not None and started < self._tenant_token_deadline:
                 return self._tenant_token_value
+            required_scopes = (("application:application:self_manage",)
+                               if self.settings.feishu_eligibility_mode == "app_visibility" else APP_SCOPES)
             body = self._request("POST", TENANT_TOKEN_URL, data={
                 "grant_type": "client_credentials", "client_id": self.settings.feishu_app_id,
                 "client_secret": _read_secret(self.settings.feishu_app_secret_file),
-                "scope": " ".join(APP_SCOPES),
+                "scope": " ".join(required_scopes),
             })
             token, ttl = self._access_token(body)
             scope = body.get("scope")
-            if not isinstance(scope, str) or not set(APP_SCOPES).issubset(scope.split()):
+            if not isinstance(scope, str) or not set(required_scopes).issubset(scope.split()):
                 raise FeishuUnavailable() from None
             deadline = started + ttl - min(60, ttl * 0.1)
             if self._clock() >= deadline:
@@ -191,28 +194,29 @@ class FeishuProvider:
             raise FeishuDenied() from None
         if not isinstance(name, str) or not name or len(name) > 256 or not name.isprintable():
             name = open_id
-        if self.settings.feishu_eligibility_mode == "continuous" and not self.check_eligible(open_id):
+        if self.settings.feishu_eligibility_mode != "login" and not self.check_eligible(open_id):
             raise FeishuDenied() from None
         return {"open_id": open_id, "tenant_key": tenant_key, "name": name}
 
     def check_eligible(self, open_id: str) -> bool:
-        if self.settings.feishu_eligibility_mode != "continuous":
+        if self.settings.feishu_eligibility_mode not in ("continuous", "app_visibility"):
             raise FeishuUnavailable() from None
         if not isinstance(open_id, str) or OPEN_ID.fullmatch(open_id) is None:
             raise FeishuDenied() from None
         headers = {"Authorization": "Bearer " + self._tenant_token()}
-        body = self._request("GET", API_ORIGIN + "/open-apis/contact/v3/users/" + open_id,
-                             headers=headers, params={"user_id_type": "open_id"})
-        user = _object(_object(body.get("data")).get("user"))
-        employee_status = _object(user.get("status"))
-        expected = {"is_activated": True, "is_frozen": False, "is_resigned": False,
-                    "is_exited": False, "is_unjoin": False}
-        if user.get("open_id") != open_id or any(
-            type(employee_status.get(field)) is not bool for field in expected
-        ):
-            raise FeishuUnavailable() from None
-        if any(employee_status[field] != value for field, value in expected.items()):
-            return False
+        if self.settings.feishu_eligibility_mode == "continuous":
+            body = self._request("GET", API_ORIGIN + "/open-apis/contact/v3/users/" + open_id,
+                                 headers=headers, params={"user_id_type": "open_id"})
+            user = _object(_object(body.get("data")).get("user"))
+            employee_status = _object(user.get("status"))
+            expected = {"is_activated": True, "is_frozen": False, "is_resigned": False,
+                        "is_exited": False, "is_unjoin": False}
+            if user.get("open_id") != open_id or any(
+                type(employee_status.get(field)) is not bool for field in expected
+            ):
+                raise FeishuUnavailable() from None
+            if any(employee_status[field] != value for field, value in expected.items()):
+                return False
         body = self._request("POST", API_ORIGIN + "/open-apis/application/v6/applications/"
                              + self.settings.feishu_app_id + "/visibility/check_white_black_list",
                              headers=headers, params={"user_id_type": "open_id"},

@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import sqlite3
+import stat
 import time
 import uuid
 
@@ -36,12 +37,19 @@ def csrf_token(token):
 
 
 class IdentityStore:
-    def __init__(self, settings, *, provider=None, clock=time.time):
+    def __init__(self, settings, *, provider=None, clock=time.time, shared_database_gid=None):
         self.settings, self.clock = settings, clock
         self.provider = provider if provider is not None else FeishuProvider(settings)
         settings.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         if settings.database_path.is_symlink():
             raise DeployError("IDENTITY_UNAVAILABLE", "身份数据库路径不安全。")
+        if shared_database_gid is not None:
+            # Explicit host provisioning only: never broaden an existing DB's permissions.
+            info = settings.database_path.stat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or info.st_gid != shared_database_gid or stat.S_IMODE(info.st_mode) != 0o660
+                    or shared_database_gid not in {os.getegid(), *os.getgroups()}):
+                raise DeployError("IDENTITY_UNAVAILABLE", "共享身份数据库权限配置不匹配。")
         with self.connection() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS auth_users (
@@ -73,7 +81,8 @@ class IdentityStore:
                     PRIMARY KEY(bucket,reason)
                 );
             """)
-        os.chmod(settings.database_path, 0o600)
+        if shared_database_gid is None:
+            os.chmod(settings.database_path, 0o600)
 
     @contextmanager
     def connection(self, write=False):
@@ -179,7 +188,7 @@ class IdentityStore:
             user = self.get_user(user_id)
             if (not user["enabled"] or not user["eligible"]
                     or expected_revision is not None and user["revision"] != expected_revision):
-                raise DeployError("ACCESS_DENIED", "用户已离职、停用或不在应用可用范围内。")
+                raise DeployError("ACCESS_DENIED", "部署资格已失效，请检查账号启用状态和应用可用范围。")
         return user
 
     def set_user(self, user_id, *, enabled=None, can_deploy=None, is_admin=None, actor_id=None,

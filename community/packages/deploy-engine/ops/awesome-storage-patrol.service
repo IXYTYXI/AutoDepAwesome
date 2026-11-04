@@ -1,0 +1,22 @@
+[Unit]
+Description=Awesome Deploy independent storage quota patrol
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=awesome
+Group=awesome
+WorkingDirectory=/opt/awesome-deploy
+Environment=XDG_RUNTIME_DIR=/run/user/1001
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/awesome-deploy/.venv/bin/awesome-deploy --config /etc/awesome-deploy/config.json storage-patrol
+UMask=0077
+StateDirectory=awesome-deploy
+StateDirectoryMode=0700
+# Fixed sudo helper and rootless Docker require the same trust boundary as the worker.
+# Do not enable NoNewPrivileges, PrivateUsers or a different mount namespace.
+KillMode=control-group
+# Individual Docker calls retain deadlines; alert on stale successful checks.
+TimeoutStartSec=infinity
+StandardOutput=journal
+StandardError=journal

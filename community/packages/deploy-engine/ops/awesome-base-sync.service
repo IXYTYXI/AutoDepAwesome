@@ -1,0 +1,26 @@
+[Unit]
+Description=Awesome Deploy Feishu Base registration sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=awesome
+Group=awesome
+WorkingDirectory=/opt/awesome-deploy
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/awesome-deploy/.venv/bin/awesome-deploy --config /etc/awesome-deploy/config.json base-sync
+Restart=always
+RestartSec=15
+UMask=0077
+StateDirectory=awesome-deploy
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/awesome-deploy
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

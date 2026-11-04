@@ -1,0 +1,96 @@
+/* Keep the shell and particles mounted; transition only the page content. */
+.route-page {
+  min-height: 50vh;
+}
+.page-switch-enter-active {
+  transition:
+    opacity 0.22s ease-out,
+    transform 0.22s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.page-switch-leave-active {
+  transition:
+    opacity 0.13s ease-in,
+    transform 0.13s ease-in;
+  pointer-events: none;
+}
+.page-switch-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.page-switch-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+.route-page main:focus {
+  outline: none;
+}
+.navigation-progress {
+  position: absolute;
+  bottom: 0;
+  left: 25px;
+  right: 25px;
+  height: 2px;
+  border-radius: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  animation: progress-reveal 0.15s 0.12s both;
+}
+.navigation-progress::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    #3173ee,
+    #63c7f4,
+    transparent
+  );
+  animation: route-progress 1.1s ease-in-out infinite;
+}
+.ows-header nav a.pending:not(.active) {
+  background: #e0ebff;
+  color: #245bc3;
+}
+.navigation-error {
+  margin-top: 16px;
+  background: #fff1f2;
+  color: #9f1239;
+  padding: 12px 18px;
+  border-radius: 12px;
+  font-size: 13px;
+}
+.navigation-error button {
+  margin-left: 16px;
+  text-decoration: underline;
+}
+@keyframes route-progress {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes progress-reveal {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-switch-enter-active,
+  .page-switch-leave-active {
+    transition: none;
+  }
+  .page-switch-enter-from,
+  .page-switch-leave-to {
+    transform: none;
+  }
+  .navigation-progress,
+  .navigation-progress::after {
+    animation: none;
+  }
+}

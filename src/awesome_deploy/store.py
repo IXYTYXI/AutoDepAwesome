@@ -348,6 +348,9 @@ class Store:
         ).fetchone() is not None
         return (owner is None or reset_owner or managed_draft) and not active_release and not generation_data
 
+    def before_enqueue(self, db, payload, actor):
+        """Extension point for host constraints inside the submission transaction."""
+
     def enqueue(self, payload, idempotency_key, *, actor=None, credential_id=None, delegated=False):
         encoded = _json(payload)
         request_key = idempotency_key
@@ -398,6 +401,7 @@ class Store:
                 if row["input"] != encoded:
                     raise DeployError("IDEMPOTENCY_CONFLICT", "This key already belongs to a different request.")
                 return self._job(row)
+            self.before_enqueue(db, payload, actor)
             app_id = payload.get("appId")
             if actor is not None:
                 if app_id:
@@ -408,7 +412,7 @@ class Store:
                         raise DeployError("APP_IDENTITY_CONFLICT", "Repository and subdomain must match the application.")
                 else:
                     if db.execute("SELECT 1 FROM apps WHERE subdomain=?", (payload["subdomain"],)).fetchone():
-                        raise denied()
+                        raise DeployError("DOMAIN_CONFLICT", "项目名称已存在，请更换名称或选择已有应用。")
                     app_id, created = uuid.uuid4().hex, time.time()
                     db.execute("INSERT INTO apps VALUES (?,?,NULL,NULL,?,?)",
                                (app_id, payload["repository"], created, created))

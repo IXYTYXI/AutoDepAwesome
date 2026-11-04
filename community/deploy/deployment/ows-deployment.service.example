@@ -1,0 +1,23 @@
+[Unit]
+Description=OWS deployment executor and synchronization
+After=network-online.target
+
+[Service]
+Type=simple
+User=ows-deploy
+WorkingDirectory=/opt/ows-community
+Environment=OWS_COMMUNITY_SETTINGS_FILE=/etc/ows-community/worker.env
+ExecStartPre=/opt/ows-community/.venv/bin/python -m scripts.check_server --executor
+ExecStart=/opt/ows-community/.venv/bin/python -m app.deployment.worker
+Restart=on-failure
+RestartSec=10
+Nice=10
+CPUWeight=20
+IOWeight=20
+MemoryMax=768M
+TasksMax=256
+KillMode=control-group
+TimeoutStopSec=1200
+
+[Install]
+WantedBy=multi-user.target

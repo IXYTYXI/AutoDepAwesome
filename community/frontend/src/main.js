@@ -1,0 +1,16 @@
+import { createApp } from "vue";
+import AppLink from "./components/AppLink.vue";
+import App from "./App.vue";
+import { router } from "./router.js";
+import Icon from "./components/Icon.vue";
+import TripleArrow from "./components/TripleArrow.vue";
+import ui from "@nuxt/ui/vue-plugin";
+import "./styles/nuxt-theme.css";
+import "./styles/home-art.css";
+import "./styles/navigation.css";
+import "./styles/officers-controls.css";
+import "./styles/background.css";
+import "./styles/page-transition.css";
+import "./styles/reader-modal.css";
+const app = createApp(App).use(ui).use(router).component("TripleArrow", TripleArrow).component("Icon", Icon).component("AppLink", AppLink);
+router.isReady().then(() => app.mount("#app")).catch(() => app.mount("#app"));

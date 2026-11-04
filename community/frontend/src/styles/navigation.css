@@ -1,0 +1,260 @@
+/* Shared floating navigation. The active state is the whole pill, not an underline. */
+.ows-header {
+  width: min(1240px, calc(100% - 40px));
+  margin: 14px auto 0;
+  top: 12px;
+  border: 1px solid #ffffffd9;
+  border-radius: 26px;
+  background: linear-gradient(120deg, #e4e8eddb, #eff2f5bd);
+  backdrop-filter: blur(24px) saturate(135%);
+  -webkit-backdrop-filter: blur(24px) saturate(135%);
+  box-shadow:
+    0 8px 28px -16px #263b5e45,
+    0 1px 3px #5364780a,
+    inset 0 1px 0 white;
+}
+.ows-header-inner.wrap {
+  width: 100%;
+  max-width: none;
+  height: 72px;
+  padding: 0 17px;
+  gap: 20px;
+}
+.ows-header .brand-lockup {
+  width: 184px;
+  height: 42px;
+}
+.ows-header .brand-lockup img {
+  top: -10px;
+}
+.ows-header nav.ows-desktop-nav {
+  gap: 2px;
+  padding: 5px;
+  border-radius: 999px;
+  background: #cdd5df40;
+  border: 1px solid #c4cedb32;
+  box-shadow: inset 0 1px 2px #52688408;
+}
+.ows-header nav a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 999px;
+  color: #536174;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
+  text-decoration: none;
+  transition:
+    background 0.18s,
+    color 0.18s,
+    box-shadow 0.18s;
+}
+.ows-header nav a::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0;
+  flex-shrink: 0;
+}
+.ows-header nav a:hover {
+  background: #ffffff91;
+  color: #214db9;
+  box-shadow: 0 2px 6px #374c6b08;
+}
+.ows-header nav a.active,
+.ows-header nav a.active:hover {
+  background: linear-gradient(135deg, #3879f2, #2457d7);
+  color: #fff;
+  font-weight: 600;
+  box-shadow:
+    0 4px 9px #215bcd29,
+    inset 0 1px 0 #ffffff40;
+}
+.ows-header nav a.active::before {
+  opacity: 1;
+  background: #bdeaff;
+  box-shadow: 0 0 6px #d0f0ff70;
+}
+.ows-header nav a.active::after {
+  display: none;
+  content: none;
+}
+.ows-header-actions {
+  gap: 10px;
+  flex-shrink: 0;
+  padding-left: 16px;
+  border-left: 1px solid #c5cdd65e;
+}
+.ows-header .header-deploy {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #397af1, #2459d8);
+  color: #fff;
+  border: 1px solid #3d76e3;
+  box-shadow: 0 4px 12px #2459d826, inset 0 1px 0 #ffffff35;
+  padding: 9px 15px;
+  font-size: 12px;
+  font-weight: 550;
+  white-space: nowrap;
+  transition: background .2s, box-shadow .2s;
+}
+.ows-header .header-deploy .ui-icon, .ows-header .mobile-deploy .ui-icon {
+  width: 17px;
+  height: 17px;
+  color: rgb(218 225 236 / 78%);
+}
+.ows-header .header-deploy:hover {
+  color: #fff;
+  background: linear-gradient(135deg, #2e6de4, #1d4fc9);
+  box-shadow: 0 5px 16px #2459d838, inset 0 1px 0 #ffffff35;
+}
+.ows-header .ows-mobile-nav .mobile-deploy {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #fff;
+  background: #2d67e5;
+}
+.header-profile {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px 5px 5px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #526174;
+  white-space: nowrap;
+  transition:
+    background 0.18s,
+    box-shadow 0.18s;
+}
+.header-avatar {
+  background: linear-gradient(145deg, #fff, #dae8fc);
+  border: 1px solid #ffffffd9;
+  color: #3760a9;
+  box-shadow: 0 2px 6px #3b5d8612;
+}
+.header-profile:hover {
+  background: #ffffff8c;
+  color: #2457bc;
+}
+.header-profile.active {
+  color: #174eb9;
+  background: #edf4ff;
+  border-color: #a9c9f1;
+  box-shadow: 0 0 0 3px #fff8;
+}
+.header-profile.active .header-avatar {
+  background: linear-gradient(145deg, #4386f5, #2252d0);
+  border-color: #4278e2;
+  color: white;
+}
+.ows-header :is(a, button):focus-visible {
+  outline: 2px solid #3677e7;
+  outline-offset: 4px;
+}
+@media (max-width: 1150px) {
+  .ows-header-inner.wrap {
+    gap: 12px;
+    padding-inline: 14px;
+  }
+  .ows-header .brand-lockup {
+    width: 165px;
+  }
+  .ows-header nav a {
+    padding: 9px 8px;
+    gap: 4px;
+  }
+  .ows-header-actions {
+    padding-left: 10px;
+    gap: 6px;
+  }
+  .header-profile-label {
+    display: none;
+  }
+  .header-profile {
+    padding: 4px;
+  }
+}
+@media (max-width: 960px) {
+  .ows-header {
+    width: calc(100% - 28px);
+    margin-top: 10px;
+    top: 8px;
+    border-radius: 23px;
+  }
+  .ows-header-inner.wrap {
+    height: 62px;
+    padding-inline: 14px;
+    gap: 12px;
+  }
+  .ows-header .brand-lockup {
+    width: 164px;
+    height: 38px;
+  }
+  .ows-header .brand-lockup img {
+    top: -9px;
+  }
+  .ows-header nav.ows-desktop-nav {
+    display: none;
+  }
+  .ows-header-actions {
+    margin-left: auto;
+    border: 0;
+    padding: 0;
+    gap: 8px;
+  }
+  .ows-header .header-deploy {
+    display: none !important;
+  }
+  .ows-header .mobile-menu-toggle {
+    display: inline-flex !important;
+    border-radius: 50%;
+    width: 34px;
+    height: 34px;
+    justify-content: center;
+    background: #ffffff8c;
+    color: #4a5f79;
+    padding: 0;
+  }
+  .ows-header nav.ows-mobile-nav {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 8px;
+    margin: 0 12px 12px;
+    padding: 10px;
+    background: #d2dae54d;
+    border: 1px solid #ffffff80;
+    border-radius: 18px;
+  }
+  .ows-header nav.ows-mobile-nav a {
+    flex: 1 0 27%;
+    font-size: 12px;
+    min-height: 38px;
+    padding: 8px;
+    gap: 6px;
+  }
+  .header-profile.active {
+    box-shadow: 0 0 0 2px #fff8;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ows-header nav a,
+  .header-profile {
+    transition: none;
+  }
+}
+.header-profile.active .header-avatar span { color:#fff; }
+@media(max-width:960px){
+  .ows-header nav.ows-mobile-nav {width:calc(100% - 24px);}
+}
