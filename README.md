@@ -106,6 +106,12 @@ python3 -m venv .venv
 
 `worker --once` 检查到期的已上线版本恢复，并处理排队/恢复任务或到期回收任务，输出 `processed`。`check` 检查主机、Docker、存储、builder 与网关前提，不等于一次完整部署验收。
 
+## 开发技术规范 Skill
+
+开发者和 AI 在设计、开发、准备部署文件时，使用独立的 [awesome-deploy-protocol](skills/awesome-deploy-protocol/SKILL.md)。它包含字段规范、构建与运行约束、资源和密钥说明、官方 Schema 快照、完整示例及交付检查表；整个目录可分发使用，不要求先取得部署 Token 或启动平台。
+
+现有 [awesome-deploy-integration](skills/awesome-deploy-integration/SKILL.md) 用于选择部署入口、调用 API 和接入同组后端。技术规范 Skill 不自动提交部署、不管理登录或服务器；参考额度不代表目标服务器当前可用容量。
+
 ## 示例仓库
 
 新项目与当前示例统一使用 `schemaVersion: 2`；`schemaVersion: 1` 仅保留已有项目兼容。仓库准备、控制台与普通 API 使用方式见[可分发 Skill 的仓库部署指南](skills/awesome-deploy-integration/references/repository-deployment.md)；静态项目不需要先搭建同组接入后端或 Redis。

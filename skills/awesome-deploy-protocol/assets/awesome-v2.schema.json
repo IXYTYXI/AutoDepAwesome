@@ -1,0 +1,363 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://awesome.guanghexinzhi.cn/schema/awesome-v2.json",
+  "title": "Awesome deployment manifest v2 with storage hard quotas",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "app",
+    "services",
+    "routes"
+  ],
+  "properties": {
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "description",
+        "subdomain"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "subdomain": {
+          "type": "string",
+          "pattern": "^[a-z0-9](?:[a-z0-9-]{0,5}[a-z0-9])?(?![\\s\\S])"
+        }
+      }
+    },
+    "services": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9-]{0,30}(?![\\s\\S])"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "port",
+          "healthcheck"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "image"
+            ],
+            "not": {
+              "required": [
+                "build"
+              ]
+            }
+          },
+          {
+            "required": [
+              "build"
+            ],
+            "not": {
+              "required": [
+                "image"
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "kind": {
+            "const": "web"
+          },
+          "image": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/:@-]*(?![\\s\\S])"
+          },
+          "build": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "context",
+              "dockerfile"
+            ],
+            "properties": {
+              "context": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "dockerfile": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "target": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*(?![\\s\\S])",
+                "maxLength": 128
+              },
+              "args": {
+                "type": "object",
+                "maxProperties": 128,
+                "propertyNames": {
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*(?![\\s\\S])",
+                  "not": {
+                    "pattern": "^[Bb][Uu][Ii][Ll][Dd](?:[Kk][Ii][Tt]|[Xx])_"
+                  }
+                },
+                "additionalProperties": {
+                  "type": "string",
+                  "maxLength": 4096,
+                  "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f]*(?![\\s\\S])"
+                }
+              }
+            }
+          },
+          "command": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 4096,
+              "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f]*(?![\\s\\S])"
+            },
+            "minItems": 1,
+            "maxItems": 128
+          },
+          "entrypoint": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 4096,
+              "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f]*(?![\\s\\S])"
+            },
+            "minItems": 1,
+            "maxItems": 128
+          },
+          "workingDir": {
+            "type": "string",
+            "pattern": "^/[A-Za-z0-9/_.-]*(?![\\s\\S])",
+            "maxLength": 512
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "env": {
+            "type": "object",
+            "maxProperties": 128,
+            "propertyNames": {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*(?![\\s\\S])"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 4096,
+              "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f]*(?![\\s\\S])"
+            }
+          },
+          "secretRefs": {
+            "type": "object",
+            "maxProperties": 128,
+            "propertyNames": {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*(?![\\s\\S])"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}(?![\\s\\S])"
+            }
+          },
+          "resources": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "cpu": {
+                "type": "number",
+                "minimum": 0.05,
+                "maximum": 6
+              },
+              "memoryMiB": {
+                "type": "integer",
+                "minimum": 32,
+                "maximum": 6144
+              }
+            }
+          },
+          "healthcheck": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "path"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "http"
+                  },
+                  "path": {
+                    "type": "string",
+                    "pattern": "^/[A-Za-z0-9/_.~?=&%-]*(?![\\s\\S])",
+                    "maxLength": 1024
+                  },
+                  "intervalSeconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 300
+                  },
+                  "timeoutSeconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 60
+                  },
+                  "retries": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30
+                  },
+                  "startPeriodSeconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 600
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "command"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "exec"
+                  },
+                  "command": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 4096,
+                      "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f]*(?![\\s\\S])"
+                    },
+                    "minItems": 1,
+                    "maxItems": 128
+                  },
+                  "intervalSeconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 300
+                  },
+                  "timeoutSeconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 60
+                  },
+                  "retries": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30
+                  },
+                  "startPeriodSeconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 600
+                  }
+                }
+              }
+            ]
+          },
+          "dependsOn": {
+            "type": "object",
+            "propertyNames": {
+              "pattern": "^[a-z][a-z0-9-]{0,30}(?![\\s\\S])"
+            },
+            "additionalProperties": {
+              "enum": [
+                "started",
+                "healthy"
+              ]
+            }
+          },
+          "storage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "mountPath",
+              "sizeMiB",
+              "maxInodes"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,30}(?![\\s\\S])"
+              },
+              "mountPath": {
+                "const": "/data"
+              },
+              "sizeMiB": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1073741824
+              },
+              "maxInodes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2147483647
+              }
+            }
+          }
+        }
+      }
+    },
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "match",
+          "service"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^/[A-Za-z0-9/_.~-]*(?![\\s\\S])",
+            "maxLength": 512
+          },
+          "match": {
+            "enum": [
+              "exact",
+              "prefix"
+            ]
+          },
+          "service": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,30}(?![\\s\\S])"
+          },
+          "stripPrefix": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      }
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 2
+    }
+  }
+}

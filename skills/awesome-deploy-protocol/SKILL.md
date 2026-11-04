@@ -1,0 +1,40 @@
+---
+name: awesome-deploy-protocol
+description: "当开发的新项目计划部署到 Awesome Deploy，或需要编写部署文件、核对已有项目的部署兼容性、审查开发交付物时使用。作为开发技术规范；不负责调用部署 API、登录平台或管理服务器。"
+---
+
+# Awesome Deploy 开发技术协议
+
+让开发者和 AI 在设计、开发和交付阶段就遵守平台能够执行的条件。本 Skill 规范的是用户的业务项目，不是要求修改部署平台。
+
+协议修订：2026-11-04；核对的平台实现：0.11.8。协议修订、平台版本、清单 schemaVersion 是三个概念。完整规范和示例随包提供，无需部署凭证、飞书文档权限或运行中的平台即可阅读使用。
+
+## 开发前先确定边界
+
+1. 先读[清单契约](references/manifest.md)和[构建与运行契约](references/build-runtime.md)，再选架构、依赖和写入目录。涉及文件、数据库、密钥或外部模型时，同时读[资源、配置与交付](references/resources-and-delivery.md)。
+2. 对新项目，按用户需求实现业务，并从一开始设计在可用能力内；对已有项目，核对真实启动入口、端口、接口、依赖和数据位置，不因部署困难擅自增删业务、替换鉴权或伪造健康结果。不兼容时列明原因，不能把数据库或后台任务改名成 web 来绕过限制。
+3. 使用 [platform-profile.json](assets/platform-profile.json) 的开发参考额度；目标服务器的实际配置决定当前可用能力与容量。无法取得目标配置时写明假设，不承诺实时可部署。发现规范、旧 README 或执行结果矛盾时列出依据，不能用旧示例覆盖本协议。
+
+## 开发必须遵守的条件
+
+| 项目 | 开发约束 |
+| --- | --- |
+| 交付方式 | Git 仓库根目录的 UTF-8 awesome.yaml；源码构建同时提供真实 Dockerfile、业务文件及离线依赖/产物。不要求额外 ZIP。 |
+| 清单版本 | 新生成统一 schemaVersion: 2，包括无状态网站；已有 v1 仍兼容，不等于必然部署失败。 |
+| 服务与路由 | 1–16 个 kind: web 的 HTTP 服务，1–32 条路由；前端/API 可以分服务。独立数据库、队列、worker、迁移钩子未提供。 |
+| 启动 | 监听 0.0.0.0，与清单 port 一致；真实健康路径或 exec 检查必须可用。 |
+| 构建 | RUN 默认无网络；基础镜像由平台拉取并固定摘要。不能默认在线 npm/pip/apt 安装。 |
+| 运行 | 非 root、只读根文件系统；临时文件用 /tmp，必要持久数据用声明的 /data。不要求 root、特权或 Docker socket。 |
+| 资源 | 参考每应用合计内存上限 500 MiB、持久数据 50 MiB。内存是上限而非固定占用，须显式分配各服务。 |
+| 配置 | 非秘密 env 必须为单行字符串；秘密只声明 secretRefs，真实值不进入 Git、构建参数或镜像。 |
+
+静态网站或浏览器 localStorage 存档不因此需要服务器卷、登录、Redis、MASTER_KEY 或调用部署 API 的后端。平台管理登录不等于业务应用登录。
+
+## 生成文件与验证
+
+- [单服务完整示例](assets/examples/simple-web/awesome.yaml)和[前端/API 完整示例](assets/examples/frontend-api/awesome.yaml)各自目录包含可配套运行的 Dockerfile 与示例程序。它们用于说明结构，不得用示例程序覆盖用户业务，也不强制项目使用 Python。
+- 只有确需持久数据时才参考[持久服务清单](assets/persistent-service.yaml)；它是声明模板，需要项目自己的 Dockerfile 和实际使用 /data 的应用。
+- [官方 v2 JSON Schema](assets/awesome-v2.schema.json)可离线用于编辑器校验。Schema 不覆盖全部执行限制；不能把只通过 Schema 说成通过完整平台校验。
+- 交付项目的真实源码、清单、构建文件、无秘密值的配置说明和验证结论。按[交付检查表](references/resources-and-delivery.md#交付检查表)说明已验证、未验证和不兼容项。完整平台解析器不可用时，明确仅完成静态检查；只读过本协议不能声称已构建或上线。
+
+本 Skill 不签发凭证、不查询用户身份、不提交部署、不重启平台，也不自动启动本机 Docker Desktop。用户另行要求真实部署时，再选用有授权的部署入口。安装时保留整个 awesome-deploy-protocol 目录；Codex 可放到其 skills 目录，其他 AI 工具也可直接读取 SKILL.md 和相关参考文件。

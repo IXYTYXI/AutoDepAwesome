@@ -1,0 +1,77 @@
+# awesome.yaml 字段契约
+
+本页与包内官方 v2 Schema 配套；出现范围差异时，以下列明的执行器约束优先。新项目与新生成文件统一使用版本 2，平台对已有版本 1 的兼容不是新模板选择版本 1 的理由。
+
+## 仓库与版本
+
+提交允许列表内的 HTTPS GitHub/GitLab 仓库，不在 URL 中嵌入用户名、密码、Token、额外端口、查询参数或片段。服务器必须能实际读取；私有仓库授权是平台配置，不由飞书登录自动提供。ref 默认 main，也可指定真实分支、标签或完整 commit；提交的部署文件必须位于该版本中。
+
+awesome.yaml 位于仓库根目录，UTF-8，最多 256 KiB。禁止重复键、非字符串映射键、锚点、别名和显式标签；只使用声明字段。平台不执行变量插值，不能依赖 ${VAR} 自动替换。平台不支持仓库符号链接、Git submodule，也不自动下载 Git LFS 内容。
+
+## 字段表
+
+路径中的 SERVICE 是服务名。完整单服务、多服务 YAML 见包内 assets/examples，两套都是独立仓库根目录示例。
+
+| 字段 | 类型与约束 |
+| --- | --- |
+| schemaVersion | 新生成文件必填整数 2。 |
+| app | 必填对象，只含 name、description、subdomain。 |
+| app.name | 1–100 字符显示名称，可以用中文。 |
+| app.description | 必填字符串，最多 2000 字符，可以为空。 |
+| app.subdomain | 项目名称/域名前缀；1–7 位小写字母、数字或中划线，首尾为字母或数字。不能有中文、大写、空格；还须通过目标平台保留名与禁词校验，并与提交时 subdomain 相同。可用性须实际受理确认。 |
+| services | 1–16 个服务；服务名为小写字母起始的字母、数字、中划线，最多 31 字符。 |
+| services.SERVICE.kind | 必填 web，仅表示支持的 HTTP 服务，不表示可把其他类型伪装为 web。 |
+| image / build | 必须二选一。image 为真实可拉取的镜像引用，最长 512 字符；build 用于源码构建。 |
+| build.context | 必填，相对仓库根目录；允许 .，禁止绝对路径、反斜杠、空路径段、..、.git。 |
+| build.dockerfile | 必填，相对 context 的真实文件；不允许 .、绝对路径或路径穿越。 |
+| build.target / args | 可选命名阶段；可选非秘密构建参数映射，最多 128 项，值为字符串且最长 4096 字符。禁止 BUILDKIT_/BUILDX_ 控制参数。 |
+| port | 必填整数 1–65535，为容器内部 HTTP 监听端口，须与程序一致。建议 8080 等非特权端口；宿主机端口由平台分配。 |
+| env | 可选，最多 128 项；变量名匹配 [A-Za-z_][A-Za-z0-9_]*，值是单行字符串，最多 4096 字符。数字/布尔值也用引号；只用于非秘密配置。 |
+| secretRefs | 可选，变量名到秘密引用名的映射，最多 128 项；变量不能同时出现在 env。引用名实际匹配 [A-Za-z][A-Za-z0-9_-]{0,63}。不要按 Schema 中较宽的范围使用点号或更长名称。 |
+| command / entrypoint | 可选字符串数组，各 1–128 项，每项最多 4096 字符。保留原程序入口语义，不自动做 shell/变量插值。 |
+| workingDir | 可选，容器内绝对路径，最多 512 字符，仅字母、数字和 /_.-，禁止 .. 段；它不会授予写权限。 |
+| resources.cpu | 显式填写数值，至少 0.05，最大值受目标配置约束；参考实现字段上限 6 不代表该应用当前可用 6 核。 |
+| resources.memoryMiB | 显式填写整数，每服务至少 32 MiB，应用各服务合计不超过目标预算；参考预算 500 MiB。 |
+| dependsOn | 可选服务名映射，值 started 或 healthy；目标必须存在，禁止自环或依赖环。它声明服务内部连通和启动顺序，不自动提供外部数据库。 |
+| storage | 可选单个对象，必填 name、mountPath、sizeMiB、maxInodes，详见资源规范。每服务最多一个，挂载为 /data。 |
+| routes | 必填 1–32 项；虽然 Schema 上界为 128，网关只接收 32。 |
+| routes[].path | 必填，/ 开头的路径，最多 512 字符，只含字母、数字和 /_.~-；禁止 //、. 或 .. 段。同 path+match 不得重复。 |
+| routes[].match | 必填 exact 或 prefix。 |
+| routes[].service | 必填，引用已声明的服务。 |
+| routes[].stripPrefix | 可选布尔值，默认 false；须匹配真实后端路径。 |
+
+/.well-known/acme-challenge 及其子路径是平台保留路由。不要声明为业务路径。
+
+## 健康检查
+
+每服务必须有 healthcheck，采用以下两种之一：
+
+```yaml
+healthcheck:
+  type: http
+  path: /healthz
+  intervalSeconds: 10
+  timeoutSeconds: 3
+  retries: 3
+  startPeriodSeconds: 30
+```
+
+```yaml
+healthcheck:
+  type: exec
+  command: ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2)"]
+```
+
+HTTP path 必须是应用实际可用路径。执行器把 200–399 当作成功，但开发者不能用“跳转到登录页”证明业务就绪。exec 命令在容器内退出码为 0 才成功，依赖工具必须在镜像中；不能假设存在 curl。上面的 Python exec 只适合已经有 Python 的镜像。
+
+时序范围：intervalSeconds 1–300，timeoutSeconds 1–60 且不大于 interval，retries 1–30，startPeriodSeconds 0–600；默认值分别 10、3、3、30。平台总等待窗口单独配置，参考 180 秒；写 startPeriodSeconds: 600 不会自动让平台等待十分钟。
+
+新项目可以按需求实现真实的就绪检查；已有项目需选用真实检查，不能添加恒定成功的假接口掩盖初始化或依赖失败。
+
+## 前端与 API 路径
+
+例如公网 /abc 转发到 API 的 /，才设 stripPrefix: true；后端原本接收 /abc 时保留 false。前端 API 地址应与实际公网路由一致，不把服务器回环地址、容器内部服务名或开发机地址写给浏览器访问。
+
+前端 history 路由、静态资源路径、缓存和鉴权必须按原业务实现核对；网关路径配置不能替代应用自身的正确行为。两个服务同时在各自容器监听 8080 是允许的，平台管理宿主机映射端口。
+
+匹配按路径段处理：prefix 路径 /api 匹配 /api 和 /api/...，不匹配 /apix；写 /api/ 则只匹配 /api/...，不会自动补充 /api 的精确入口。exact 优先于重叠的 prefix，prefix 中较长路径优先于较短路径，因此 /api 可以与 / 共存；不是按 YAML 数组中谁先出现就选择谁。
