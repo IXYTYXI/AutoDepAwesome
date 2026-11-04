@@ -1,5 +1,5 @@
 {
-  "contractRevision": "2026-11-04",
+  "contractRevision": "2026-11-04-r2",
   "platformVersion": "0.11.8",
   "sourceCommit": "8f337b040e7b128078a8c99134e76a28229e5bdf",
   "manifestSchemaVersion": 2,
@@ -27,5 +27,17 @@
     "ops/storage.example.json": "7adf5459442f84d36735fcecc5852c272b46d581486495aa0c12f29313398a18",
     "ops/storage_quota/protocol.py": "8a46f555768fe062acc8ad99096efd55a4fbd7c14886cba9374e1a083a9812a6",
     "ops/storage_quota/xfs.py": "04587dc81343802a99fb8ffb74579b85e1e270018ef3bcb75ea03f80a9fc5f49"
+  },
+  "entryPointProfiles": {
+    "community": {
+      "refSelection": "fixed",
+      "ref": "main",
+      "reviewedSource": "community app/deployment/service.py submit()",
+      "reviewedAt": "2026-11-04"
+    },
+    "platformApi": {
+      "refSelection": "request-parameter",
+      "defaultRef": "main"
+    }
   }
 }
