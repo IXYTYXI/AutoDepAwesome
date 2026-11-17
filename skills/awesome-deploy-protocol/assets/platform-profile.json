@@ -1,0 +1,43 @@
+{
+  "contractRevision": "2026-11-04-r3",
+  "platformVersion": "0.11.8",
+  "sourceCommit": "8f337b040e7b128078a8c99134e76a28229e5bdf",
+  "manifestSchemaVersion": 2,
+  "profileType": "development-reference; not live capacity or availability",
+  "referenceLimits": {
+    "applicationMemoryMiB": 500,
+    "applicationStorageMiB": 50,
+    "storagePoolMiB": 65536,
+    "maximumServices": 16,
+    "maximumRoutes": 32,
+    "minimumServiceMemoryMiB": 32,
+    "minimumServiceCpu": 0.05,
+    "buildNetwork": "none",
+    "healthWaitSeconds": 180,
+    "runtimeNetwork": "target-configured; do not assume external access",
+    "storageBackendForV2Volumes": "xfs-project"
+  },
+  "sourceSha256": {
+    "src/awesome_deploy/manifest.py": "72c890b01dc21e0b3c989d27ff56ece84e0c1e0e9a419d75ed899d9026cb3933",
+    "src/awesome_deploy/config.py": "286f515884171e8822ac1a86f1a377c5c71024644fba3168e220fc72b1a64b7a",
+    "src/awesome_deploy/runtime.py": "e21f8eb1aa5b2ac2c2a918c67412cd1654120b6a549bda74264f5d4c29a94055",
+    "src/awesome_deploy/secrets_store.py": "6fdfe98a1adf72fe0bd8118747f56823220e327137bd05bca8547d15d7905536",
+    "src/awesome_deploy/schema/awesome-v2.json": "8b0c1a4e01a4c0a51a54ecbf4908d1c5978f6d1c10295c872f041c47de6bd530",
+    "ops/awesome-gateway": "3c4d90ef07b9542f6e2f02b8ea3af8bf580fb636f4c93f79a33904068e1c63cc",
+    "ops/storage.example.json": "7adf5459442f84d36735fcecc5852c272b46d581486495aa0c12f29313398a18",
+    "ops/storage_quota/protocol.py": "8a46f555768fe062acc8ad99096efd55a4fbd7c14886cba9374e1a083a9812a6",
+    "ops/storage_quota/xfs.py": "04587dc81343802a99fb8ffb74579b85e1e270018ef3bcb75ea03f80a9fc5f49"
+  },
+  "entryPointProfiles": {
+    "community": {
+      "refSelection": "fixed",
+      "ref": "main",
+      "reviewedSource": "community app/deployment/service.py submit()",
+      "reviewedAt": "2026-11-04"
+    },
+    "platformApi": {
+      "refSelection": "request-parameter",
+      "defaultRef": "main"
+    }
+  }
+}
