@@ -1,6 +1,6 @@
-# 前端发布保护
+# 发布产物保护
 
-维护可读的 `src/awesome_deploy/static/` 源码；发布工具只在本地生成独立的 `dist/protected-static/` 目录。它不修改源码、Python 服务、配置、凭证或线上版本，也不会调用 Docker。安装依赖后，转换通过 npm 包的本地 `obfuscate()` API 完成，不上传源码到在线混淆服务。
+维护可读的 `src/awesome_deploy/` 源码。前端工具先在本地生成独立的 `dist/protected-static/`；Python 发布工具随后在**非 editable 虚拟环境**中准备独立副本，把平台自身的 `.py` 编译为同目录 `.pyc`，将经过核验的前端资源放入该副本，再切换安装目录。工具不修改 Git 源码、配置或凭证，也不会调用 Docker 或自动切换线上服务。前端转换通过 npm 包的本地 `obfuscate()` API 完成，不上传源码到在线服务。
 
 ## 构建与核验
 
@@ -14,6 +14,42 @@ npm --prefix tools/frontend-release test
 npm --prefix tools/frontend-release run build
 npm --prefix tools/frontend-release run verify-ui
 ```
+
+## Python 后端发布
+
+前端四步通过后，在**目标 Python 版本和目标主机**的新虚拟环境中安装已审查的同一提交。发布工具必须由这个虚拟环境的 Python 执行；先停用或切走使用该环境的服务。建议在新环境完成全部验证，再把服务切到新环境，不要原地修改正在运行的环境。
+
+```sh
+# 在仓库根目录，示例使用新的 .release-venv；依赖按目标机已验收的版本安装。
+python3 -m venv .release-venv
+.release-venv/bin/python -m pip install -r requirements-dev.lock
+.release-venv/bin/python -m pip install --no-deps .
+.release-venv/bin/python tools/release/protect_install.py \
+  --protected-static dist/protected-static
+.release-venv/bin/awesome-deploy --help
+.release-venv/bin/awesome-deploy-team --help
+.release-venv/bin/awesome-deploy-intake --help
+```
+
+发布工具会先按前端 `manifest.json` 检查已安装的原始静态文件与混淆文件的清单、字节数和 SHA-256，再复制并编译 Python 包。它从隔离副本导入 API、CLI、worker、团队和接入模块，确认页面资源存在后才切换安装目录；切换后再次导入。成功时写入发行版的 `PROTECTION.json` 并更新 `RECORD`，使安装记录对应实际文件。失败时尝试恢复原包和安装记录；若进程异常中断，先检查虚拟环境中 `.awesome_deploy_protect_*` 暂存目录，不要直接重试或启动服务。
+
+核对安装结果：
+
+```sh
+.release-venv/bin/python - <<'PY'
+from importlib import metadata
+from pathlib import Path
+import awesome_deploy
+
+root = Path(awesome_deploy.__file__).parent
+assert not list(root.rglob('*.py'))
+assert list(root.rglob('*.pyc'))
+assert (root / 'static' / 'index.html').is_file()
+print(root, metadata.version('awesome-deploy'))
+PY
+```
+
+保护只作用于虚拟环境内的 `awesome_deploy` 包。仓库 checkout、构建时的普通 wheel、`ops/` 中的独立特权 helper 和第三方依赖仍是各自原有形式；若把这些文件一起放在目标机上，仍可直接阅读。需要减少目标机上的可读源码时，在可信构建机完成前端构建，将同一提交的安装包、`protected-static` 和发布工具传到目标机，完成安装与保护后移走普通 wheel，并由运维按既有流程单独安装和审查 helper。不要在目标机保留不必要的源码 checkout。字节码可反编译；此流程提高阅读成本，不提供秘密保护或不可逆性。密钥仍必须只保存在服务端的安全配置中。
 
 构建依赖固定为 `javascript-obfuscator 5.9.0`，传递依赖及下载完整性记录在 `package-lock.json`。工具目录的 `.npmrc` 也禁用安装生命周期脚本。依赖只用于构建，不需要随部署服务安装或发布。
 
@@ -33,7 +69,7 @@ npm --prefix tools/frontend-release run verify-ui
 
 2026-10-23 本地结果：30 个静态文件，其中 8 个 JS；原文件总计 580,566 字节，产物 584,931 字节（清单除外，增加约 0.75%）。11 项发布工具测试及原有 122 项 UI 测试通过。原有 UI 套件覆盖 app、manage、auth、login、members、vault；document 与 api-credentials 的 JS 本次只做转换和语法解析，不能据此声称两个页面的全部交互已测试。VM 测试也不能替代真实浏览器的布局、完整 CSP 响应头、网络和性能验收。发布前应在受控预览或目标平台继续做这些验证。
 
-本工具只生成可评审产物，不改变服务当前使用的静态目录。后续发布应将产物复制进独立的发布包或镜像构建目录，替换该副本内的 static 文件；不要覆盖工作区的可读源码。此步骤应由现有远端发布流程单独完成，本地 Docker Desktop 不需要启动。
+前端工具只生成可评审产物，不改变服务当前使用的静态目录。Python 工具只切换所选虚拟环境中的包；在新环境中完成保护与验收后，再按现有运维流程切换服务。不要覆盖工作区的可读源码。本地 Docker Desktop 不需要启动。
 
 ## 安全边界与依据
 

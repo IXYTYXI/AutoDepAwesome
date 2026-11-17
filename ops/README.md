@@ -41,7 +41,7 @@
 | `/var/www/awesome-acme` | `root:root 0755`；可被 Nginx 读取的 ACME webroot，不能放到私有网关状态目录下 |
 | `/etc/nginx/conf.d` | root 所有且组/其他用户不可写，必须在 Nginx 的 `http` 上下文中加载 |
 
-安装 Python 3.11+、Git、Docker CLI/daemon 所需组件、buildx、Nginx、Certbot 和 sudo；具体包管理方式由目标发行版决定。管理员在 `/opt/awesome-deploy` 创建虚拟环境，可先用 `pip install -r requirements-dev.lock` 安装当前验证过的固定版本，再用 `pip install --no-deps .` 安装项目；锁文件含测试工具，目标机仍需验证版本与架构兼容性。不要向生产源代码目录写入仓库令牌或应用秘密。
+安装 Python 3.11+、Git、Docker CLI/daemon 所需组件、buildx、Nginx、Certbot 和 sudo；具体包管理方式由目标发行版决定。管理员在 `/opt/awesome-deploy` 创建虚拟环境，可先用 `pip install -r requirements-dev.lock` 安装当前验证过的固定版本，再用 `pip install --no-deps .` 安装项目；锁文件含测试工具，目标机仍需验证版本与架构兼容性。正式使用低可读性产物时，还须在服务启动前按[发布产物保护](../docs/release-protection.md)构建并验证前端资源，用目标虚拟环境的 Python 处理已安装包，再核对 CLI 和页面。直接 `pip install` 会留下可读的 Python 与 JS 源码。不要向生产源代码目录写入仓库令牌或应用秘密。
 
 平台源码统一维护于 `main`。安装或升级时，从 `main` 选择已审查的完整提交并固定 commit，或使用正式发布标签；平台包、网关及存储 helper 必须来自同一提交。记录部署提交以便核对和回退，不再依赖已归档功能分支作为安装入口。当前配置和实际验收决定哪些功能可启用。
 
